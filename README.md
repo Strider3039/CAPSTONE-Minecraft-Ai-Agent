@@ -1,4 +1,4 @@
-Minecraft AI Agent (Capstone Project)
-This project explores building an AI agent that can take the place of a player in Minecraft. Using Python and Q-learning, the agent learns how to interact with the world step by step — starting with simple tasks like moving, collecting wood, and surviving. A custom Java Forge plugin connects Python to Minecraft, letting the AI see the game state and send actions back.
+Minecraft AI Agent (Capstone & Learning Project)
+This project is about creating an AI agent that can take the place of a player in Minecraft. The agent is built in Python using Q-learning, with a custom Java Forge plugin that connects the AI to the Minecraft world.
 
-In the second phase, a website will explain the full process so others can follow along and create their own Minecraft agent.
+The goal isn’t just to make a working bot; the code is open and public, so anyone can use it, modify it, and learn from it. Alongside the bot, we’re building a website that explains the process step by step, making it easier for others to explore how reinforcement learning works in practice and experiment with their own Minecraft agents.
