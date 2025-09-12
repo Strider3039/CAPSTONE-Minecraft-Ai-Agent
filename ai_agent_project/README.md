@@ -58,6 +58,9 @@ Project_Name/
 │  │  │  │     ├─ bridge/             # WS/MsgPack client
 │  │  │  │     ├─ obs/                # build Observation
 │  │  │  │     └─ actions/            # apply low-level actions
+│  │  │  │
+│  │  │  ├─ forge/                    # forge player implementation (optional)
+│  │  │  │
 │  │  │  └─ mcprotocollib/            # (Java) alt bot (optional)
 │  │  │     └─ src/main/java/...
 │  │  │
