@@ -1,0 +1,35 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "Observation",
+    "type": "object",
+    "description": "Observations acquired from the game client",
+    "required": ["type, timestamp", "seqNum, payload"],
+    "properties": {
+        "type": {"const": "observation"},
+        "timestamp": {"type": "number"},
+        "seqNum": {"type": "integer", "minimum": 0},
+        "schema": {"type": "string", "default": "v1"},
+        "payload": {
+            "type": "object",
+            "required": ["position", "health"],
+            "properties": {
+                "position": {
+                    "type": "object",
+                    "required": ["x", "y", "z"],
+                    "properties": {
+                        "x": {"type": "number"},
+                        "y": {"type": "number"},
+                        "z": {"type": "number"}
+                    }
+                },
+                "health": {"type": "number", "minimum": 0},
+                "nearby": {
+                    "type": "array", 
+                    "items": {"type": "string", "default": []}
+                }
+            },
+            "additionalProperties": true
+        }
+    },
+    "additionalProperties": false
+}
