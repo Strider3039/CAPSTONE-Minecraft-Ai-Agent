@@ -3,11 +3,11 @@
     "title": "Observation",
     "type": "object",
     "description": "Observations acquired from the game client",
-    "required": ["type, timestamp", "seqNum, payload"],
+    "required": ["type, timestamp", "seq, payload"],
     "properties": {
         "type": {"const": "observation"},
         "timestamp": {"type": "number"},
-        "seqNum": {"type": "integer", "minimum": 0},
+        "seq": {"type": "integer", "minimum": 0},
         "schema": {"type": "string", "default": "v1"},
         "payload": {
             "type": "object",
