@@ -3,7 +3,7 @@
     "title": "Observation",
     "type": "object",
     "description": "Observations acquired from the game client",
-    "required": ["type, timestamp", "seq, payload"],
+    "required": ["type", "timestamp", "seq", "payload"],
     "properties": {
         "type": {"const": "observation"},
         "timestamp": {"type": "number"},
@@ -24,8 +24,9 @@
                 },
                 "health": {"type": "number", "minimum": 0},
                 "nearby": {
-                    "type": "array", 
-                    "items": {"type": "string", "default": []}
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "default": []
                 }
             },
             "additionalProperties": true

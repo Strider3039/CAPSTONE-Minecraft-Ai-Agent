@@ -1,5 +1,5 @@
 {
-    "$schema": "https://json-schema.org/draft-04/schema",
+    "$schema": "https://json-schema.org/draft-07/schema",
     "title": "Action",
     "description": "Actions being sent to the game client.",
     "type": "object",
