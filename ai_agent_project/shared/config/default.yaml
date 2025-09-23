@@ -1,6 +1,21 @@
 server:
   host: 0.0.0.0
   port: 8765
+  ping_interval_S: 5
+  ping_timeout_s: 5
+  max_msg_bytes: 1048576
+
+runtime:
+  obs_queue_size: 64
+  act_queue_size: 64
+  worker_tasks: 1
+  drop_policy: oldest
+
+logging:
+  level: INFO
+  json: trueserver:
+  host: 0.0.0.0
+  port: 8765
   ping_interval_s: 5
   ping_timeout_s: 5
   max_msg_bytes: 1048576
