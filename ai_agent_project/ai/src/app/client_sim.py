@@ -40,3 +40,15 @@ async def main():
                 "nearby": []
             }
         }
+
+        await ws.send(json.dumps(invalidObs))
+        print(">> Sent invalid observation")
+        print("<<", await ws.recv()) # Expecting a schema-mismatch event
+
+        # Send a non-json message
+        await ws.send("This is not JSON")
+        print(">> Sent non-JSON message")
+        print("<<", await ws.recv()) # Expecting a schema-mismatch event
+
+if __name__ == "__main__":
+    asyncio.run(main())
