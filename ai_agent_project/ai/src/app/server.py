@@ -7,7 +7,10 @@ import sys
 import pathlib as _pathlib
 
 # Ensure utils can be imported by appending the absolute utils path
-sys.path.append(str(pathlib.Path(__file__).resolve().parents[0] / "utils"))
+SRC = _pathlib.Path(__file__).resolve().parents[1] # ai/src
+if str(SRC) not in sys.path:
+    sys.path.append(str(SRC))
+from utils import config, logging  
 
 from utils.config import LoadConfig
 from utils.logging import SetupLogging
