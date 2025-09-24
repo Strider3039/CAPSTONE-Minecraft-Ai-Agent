@@ -5,6 +5,7 @@ from websockets.exceptions import ConnectionClosed
 from jsonschema import validate, ValidationError
 import sys
 import pathlib as _pathlib
+import logging as stdlog
 
 # Ensure utils can be imported by appending the absolute utils path
 SRC = _pathlib.Path(__file__).resolve().parents[1] # ai/src
@@ -15,7 +16,7 @@ from utils import config, logging
 from utils.config import LoadConfig
 from utils.logging import SetupLogging
 
-log = logging.getLogger("bridge.server")
+log = stdlog.getLogger("bridge.server")
 
 # Define the path to the JSON schema files
 # __file__ -> ai/src/app/server.py
@@ -103,9 +104,9 @@ async def Main():
 
     async with serve(
         Handle, host, port,
-        pingInterval=cfg.server["ping_interval_s"],
-        pingTimeout=cfg.server["ping_timeout_s"],
-        maxSize=cfg.server["max_size_bytes"]
+        ping_interval=cfg.server["ping_interval_s"],
+        ping_timeout=cfg.server["ping_timeout_s"],
+        max_size=cfg.server["max_msg_bytes"]
     ):
         log.info("ws server started", extra={"host": host, "port": port})
         await asyncio.Future()  # run forever

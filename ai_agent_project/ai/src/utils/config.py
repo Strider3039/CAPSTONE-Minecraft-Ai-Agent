@@ -3,7 +3,7 @@ import os, pathlib, yaml
 from typing import Any, Dict
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]  # ai/src/utils -> ai/
-SHARED = ROOT.parent / "shared"
+SHARED = ROOT.parent / "ai_agent_project" / "shared"
 DEF = SHARED / "config" / "default.yaml"
 DEV = SHARED / "config" / "dev.yaml"
 
