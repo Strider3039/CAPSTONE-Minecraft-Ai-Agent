@@ -75,9 +75,11 @@ async def Handle(ws: WebSocketServerProtocol):
                 if myType == "observation":
                     validate(instance=msg, schema=OBS)
                     log.info("valid observation", extra={"seq": msg.get("seq")})
+                    await SendEvents(ws, "ack", {"seq": msg.get("seq")})
                 elif myType == "action":
                     validate(instance=msg, schema=ACT)
                     log.info("valid action", extra={"seq": msg.get("seq")})
+                    await SendEvents(ws, "ack", {"seq": msg.get("seq")})
                 elif myType == "event":
                     validate(instance=msg, schema=EVT)
                     log.info("valid event", extra={"kind": msg.get("kind")})
