@@ -64,7 +64,7 @@ async def QueueAdd(q: asyncio.Queue, item: Any, drop_policy: str, on_drop):
         else:
             await q.put(item)
 
-async def policy_worker(obs_q: asyncio.Queue, act_q: asyncio.Queue, drop_policy: str, act_schema: dict, on_drop, log):
+async def PolicyWorker(obs_q: asyncio.Queue, act_q: asyncio.Queue, drop_policy: str, act_schema: dict, on_drop, log):
     seq_out = 0
     while True:
         obs = await obs_q.get()
