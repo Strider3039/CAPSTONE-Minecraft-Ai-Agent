@@ -15,6 +15,13 @@ def ClampAction(msg: Dict[str, Any]) -> Dict[str, Any]:
 
     if kind in {"move_forward", "move_back"}:
         dur = args.get("seconds", 0.2)
-        args["seconds"] = max(0.0, min(.5, float(dur)))
+        args["seconds"] = max(0.05, min(.5, float(dur)))
+
+    if kind in {"turn_left", "turn_right"}:
+        deg = args.get("deg", 15)
+        args["deg"] = max(5, min(90, float(deg)))
+
+    msg["payload"] = {"kind": kind, "args": args}
+    return msg
 
 

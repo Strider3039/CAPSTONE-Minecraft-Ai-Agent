@@ -6,6 +6,7 @@ from jsonschema import validate, ValidationError
 import sys
 import pathlib as _pathlib
 import logging as stdlog
+from typing import Any, Dict
 
 # Ensure utils can be imported by appending the absolute utils path
 SRC = _pathlib.Path(__file__).resolve().parents[1] # ai/src
@@ -15,6 +16,8 @@ from utils import config, logging
 
 from utils.config import LoadConfig
 from utils.logging import SetupLogging
+from actions.codec import ClampAction
+from policy.dummy import decide
 
 log = stdlog.getLogger("bridge.server")
 
@@ -44,6 +47,51 @@ async def SendEvents(ws: WebSocketServerProtocol, kind: str, payload: dict) -> N
     except ValidationError as e:
         log.warning("internal event failed schema", extra={"error": str(e), "kind": kind})
     await ws.send(json.dumps(msg))
+
+# Safe implementation of adding items to a queue
+async def QueueAdd(q: asyncio.Queue, item: Any, drop_policy: str, on_drop):
+    try:
+        q.put_nowait(item)
+    except asyncio.QueueFull:
+        if drop_policy == "oldest":
+            q.get_nowait()  
+            
+            # on_drop polict might be implemented later
+            if on_drop: await on_drop("oldest")
+            q.put_nowait(item)
+        elif drop_policy == "newest":
+            if on_drop: await on_drop("newest")
+        else:
+            await q.put(item)
+
+async def policy_worker(obs_q: asyncio.Queue, act_q: asyncio.Queue, drop_policy: str, act_schema: dict, on_drop, log):
+    seq_out = 0
+    while True:
+        obs = await obs_q.get()
+        try:
+            payload = decide(obs)
+
+            msg = {
+                "type": "action",
+                "timestamp": int(time.time() * 1000),
+                "seq": seq_out,
+                "schema": "v1",
+                "payload": payload
+            }
+            
+            msg = ClampAction(msg)
+            try:
+                validate(instance=msg, schema=act_schema)
+            except ValidationError as e:
+                log.warning("outgoing action failed schema", extra={"error": str(e)})
+                # Keep going, don't send invalid actions
+                msg["payload"] = {"kind": "noop", "args": {}}
+            
+            await QueueAdd(act_q, msg, drop_policy, on_drop)
+            seq_out += 1
+        
+        finally:
+            obs_q.task_done()
 
 # Handle the WebSocket connection
 async def Handle(ws: WebSocketServerProtocol):
@@ -76,10 +124,12 @@ async def Handle(ws: WebSocketServerProtocol):
                     validate(instance=msg, schema=OBS)
                     log.info("valid observation", extra={"seq": msg.get("seq")})
                     await SendEvents(ws, "ack", {"seq": msg.get("seq")})
+                    
                 elif myType == "action":
                     validate(instance=msg, schema=ACT)
                     log.info("valid action", extra={"seq": msg.get("seq")})
                     await SendEvents(ws, "ack", {"seq": msg.get("seq")})
+                    
                 elif myType == "event":
                     validate(instance=msg, schema=EVT)
                     log.info("valid event", extra={"kind": msg.get("kind")})
@@ -102,7 +152,6 @@ async def Main():
 
     host = cfg.server["host"]
     port = cfg.server["port"]
-    log.info("starting ws server", extra={"host": host, "port": port})
 
     async with serve(
         Handle, host, port,
