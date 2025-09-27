@@ -93,6 +93,7 @@ async def PolicyWorker(obs_q: asyncio.Queue, act_q: asyncio.Queue, drop_policy: 
         finally:
             obs_q.task_done()
         
+# Drains the action queue and sends actions to the client
 async def SendActions(ws: WebSocketServerProtocol, act_q: asyncio.Queue, log):
     while True:
         msg = await act_q.get()
