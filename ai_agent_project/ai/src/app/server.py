@@ -92,6 +92,15 @@ async def PolicyWorker(obs_q: asyncio.Queue, act_q: asyncio.Queue, drop_policy: 
         
         finally:
             obs_q.task_done()
+        
+async def SendActions(ws: WebSocketServerProtocol, act_q: asyncio.Queue, log):
+    while True:
+        msg = await act_q.get()
+        try:
+            await ws.send(json.dumps(msg))
+            log.debug("sent action", extra={"seq": msg.get("seq")})
+        finally:
+            act_q.task_done()
 
 # Handle the WebSocket connection
 async def Handle(ws: WebSocketServerProtocol):
