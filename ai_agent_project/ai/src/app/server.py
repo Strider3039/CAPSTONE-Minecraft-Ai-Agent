@@ -7,6 +7,7 @@ import sys
 import pathlib as _pathlib
 import logging as stdlog
 from typing import Any, Dict
+import contextlib
 
 # Ensure utils can be imported by appending the absolute utils path
 SRC = _pathlib.Path(__file__).resolve().parents[1] # ai/src
@@ -103,8 +104,12 @@ async def SendActions(ws: WebSocketServerProtocol, act_q: asyncio.Queue, log):
         finally:
             act_q.task_done()
 
+async def OnDropEvent(ws: WebSocketServerProtocol, kind: str, why: str, qsize: int):
+    await SendEvents(ws, "dropped", {"kind": kind, "policy": why, "qsize": qsize})
+
 # Handle the WebSocket connection
 async def Handle(ws: WebSocketServerProtocol):
+    
     # remote_address is a (host, port) tuple
     try:
         peer = f"{ws.remote_address[0]}:{ws.remote_address[1]}"
@@ -112,7 +117,29 @@ async def Handle(ws: WebSocketServerProtocol):
         peer = str(ws.remote_address)
     log.info("client connected", extra={"peer": peer})
 
+    cfg = LoadConfig(env=os.getenv("APP_ENV", "dev"))
+    runTime = getattr(cfg, "runtime", None) or (cfg.get("runtime", {}) if isinstance(cfg, dict) else {})
+
+    obsQueueSize = runTime.get("obs_queue_size", 100)
+    actQueueSize = runTime.get("act_queue_size", 100)
+    dropPolicy = runTime.get("drop_policy", "oldest")
+
+    obsQueue: asyncio.Queue = asyncio.Queue(maxsize=obsQueueSize)
+    actQueue: asyncio.Queue = asyncio.Queue(maxsize=actQueueSize)
+
     await SendEvents(ws, "connected", {"server": "ai-bridge", "version": "mvp1"})
+
+    policyTask = asyncio.create_task(
+        PolicyWorker(
+            obs_q=obsQueue,
+            act_q=actQueue,
+            drop_policy=dropPolicy,
+            act_schema=ACT,
+            on_drop=lambda why: OnDropEvent(ws, "action", why, actQueue.qsize()),
+            log=log,
+        )
+    )
+    senderTask = asyncio.create_task(SendActions(ws, actQueue, log))
 
     try:
         # Start an async loop to receive messages
@@ -134,6 +161,10 @@ async def Handle(ws: WebSocketServerProtocol):
                     validate(instance=msg, schema=OBS)
                     log.info("valid observation", extra={"seq": msg.get("seq")})
                     await SendEvents(ws, "ack", {"seq": msg.get("seq")})
+                    await QueueAdd(
+                        obsQueue, msg, dropPolicy,
+                        on_drop=lambda why: OnDropEvent(ws, "observation", why, obsQueue.qsize())
+                    )
                     
                 elif myType == "action":
                     validate(instance=msg, schema=ACT)
@@ -150,10 +181,16 @@ async def Handle(ws: WebSocketServerProtocol):
                 # Send a schema_mismatch event back to the client
                 log.warning("schema validation failed", extra={"error": str(e)})
                 await SendEvents(ws, "schema_mismatch", {"reason": str(e)})
+
     except ConnectionClosed:
         log.info("client disconnected", extra={"peer": peer})
     except Exception:
         log.exception("unexpected error handling client", extra={"peer": peer})
+    finally:
+        for t in (policyTask, senderTask):
+            t.cancel()
+            with contextlib.suppress(Exception):
+                await t
 
 async def Main():
 
