@@ -39,6 +39,7 @@ EVT = json.loads((schemas / "event.schema.json").read_text("utf-8"))
 async def SendEvents(ws: WebSocketServerProtocol, kind: str, payload: dict) -> None:
     msg = {
         "type": "event",
+        "schema_version": "v0",
         "timestamp": time.time(),
         "kind": kind,
         "payload": payload,
