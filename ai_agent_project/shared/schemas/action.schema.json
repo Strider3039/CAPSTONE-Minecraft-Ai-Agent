@@ -1,26 +1,40 @@
 {
-    "$schema": "https://json-schema.org/draft-07/schema",
-    "title": "Action",
-    "description": "Actions being sent to the game client.",
-    "type": "object",
-    "required": ["type", "timestamp", "seq", "payload"],
-    "properties": {
-        "type": {"const": "action"},
-        "timestamp": {"type": "number"},
-        "seq": {"type": "integer", "minimum": 0},
-        "schema": {"type": "string", "default": "v1"},
-        "payload": {
-            "type": "object",
-            "required" : ["kind"],
-            "properties": {
-                "kind": {
-                    "type": "string",
-                    "enum": ["noop","move_forward","move_back","turn_left","turn_right","jump","attack"]
-                },
-                "args": {"type": "object", "additionalProperties": true, "default": {}}
-            },
-            "additionalProperties": false
-        }
-    },
-    "additionalProperties": false
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "title": "Action v0",
+  "description": "Control-style actions for the game client.",
+  "type": "object",
+  "required": ["type", "timestamp", "seq", "schema_version", "payload"],
+  "properties": {
+    "type": { "const": "action" },
+    "schema_version": { "const": "v0" },
+    "timestamp": { "type": "number" },
+    "seq": { "type": "integer", "minimum": 0 },
+    "payload": {
+      "type": "object",
+      "required": ["look", "move", "jump"],
+      "properties": {
+        "look": {
+          "type": "object",
+          "required": ["dYaw", "dPitch"],
+          "properties": {
+            "dYaw": { "type": "number", "minimum": -45, "maximum": 45 },
+            "dPitch": { "type": "number", "minimum": -45, "maximum": 45 }
+          },
+          "additionalProperties": false
+        },
+        "move": {
+          "type": "object",
+          "required": ["forward", "strafe"],
+          "properties": {
+            "forward": { "type": "number", "minimum": -1, "maximum": 1 },
+            "strafe":  { "type": "number", "minimum": -1, "maximum": 1 }
+          },
+          "additionalProperties": false
+        },
+        "jump": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
 }

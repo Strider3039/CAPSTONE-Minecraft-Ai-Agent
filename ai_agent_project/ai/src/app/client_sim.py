@@ -1,54 +1,123 @@
+# client_sim_v0.py
 from __future__ import annotations
-import asyncio, json, time
+import asyncio, json, time, contextlib
 import websockets
 
 WS_URL = "ws://localhost:8765"
 
-# Connect to the WebSocket server and send/receive messages
+def now_s() -> float:
+    # Use seconds (float). Switch to ms if your server expects that.
+    return time.time()
+
+def obs_v0(seq: int) -> dict:
+    return {
+        "type": "observation",
+        "schema_version": "v0",
+        "timestamp": now_s(),
+        "seq": seq,
+        "payload": {
+            "pose": {
+                "pos": {"x": 0.0, "y": 64.0, "z": 0.0},
+                "yaw": 0.0,
+                "pitch": 0.0
+            },
+            "rays": [2.0, 3.2, 5.5],           # 3–5 forward rays
+            "hotbar": [None] * 9               # exactly 9 slots
+        }
+    }
+
+def obs_invalid_missing_version(seq: int) -> dict:
+    # Purposely missing schema_version to trigger schema_mismatch
+    return {
+        "type": "observation",
+        "timestamp": now_s(),
+        "seq": seq,
+        "payload": {
+            "pose": {
+                "pos": {"x": 0.0, "y": 64.0, "z": 0.0},
+                "yaw": 0.0,
+                "pitch": 0.0
+            },
+            "rays": [1.0, 1.0, 1.0],
+            "hotbar": [None] * 9
+        }
+    }
+
+def action_v0(seq: int) -> dict:
+    return {
+        "type": "action",
+        "schema_version": "v0",
+        "timestamp": now_s(),
+        "seq": seq,
+        "payload": {
+            "look": {"dYaw": 10.0, "dPitch": -5.0},  # will be clamped by server if needed
+            "move": {"forward": 1.0, "strafe": 0.0}, # in [-1,1]
+            "jump": False
+        }
+    }
+
 async def main():
+    rtt = {}  # seq -> send_time
+
     async with websockets.connect(WS_URL) as ws:
-        print(" >> Connected to", WS_URL)
+        print(">> Connected to", WS_URL)
 
-        # Listen for the connected event
-        msg = await ws.recv()
-        print("<<", msg)
+        # Some servers send a greeting/event on connect; tolerate if not
+        try:
+            msg = await asyncio.wait_for(ws.recv(), timeout=0.5)
+            print("<<", msg)
+        except asyncio.TimeoutError:
+            pass
 
-        # Send a test valid observation message
-        validObs = {
-            "type": "observation",
-            "timestamp": int(time.time() * 1000),
-            "seq": 1,
-            "schema": "v1",
-            "payload": {
-                "position": {"x": 0.0, "y": 64.0, "z": 0.0},
-                "health": 20,
-                "nearby": []
-            }
-        }
-        await ws.send(json.dumps(validObs))
-        print(">> Sent valid observation")
-        print("<<", await ws.recv()) # Expecting an ack response
+        async def recv_loop():
+            try:
+                async for raw in ws:
+                    try:
+                        evt = json.loads(raw)
+                    except json.JSONDecodeError:
+                        print("<< (non-JSON):", raw)
+                        continue
 
-        # Send a test invalid observation message (missing health)
-        invalidObs = {
-            "type": "observation",
-            "timestamp": int(time.time() * 1000),
-            "seq": 2,
-            "schema": "v1",
-            "payload": {
-                "position": {"x": 0.0, "y": 64.0, "z": 0.0},
-                "nearby": []
-            }
-        }
+                    kind = evt.get("kind")
+                    payload = evt.get("payload", {})
+                    print(f"<< EVENT kind={kind} payload={payload}")
 
-        await ws.send(json.dumps(invalidObs))
-        print(">> Sent invalid observation")
-        print("<<", await ws.recv()) # Expecting a schema-mismatch event
+                    if kind == "ack":
+                        seq = payload.get("seq")
+                        if seq in rtt:
+                            ms = (now_s() - rtt.pop(seq)) * 1000
+                            print(f"   ↳ RTT for seq {seq}: {ms:.1f} ms")
+            except Exception as e:
+                print("recv_loop error:", e)
 
-        # Send a non-json message
-        await ws.send("This is not JSON")
-        print(">> Sent non-JSON message")
-        print("<<", await ws.recv()) # Expecting a schema-mismatch event
+        async def send_and_track(msg: dict):
+            seq = msg.get("seq")
+            rtt[seq] = now_s()
+            await ws.send(json.dumps(msg))
+            print(f">> SENT {msg['type']} seq={seq}")
+
+        recv_task = asyncio.create_task(recv_loop())
+
+        # 1) Valid observation -> expect ack
+        await send_and_track(obs_v0(1))
+        await asyncio.sleep(0.3)
+
+        # 2) Invalid observation (no schema_version) -> expect schema_mismatch
+        bad = obs_invalid_missing_version(2)
+        await ws.send(json.dumps(bad))
+        print(f">> SENT invalid observation seq={bad['seq']}")
+        await asyncio.sleep(0.3)
+
+        # 3) Valid action -> validate control-style payload; ack optional
+        await send_and_track(action_v0(3))
+        await asyncio.sleep(0.3)
+
+        # 4) Hang briefly to catch heartbeat events if implemented
+        await asyncio.sleep(3.0)
+
+        recv_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await recv_task
 
 if __name__ == "__main__":
     asyncio.run(main())

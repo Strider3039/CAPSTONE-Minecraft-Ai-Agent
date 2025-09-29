@@ -1,36 +1,52 @@
 {
-    "$schema": "https://json-schema.org/draft-07/schema",
-    "title": "Observation",
-    "type": "object",
-    "description": "Observations acquired from the game client",
-    "required": ["type", "timestamp", "seq", "payload"],
-    "properties": {
-        "type": {"const": "observation"},
-        "timestamp": {"type": "number"},
-        "seq": {"type": "integer", "minimum": 0},
-        "schema": {"type": "string", "default": "v1"},
-        "payload": {
-            "type": "object",
-            "required": ["position", "health"],
-            "properties": {
-                "position": {
-                    "type": "object",
-                    "required": ["x", "y", "z"],
-                    "properties": {
-                        "x": {"type": "number"},
-                        "y": {"type": "number"},
-                        "z": {"type": "number"}
-                    }
-                },
-                "health": {"type": "number", "minimum": 0},
-                "nearby": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "default": []
-                }
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "title": "Observation v0",
+  "type": "object",
+  "description": "Observations acquired from the game client",
+  "required": ["type", "timestamp", "seq", "schema_version", "payload"],
+  "properties": {
+    "type": { "const": "observation" },
+    "schema_version": { "const": "v0" },
+    "timestamp": { "type": "number" },
+    "seq": { "type": "integer", "minimum": 0 },
+    "payload": {
+      "type": "object",
+      "required": ["pose", "rays", "hotbar"],
+      "properties": {
+        "pose": {
+          "type": "object",
+          "required": ["pos", "yaw", "pitch"],
+          "properties": {
+            "pos": {
+              "type": "object",
+              "required": ["x", "y", "z"],
+              "properties": {
+                "x": { "type": "number" },
+                "y": { "type": "number" },
+                "z": { "type": "number" }
+              },
+              "additionalProperties": false
             },
-            "additionalProperties": true
+            "yaw": { "type": "number" },
+            "pitch": { "type": "number" }
+          },
+          "additionalProperties": false
+        },
+        "rays": {
+          "type": "array",
+          "items": { "type": "number", "minimum": 0 },
+          "minItems": 3,
+          "maxItems": 5
+        },
+        "hotbar": {
+          "type": "array",
+          "items": { "type": ["string", "null"] },
+          "minItems": 9,
+          "maxItems": 9
         }
-    },
-    "additionalProperties": false
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
 }
