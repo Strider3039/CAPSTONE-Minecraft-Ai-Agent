@@ -5,6 +5,13 @@ import websockets
 
 WS_URL = "ws://localhost:8765"
 
+# Pretty-printing utility for debugging
+def pretty(obj):
+    try:
+        return json.dumps(obj, indent=2, ensure_ascii=False)
+    except TypeError:
+        return str(obj)
+
 def now_s() -> float:
     # Use seconds (float). Switch to ms if your server expects that.
     return time.time()
@@ -80,13 +87,21 @@ async def main():
 
                     kind = evt.get("kind")
                     payload = evt.get("payload", {})
-                    print(f"<< EVENT kind={kind} payload={payload}")
+                    if kind == "schema_mismatch" and isinstance(payload.get("reason"), str):
+                        print("<< EVENT schema_mismatch:")
+                        # Print the raw reason string so embedded \n render as real newlines
+                        print(payload["reason"])
+                    else:
+                        print(f"<< EVENT {kind}")
+                        print(pretty(payload))
+
 
                     if kind == "ack":
                         seq = payload.get("seq")
                         if seq in rtt:
                             ms = (now_s() - rtt.pop(seq)) * 1000
                             print(f"   ↳ RTT for seq {seq}: {ms:.1f} ms")
+                            
             except Exception as e:
                 print("recv_loop error:", e)
 
