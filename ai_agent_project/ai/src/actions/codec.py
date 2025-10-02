@@ -5,23 +5,27 @@ ALLOWED = {"noop","move_forward","move_back","turn_left","turn_right","jump","at
 
 # Ensure the action is valid and within allowed parameters
 def ClampAction(msg: Dict[str, Any]) -> Dict[str, Any]:
-    payload = msg.get("payload", {}) or {}
-    kind = payload.get("kind", "noop")
-    args = payload.get("args", {}) or {}
 
-    if kind not in ALLOWED:
-        kind = "noop"
-        args = {}
+    # Extract all the fields from the payload, with defaults
+    p = (msg.get("payload") or {})
+    look = p.get("look") or {}
+    move = p.get("move") or {}
+    jump = bool(p.get("jump", False))
+    d_yaw   = float(look.get("dYaw", 0.0))
+    d_pitch = float(look.get("dPitch", 0.0))
+    fwd     = float(move.get("forward", 0.0))
+    strafe  = float(move.get("strafe", 0.0))
 
-    if kind in {"move_forward", "move_back"}:
-        dur = args.get("seconds", 0.2)
-        args["seconds"] = max(0.05, min(.5, float(dur)))
+    # Clamp to v0 schema limits
+    d_yaw   = max(-45.0, min(45.0, d_yaw))
+    d_pitch = max(-45.0, min(45.0, d_pitch))
+    fwd     = max(-1.0,  min(1.0,  fwd))
+    strafe  = max(-1.0,  min(1.0,  strafe))
 
-    if kind in {"turn_left", "turn_right"}:
-        deg = args.get("deg", 15)
-        args["deg"] = max(5, min(90, float(deg)))
+    msg["payload"] = {
+        "look": {"dYaw": d_yaw, "dPitch": d_pitch},
+        "move": {"forward": fwd, "strafe": strafe},
+        "jump": jump
+    }
 
-    msg["payload"] = {"kind": kind, "args": args}
     return msg
-
-

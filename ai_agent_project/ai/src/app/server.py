@@ -10,7 +10,7 @@ from typing import Any, Dict
 import contextlib
 
 #Server start time
-SERVER_START = time.time()
+SERVER_START_TS = time.time()
 
 # Ensure utils can be imported by appending the absolute utils path
 SRC = _pathlib.Path(__file__).resolve().parents[1] # ai/src
@@ -54,14 +54,15 @@ async def SendEvents(ws: WebSocketServerProtocol, kind: str, payload: dict) -> N
     await ws.send(json.dumps(msg))
 
 # Create a heartbeat that pings the server and checks for responsiveness
-async def HeartBeatLoop(ws, WebSocketServerProtocol, stop_evt: asyncio.Event):
+async def HeartBeatLoop(ws: WebSocketServerProtocol, stop_evt: asyncio.Event):
     try:
-        # Send a heartbeat immediately so watchdogs see the liveness right away
-        await SendEvents(ws, "heartbeat", {"uptime_s": time.time() - SERVER_START})
+        # emit one immediately so clients see liveness right away
+        await SendEvents(ws, "heartbeat", {"uptime_s": time.time() - SERVER_START_TS})
         while not stop_evt.is_set():
             await asyncio.sleep(2.0)
-            await SendEvents(ws, "heartbeat", {"uptime_s": time.time() - SERVER_START})
+            await SendEvents(ws, "heartbeat", {"uptime_s": time.time() - SERVER_START_TS})
     except (asyncio.CancelledError, ConnectionClosed, ConnectionClosedOK, ConnectionClosedError):
+        # normal shutdown/close
         pass
     except Exception as e:
         log.warning("heartbeat loop error", extra={"error": str(e)})
@@ -91,9 +92,9 @@ async def PolicyWorker(obs_q: asyncio.Queue, act_q: asyncio.Queue, drop_policy: 
 
             msg = {
                 "type": "action",
-                "timestamp": int(time.time()),
+                "timestamp": time.time(),
                 "seq": seq_out,
-                "schema": "v0",
+                "schema_version": "v0",
                 "payload": payload
             }
             
@@ -153,7 +154,7 @@ async def Handle(ws: WebSocketServerProtocol):
 
     # Add Heartbeat logic to Handle()
     stop_evt = asyncio.Event()
-    hp_task = asyncio.create_task(HeartBeatLoop(ws. stop_evt))
+    hb_task = asyncio.create_task(HeartBeatLoop(ws, stop_evt))
 
     # Add Policy Worker logic to handle
     policyTask = asyncio.create_task(
@@ -214,10 +215,12 @@ async def Handle(ws: WebSocketServerProtocol):
     except Exception:
         log.exception("unexpected error handling client", extra={"peer": peer})
     finally:
-        for t in (policyTask, senderTask):
+        stop_evt.set()
+        for t in (policyTask, senderTask, hb_task):
             t.cancel()
-            with contextlib.suppress(Exception):
-                await t
+        with contextlib.suppress(Exception):
+            await asyncio.gather(policyTask, senderTask, hb_task, return_exceptions=True)
+
 
 async def Main():
 
