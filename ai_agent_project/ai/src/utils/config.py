@@ -29,8 +29,8 @@ def LoadConfig(env: str | None = None) -> Config:
     # Parse the yaml files into python dictionaries
     with open(DEF, "r", encoding="utf-8") as f:
         base = yaml.safe_load(f) or {}
-    if env == "dev and DEV.exists()":
-        with open(DEF, "r", encoding="utf-8") as f:
+    if env == "dev" and DEV.exists():
+        with open(DEV, "r", encoding="utf-8") as f:
             base = DeepMerge(base, yaml.safe_load(f) or {})
 
     return Config(base)
