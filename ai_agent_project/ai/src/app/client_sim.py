@@ -80,28 +80,35 @@ async def main():
             try:
                 async for raw in ws:
                     try:
-                        evt = json.loads(raw)
+                        msg = json.loads(raw)
                     except json.JSONDecodeError:
                         print("<< (non-JSON):", raw)
                         continue
 
-                    kind = evt.get("kind")
-                    payload = evt.get("payload", {})
-                    if kind == "schema_mismatch" and isinstance(payload.get("reason"), str):
-                        print("<< EVENT schema_mismatch:")
-                        # Print the raw reason string so embedded \n render as real newlines
-                        print(payload["reason"])
+                    mtype = msg.get("type")
+                    if mtype == "event":
+                        kind = msg.get("kind")
+                        payload = msg.get("payload", {})
+                        if kind == "schema_mismatch" and isinstance(payload.get("reason"), str):
+                            print("<< EVENT schema_mismatch:")
+                            print(payload["reason"])  # raw string → nice multi-line output
+                        else:
+                            print(f"<< EVENT {kind}")
+                            print(json.dumps(payload, indent=2, ensure_ascii=False))
+
+                    elif mtype == "action":
+                        # Server→client actions (10 Hz) — print cleanly
+                        print("<< ACTION")
+                        print(json.dumps(msg.get("payload", {}), indent=2, ensure_ascii=False))
+
+                    elif mtype == "observation":
+                        # Unusual from server; just show briefly
+                        print("<< OBS (from server?)")
+                        print(json.dumps(msg.get("payload", {}), indent=2, ensure_ascii=False))
+
                     else:
-                        print(f"<< EVENT {kind}")
-                        print(pretty(payload))
-
-
-                    if kind == "ack":
-                        seq = payload.get("seq")
-                        if seq in rtt:
-                            ms = (now_s() - rtt.pop(seq)) * 1000
-                            print(f"   ↳ RTT for seq {seq}: {ms:.1f} ms")
-                            
+                        print("<< UNKNOWN MESSAGE")
+                        print(json.dumps(msg, indent=2, ensure_ascii=False))
             except Exception as e:
                 print("recv_loop error:", e)
 

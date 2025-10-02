@@ -21,8 +21,6 @@ from utils import config, logging
 
 from utils.config import LoadConfig
 from utils.logging import SetupLogging
-from actions.codec import ClampAction
-from policy.dummy import decide
 from policy_worker import PolicyWorker, QueueAdd
 
 log = stdlog.getLogger("bridge.server")
@@ -118,8 +116,10 @@ async def Handle(ws: WebSocketServerProtocol):
             act_schema=ACT,
             on_drop=lambda why: OnDropEvent(ws, "action", why, actQueue.qsize()),
             log=log,
+            emit_event=lambda kind, payload: SendEvents(ws, kind, payload),
         )
     )
+
     senderTask = asyncio.create_task(SendActions(ws, actQueue, log))
 
     try:
