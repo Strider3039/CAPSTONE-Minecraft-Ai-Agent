@@ -91,9 +91,9 @@ async def PolicyWorker(obs_q: asyncio.Queue, act_q: asyncio.Queue, drop_policy: 
 
             msg = {
                 "type": "action",
-                "timestamp": int(time.time() * 1000),
+                "timestamp": int(time.time()),
                 "seq": seq_out,
-                "schema": "v1",
+                "schema": "v0",
                 "payload": payload
             }
             
@@ -102,8 +102,12 @@ async def PolicyWorker(obs_q: asyncio.Queue, act_q: asyncio.Queue, drop_policy: 
                 validate(instance=msg, schema=act_schema)
             except ValidationError as e:
                 log.warning("outgoing action failed schema", extra={"error": str(e)})
-                # Keep going, don't send invalid actions
-                msg["payload"] = {"kind": "noop", "args": {}}
+                # Send safe idle/noop that matches action schema
+                msg["payload"] = {
+                    "look": {"dYaw": 0.0, "dPitch": 0.0},
+                    "move": {"forward": 0.0, "strafe": 0.0},
+                    "jump": False
+                }
             
             await QueueAdd(act_q, msg, drop_policy, on_drop)
             seq_out += 1
@@ -144,8 +148,14 @@ async def Handle(ws: WebSocketServerProtocol):
     obsQueue: asyncio.Queue = asyncio.Queue(maxsize=obsQueueSize)
     actQueue: asyncio.Queue = asyncio.Queue(maxsize=actQueueSize)
 
-    await SendEvents(ws, "connected", {"server": "ai-bridge", "version": "mvp1"})
+    # Not yet added to schema
+    # await SendEvents(ws, "connected", {"server": "ai-bridge", "version": "mvp1"})
 
+    # Add Heartbeat logic to Handle()
+    stop_evt = asyncio.Event()
+    hp_task = asyncio.create_task(HeartBeatLoop(ws. stop_evt))
+
+    # Add Policy Worker logic to handle
     policyTask = asyncio.create_task(
         PolicyWorker(
             obs_q=obsQueue,
