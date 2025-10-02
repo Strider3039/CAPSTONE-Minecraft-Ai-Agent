@@ -1,7 +1,7 @@
 from __future__ import annotations
 import asyncio, json, logging, os, time, pathlib
 from websockets.server import serve, WebSocketServerProtocol
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosed, ConnectionClosedOK, ConnectionClosedError
 from jsonschema import validate, ValidationError
 import sys
 import pathlib as _pathlib
@@ -9,7 +9,8 @@ import logging as stdlog
 from typing import Any, Dict
 import contextlib
 
-#test commit
+#Server start time
+SERVER_START = time.time()
 
 # Ensure utils can be imported by appending the absolute utils path
 SRC = _pathlib.Path(__file__).resolve().parents[1] # ai/src
@@ -51,6 +52,19 @@ async def SendEvents(ws: WebSocketServerProtocol, kind: str, payload: dict) -> N
     except ValidationError as e:
         log.warning("internal event failed schema", extra={"error": str(e), "kind": kind})
     await ws.send(json.dumps(msg))
+
+# Create a heartbeat that pings the server and checks for responsiveness
+async def HeartBeatLoop(ws, WebSocketServerProtocol, stop_evt: asyncio.Event):
+    try:
+        # Send a heartbeat immediately so watchdogs see the liveness right away
+        await SendEvents(ws, "heartbeat", {"uptime_s": time.time() - SERVER_START})
+        while not stop_evt.is_set():
+            await asyncio.sleep(2.0)
+            await SendEvents(ws, "heartbeat", {"uptime_s": time.time() - SERVER_START})
+    except (asyncio.CancelledError, ConnectionClosed, ConnectionClosedOK, ConnectionClosedError):
+        pass
+    except Exception as e:
+        log.warning("heartbeat loop error", extra={"error": str(e)})
 
 # Safe implementation of adding items to a queue
 async def QueueAdd(q: asyncio.Queue, item: Any, drop_policy: str, on_drop):
