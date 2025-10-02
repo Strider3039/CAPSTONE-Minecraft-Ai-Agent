@@ -2,6 +2,9 @@
 from __future__ import annotations
 import asyncio, json, time, contextlib
 import websockets
+from itertools import count
+
+PRINT_ACTIONS_EVERY_N = 10
 
 WS_URL = "ws://localhost:8765"
 
@@ -65,6 +68,7 @@ def action_v0(seq: int) -> dict:
 
 async def main():
     rtt = {}  # seq -> send_time
+    action_counter = count(1)
 
     async with websockets.connect(WS_URL) as ws:
         print(">> Connected to", WS_URL)
@@ -97,8 +101,10 @@ async def main():
                             print(json.dumps(payload, indent=2, ensure_ascii=False))
 
                     elif mtype == "action":
-                        # Server→client actions (10 Hz) — print cleanly
-                        print("<< ACTION")
+                        # print every Nth action only
+                        if PRINT_ACTIONS_EVERY_N and (next(action_counter) % PRINT_ACTIONS_EVERY_N != 0):
+                            continue
+                        print("<< ACTION (every 10th)")
                         print(json.dumps(msg.get("payload", {}), indent=2, ensure_ascii=False))
 
                     elif mtype == "observation":
