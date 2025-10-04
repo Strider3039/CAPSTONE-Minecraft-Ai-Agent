@@ -1,6 +1,5 @@
 package com.example.aiagent;
 
-
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.RegisterClientCommandsEvent;
 import net.minecraftforge.common.MinecraftForge;
@@ -12,6 +11,8 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
 
+
+@Mod(BotMod.MODID)
 public class BotMod {
     public static final String MODID = "ai_agent_bot";
 

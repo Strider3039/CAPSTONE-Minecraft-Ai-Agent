@@ -1,9 +1,13 @@
 pluginManagement {
     repositories {
-        gradlePluginPortal()                   // Default Gradle plugins repo
-        maven { url = "https://maven.minecraftforge.net" }  // Forge repo
-        mavenCentral()                         // Standard Java libraries repo
+        gradlePluginPortal()
+        maven {
+            name = 'MinecraftForge'
+            url = 'https://maven.minecraftforge.net/'
+        }
     }
 }
 
-rootProject.name = "ai_agent_bot"             // Name of your Gradle project
+plugins {
+    id 'org.gradle.toolchains.foojay-resolver-convention' version '0.10.0'
+}
