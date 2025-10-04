@@ -4,7 +4,7 @@ import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.RegisterClientCommandsEvent;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.TickEvent;
-import net.minecraftforge.eventbus.api.SubscribeEvent;
+import net.minecraftforge.eventbus.api.listener.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 
 import net.minecraft.client.Minecraft;
@@ -28,7 +28,7 @@ public class BotMod {
         }
     }
 
-    // Register /aibot command
+    // Register /aibot command2
     @SubscribeEvent
     public void onRegisterCommands(RegisterClientCommandsEvent event) {
         event.getDispatcher().register(
