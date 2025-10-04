@@ -129,6 +129,7 @@ publishing {
     }
 }
 
+// 👇 These were incorrectly inside publishing before, now they’re outside
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
 }
