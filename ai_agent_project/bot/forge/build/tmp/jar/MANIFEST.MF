@@ -1,0 +1,9 @@
+Manifest-Version: 1.0
+Specification-Title: ai_agent_bot
+Specification-Vendor: example
+Specification-Version: 1
+Implementation-Title: ai_agent_bot
+Implementation-Version: 1.0.0
+Implementation-Vendor: example
+Implementation-Timestamp: 2025-10-03T17:34:45-0700
+
