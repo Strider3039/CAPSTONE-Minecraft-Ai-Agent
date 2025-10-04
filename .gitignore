@@ -1,0 +1,52 @@
+# --- Gradle ---
+.gradle/
+**/build/
+!src/**/build.gradle
+!src/**/settings.gradle
+!build.gradle
+!settings.gradle
+!gradle.properties
+
+# Gradle local cache files
+**/gradle-app.setting
+**/gradle/wrapper/gradle-wrapper.properties
+**/gradle/wrapper/gradle-wrapper.jar
+
+# Forge run directories (local dev worlds, logs, etc.)
+**/run/
+**/run-data/
+
+# Generated resources (datagen)
+src/generated/
+src/generated/**
+
+# Logs
+*.log
+logs/
+
+# Java junk
+*.class
+*.jar
+*.war
+*.ear
+hs_err_pid*
+replay_pid*
+
+# IDEs / Editors
+# IntelliJ
+.idea/
+*.iml
+out/
+
+# Eclipse
+.project
+.classpath
+.settings/
+
+# VS Code
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
