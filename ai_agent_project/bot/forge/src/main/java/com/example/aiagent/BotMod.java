@@ -4,24 +4,22 @@ import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.RegisterClientCommandsEvent;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.TickEvent;
-import net.minecraftforge.eventbus.api.SubscribeEvent;
+import net.minecraftforge.eventbus.api.SubscribeEvent;   // this should exist in Forge 1.21.8
 import net.minecraftforge.fml.common.Mod;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
 
-
 @Mod(BotMod.MODID)
 public class BotMod {
     public static final String MODID = "ai_agent_bot";
 
     public BotMod() {
-        // Register events on the Forge event bus
         MinecraftForge.EVENT_BUS.register(this);
     }
 
-    // Test: print message on tick
+    // Print message every 10 seconds (200 ticks)
     @SubscribeEvent
     public void onClientTick(TickEvent.ClientTickEvent event) {
         Minecraft mc = Minecraft.getInstance();
@@ -30,7 +28,7 @@ public class BotMod {
         }
     }
 
-    // Register a simple /aibot command
+    // Register /aibot command
     @SubscribeEvent
     public void onRegisterCommands(RegisterClientCommandsEvent event) {
         event.getDispatcher().register(
