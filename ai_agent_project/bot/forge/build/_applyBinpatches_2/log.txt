@@ -2,7 +2,7 @@ Java Launcher: C:\Program Files\Eclipse Adoptium\jdk-21.0.2.13-hotspot\bin\java.
 Arguments: '--clean, C:\Users\Lemar encio\.gradle\caches\forge_gradle\mcp_repo\net\minecraft\joined\1.21.8-20250717.105350\joined-1.21.8-20250717.105350-srg.jar, --output, C:\Users\Lemar encio\.gradle\caches\forge_gradle\minecraft_user_repo\net\minecraftforge\forge\1.21.8-58.1.0\forge-1.21.8-58.1.0-binpatched.jar, --apply, C:\Users\Lemar encio\.gradle\caches\forge_gradle\minecraft_user_repo\net\minecraftforge\forge\1.21.8-58.1.0\forge-1.21.8-58.1.0-binpatches.lzma'
 Classpath:
  - C:\Users\Lemar encio\.gradle\caches\forge_gradle\maven_downloader\net\minecraftforge\binarypatcher\1.2.0\binarypatcher-1.2.0-fatjar.jar
-Working directory: C:\Users\Lemar encio\Desktop\CAPSTONE-Minecraft-Ai-Agent\ai_agent_project\bot\forge\build\_applyBinpatches_3
+Working directory: C:\Users\Lemar encio\Desktop\CAPSTONE-Minecraft-Ai-Agent\ai_agent_project\bot\forge\build\_applyBinpatches_2
 Main class: net.minecraftforge.binarypatcher.ConsoleTool
 ====================================
 Applying: 
