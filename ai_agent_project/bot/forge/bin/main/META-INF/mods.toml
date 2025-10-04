@@ -1,0 +1,26 @@
+modLoader="javafml"
+loaderVersion="[52,)"  # Forge 52.x is for MC 1.21.1
+license="MIT"
+
+[[mods]]
+modId="ai_agent_bot"                 # must match BotMod.MODID
+version="1.0.0"
+displayName="AI Agent Bot"
+authors="Lemar Joe Encio and Ethan Olsen"
+description='''
+AI Agent Bot Forge mod that connects Minecraft to the AI bridge.
+'''
+
+[[dependencies.ai_agent_bot]]
+    modId="forge"
+    mandatory=true
+    versionRange="[52,)"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.ai_agent_bot]]
+    modId="minecraft"
+    mandatory=true
+    versionRange="[1.21.1,)"
+    ordering="NONE"
+    side="BOTH"
