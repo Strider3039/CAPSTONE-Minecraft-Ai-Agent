@@ -57,11 +57,11 @@ sourceSets.main.resources { srcDir 'src/generated/resources' }
 repositories {
     mavenCentral()
     maven {
-        name = 'Forge'
+        name = 'Minecraft Forge'
         url = 'https://maven.minecraftforge.net'
     }
     maven {
-        name = 'Minecraft libraries'
+        name = 'Minecraft Libraries'
         url = 'https://libraries.minecraft.net'
     }
     exclusiveContent {
@@ -76,11 +76,22 @@ repositories {
 }
 
 dependencies {
-    // Forge + Minecraft 1.21.8
+    // Forge for Minecraft 1.21.8
     minecraft "net.minecraftforge:forge:1.21.8-58.1.0"
 
-    // EventBus validator (compile-time checks for @SubscribeEvent)
-    annotationProcessor 'net.minecraftforge:eventbus-validator:7.0-beta.10'
+    // Explicit EventBus dependency (makes @SubscribeEvent visible)
+    implementation "net.minecraftforge:eventbus:7.0-beta.11"
+    annotationProcessor "net.minecraftforge:eventbus:7.0-beta.11"
+
+    // EventBus validator (compile-time checks)
+    annotationProcessor "net.minecraftforge:eventbus-validator:7.0-beta.10"
+}
+
+
+// Ensure Forge's internal libs like eventbus are visible to the compiler
+configurations {
+    compileClasspath.extendsFrom(minecraft)
+    runtimeClasspath.extendsFrom(minecraft)
 }
 
 tasks.named('processResources', ProcessResources) {
@@ -122,6 +133,7 @@ publishing {
             artifact jar
         }
     }
+
     repositories {
         maven {
             url "file://${project.projectDir}/mcmodsrepo"
@@ -129,7 +141,12 @@ publishing {
     }
 }
 
-// 👇 These were incorrectly inside publishing before, now they’re outside
+// --- FIX: Make Forge dependencies visible to the compiler ---
+configurations {
+    implementation.extendsFrom minecraft
+}
+
+// IDE settings
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
 }
@@ -144,4 +161,10 @@ sourceSets.each {
     def dir = layout.buildDirectory.dir("sourcesSets/$it.name")
     it.output.resourcesDir = dir
     it.java.destinationDirectory = dir
+}
+
+// Ensure Forge and its modules are available to compileJava
+configurations {
+    compileClasspath.extendsFrom minecraft
+    runtimeClasspath.extendsFrom minecraft
 }
