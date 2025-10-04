@@ -79,12 +79,15 @@ dependencies {
     // Forge for Minecraft 1.21.8
     minecraft "net.minecraftforge:forge:1.21.8-58.1.0"
 
-    // Explicit EventBus dependency (makes @SubscribeEvent visible)
+    // Explicit EventBus dependency
     implementation "net.minecraftforge:eventbus:7.0-beta.11"
     annotationProcessor "net.minecraftforge:eventbus:7.0-beta.11"
 
-    // EventBus validator (compile-time checks)
+    // EventBus validator
     annotationProcessor "net.minecraftforge:eventbus-validator:7.0-beta.10"
+
+    // WebSocket client library
+    implementation 'org.java-websocket:Java-WebSocket:1.5.6'
 }
 
 
