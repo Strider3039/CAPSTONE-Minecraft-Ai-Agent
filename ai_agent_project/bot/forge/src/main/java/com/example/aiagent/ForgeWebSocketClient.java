@@ -37,55 +37,93 @@ public class ForgeWebSocketClient extends WebSocketClient {
 
         try {
             JsonObject json = BotMod.GSON.fromJson(message, JsonObject.class);
+            Minecraft mc = Minecraft.getInstance();
 
-            if (json.has("action")) {
-                String action = json.get("action").getAsString();
-                JsonObject params = json.has("params") ? json.get("params").getAsJsonObject() : new JsonObject();
-                Minecraft mc = Minecraft.getInstance();
+            mc.execute(() -> {
+                if (mc.player == null) return;
 
-                mc.execute(() -> {
-                    if (mc.player != null) {
-                        switch (action) {
-                            case "say":
-                                if (params.has("text")) {
-                                    String text = params.get("text").getAsString();
-                                    mc.player.displayClientMessage(Component.literal("[AI] " + text), false);
-                                }
-                                break;
+                // --- NEW: handle structured dummy.py messages ---
+                if (json.has("look") || json.has("move") || json.has("jump")) {
+                    handleStructuredAction(json, mc);
+                    return;
+                }
 
-                            case "move":
-                                double dx = params.has("dx") ? params.get("dx").getAsDouble() : 0.0;
-                                double dy = params.has("dy") ? params.get("dy").getAsDouble() : 0.0;
-                                double dz = params.has("dz") ? params.get("dz").getAsDouble() : 0.0;
-                                mc.player.setPos(
-                                    mc.player.getX() + dx,
-                                    mc.player.getY() + dy,
-                                    mc.player.getZ() + dz
-                                );
-                                break;
+                // --- existing flat action messages ---
+                if (json.has("action")) {
+                    String action = json.get("action").getAsString();
+                    JsonObject params = json.has("params") ? json.get("params").getAsJsonObject() : new JsonObject();
+                    handleSimpleAction(action, params, mc);
+                }
+            });
 
-                            case "look":
-                                float yaw = params.has("yaw") ? params.get("yaw").getAsFloat() : mc.player.getYRot();
-                                float pitch = params.has("pitch") ? params.get("pitch").getAsFloat() : mc.player.getXRot();
-                                mc.player.setYRot(yaw);
-                                mc.player.setXRot(pitch);
-                                break;
-
-                            case "debug":
-                                if (params.has("msg")) {
-                                    System.out.println("[AI-BOT DEBUG] " + params.get("msg").getAsString());
-                                }
-                                break;
-
-                            default:
-                                System.out.println("[AI-BOT] Unknown action: " + action);
-                                break;
-                        }
-                    }
-                });
-            }
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
+
+    private void handleStructuredAction(JsonObject json, Minecraft mc) {
+        // --- Handle "look" ---
+        if (json.has("look")) {
+            JsonObject look = json.getAsJsonObject("look");
+            float dYaw = look.has("dYaw") ? look.get("dYaw").getAsFloat() : 0f;
+            float dPitch = look.has("dPitch") ? look.get("dPitch").getAsFloat() : 0f;
+            mc.player.turn(dYaw, dPitch);
+        }
+
+        // --- Handle "move" ---
+        if (json.has("move")) {
+            JsonObject move = json.getAsJsonObject("move");
+            double forward = move.has("forward") ? move.get("forward").getAsDouble() : 0.0;
+            double strafe = move.has("strafe") ? move.get("strafe").getAsDouble() : 0.0;
+
+            // Use moveRelative to apply movement based on player's facing direction
+            float moveSpeed = 0.1f; // adjust for smoother or faster motion
+            mc.player.moveRelative(moveSpeed, new net.minecraft.world.phys.Vec3((float) strafe, 0.0, (float) forward));
+        }
+
+        // --- Handle "jump" ---
+        if (json.has("jump") && json.get("jump").getAsBoolean()) {
+            if (mc.player.onGround()) {  // method name updated in 1.21.x
+                mc.player.jumpFromGround();
+            }
+        }
+    }
+
+
+    private void handleSimpleAction(String action, JsonObject params, Minecraft mc) {
+        switch (action) {
+            case "say":
+                if (params.has("text")) {
+                    String text = params.get("text").getAsString();
+                    mc.player.displayClientMessage(Component.literal("[AI] " + text), false);
+                }
+                break;
+
+            case "move":
+                double dx = params.has("dx") ? params.get("dx").getAsDouble() : 0.0;
+                double dy = params.has("dy") ? params.get("dy").getAsDouble() : 0.0;
+                double dz = params.has("dz") ? params.get("dz").getAsDouble() : 0.0;
+                mc.player.setPos(mc.player.getX() + dx, mc.player.getY() + dy, mc.player.getZ() + dz);
+                break;
+
+            case "look":
+                float yaw = params.has("yaw") ? params.get("yaw").getAsFloat() : mc.player.getYRot();
+                float pitch = params.has("pitch") ? params.get("pitch").getAsFloat() : mc.player.getXRot();
+                mc.player.setYRot(yaw);
+                mc.player.setXRot(pitch);
+                break;
+
+            case "debug":
+                if (params.has("msg")) {
+                    System.out.println("[AI-BOT DEBUG] " + params.get("msg").getAsString());
+                }
+                break;
+
+            default:
+                System.out.println("[AI-BOT] Unknown action: " + action);
+                break;
+        }
+    }
+
+
 }

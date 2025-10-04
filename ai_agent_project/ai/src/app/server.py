@@ -147,6 +147,9 @@ async def Handle(ws: WebSocketServerProtocol):
                         on_drop=lambda why: OnDropEvent(ws, "observation", why, obsQueue.qsize())
                     )
                     
+                    # TEMP: immediately forward the observation to the dummy AI client
+                    await ws.send(json.dumps(msg))
+
                 elif myType == "action":
                     validate(instance=msg, schema=ACT)
                     log.info("valid action", extra={"seq": msg.get("seq")})
