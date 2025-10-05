@@ -5,15 +5,10 @@ import org.java_websocket.handshake.ServerHandshake;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
-
 import com.google.gson.JsonObject;
-
 import java.net.URI;
 
 public class ForgeWebSocketClient extends WebSocketClient {
-    private int reconnectAttempts = 0;
-    private static final int MAX_RECONNECTS = 5;
-
 
     public ForgeWebSocketClient(URI serverUri) {
         super(serverUri);
@@ -22,37 +17,34 @@ public class ForgeWebSocketClient extends WebSocketClient {
     @Override
     public void onOpen(ServerHandshake handshakedata) {
         System.out.println("[WS] Connected to AI bridge");
-        reconnectAttempts = 0;
     }
 
     @Override
     public void onClose(int code, String reason, boolean remote) {
         System.out.println("[WS] Connection closed: " + reason);
 
-        if (reconnectAttempts < MAX_RECONNECTS) {
-            reconnectAttempts++;
-            int attempt = reconnectAttempts;
-            new Thread(() -> {
+        // Persistent reconnect loop
+        new Thread(() -> {
+            while (true) {
                 try {
-                    System.out.println("[WS] Attempting reconnect " + attempt + "/" + MAX_RECONNECTS + "...");
-                    Thread.sleep(2000);
-                    this.reconnectBlocking();  // safer than reconnect()
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
+                    System.out.println("[WS] Attempting reconnect to AI bridge...");
+                    this.reconnectBlocking();  // safer synchronous reconnect
+                    System.out.println("[WS] Reconnected successfully!");
+                    break;
                 } catch (Exception e) {
-                    System.err.println("[WS] Reconnect attempt failed: " + e.getMessage());
+                    System.err.println("[WS] Reconnect failed: " + e.getMessage());
+                    try {
+                        Thread.sleep(5000); // wait 5 seconds before retrying
+                    } catch (InterruptedException ignored) {}
                 }
-            }).start();
-        } else {
-            System.out.println("[WS] Max reconnect attempts reached. Giving up.");
-        }
+            }
+        }).start();
     }
 
     @Override
     public void onError(Exception ex) {
         System.err.println("[WS ERROR] " + ex.getMessage());
     }
-
 
     @Override
     public void onMessage(String message) {
@@ -65,7 +57,6 @@ public class ForgeWebSocketClient extends WebSocketClient {
             mc.execute(() -> {
                 if (mc.player == null) return;
 
-                // --- Handle schema-wrapped actions ("type": "action") ---
                 if (json.has("type") && "action".equals(json.get("type").getAsString()) && json.has("payload")) {
                     JsonObject payload = json.getAsJsonObject("payload");
                     long seq = json.has("seq") ? json.get("seq").getAsLong() : -1;
@@ -74,11 +65,7 @@ public class ForgeWebSocketClient extends WebSocketClient {
                     Long sentTime = BotMod.getInstance().latencyMap.remove(seq);
                     if (sentTime != null) {
                         long latency = System.currentTimeMillis() - sentTime;
-
-                        // Print in terminal
                         System.out.println("[AI-BOT] Round-trip latency: " + latency + " ms");
-
-                        // Show in-game chat (non-intrusive)
                         mc.player.displayClientMessage(
                             Component.literal("[AI-BOT] Latency: " + latency + " ms"), true
                         );
@@ -88,7 +75,7 @@ public class ForgeWebSocketClient extends WebSocketClient {
                     return;
                 }
 
-                // --- Fallback for direct/flat action messages (old) ---
+                // --- Fallback for direct/flat action messages ---
                 if (json.has("action")) {
                     String action = json.get("action").getAsString();
                     JsonObject params = json.has("params") ? json.get("params").getAsJsonObject() : new JsonObject();
@@ -102,7 +89,6 @@ public class ForgeWebSocketClient extends WebSocketClient {
     }
 
     private void handleStructuredAction(JsonObject payload, Minecraft mc) {
-        // --- Handle look ---
         if (payload.has("look")) {
             JsonObject look = payload.getAsJsonObject("look");
             float dYaw = look.get("dYaw").getAsFloat();
@@ -110,17 +96,14 @@ public class ForgeWebSocketClient extends WebSocketClient {
             mc.player.turn(dYaw, dPitch);
         }
 
-        // --- Handle move ---
         if (payload.has("move")) {
             JsonObject move = payload.getAsJsonObject("move");
             double forward = move.get("forward").getAsDouble();
             double strafe = move.get("strafe").getAsDouble();
-
             float moveSpeed = 0.1f;
             mc.player.moveRelative(moveSpeed, new net.minecraft.world.phys.Vec3((float) strafe, 0.0, (float) forward));
         }
 
-        // --- Handle jump ---
         if (payload.has("jump") && payload.get("jump").getAsBoolean()) {
             if (mc.player.onGround()) {
                 mc.player.jumpFromGround();
@@ -162,6 +145,4 @@ public class ForgeWebSocketClient extends WebSocketClient {
                 break;
         }
     }
-
-
 }
