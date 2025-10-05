@@ -18,6 +18,17 @@ import com.google.gson.JsonObject;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 
+import net.minecraftforge.client.event.InputEvent;
+import net.minecraftforge.client.settings.KeyConflictContext;
+import net.minecraftforge.client.settings.KeyModifier;
+import net.minecraft.client.KeyMapping;
+import org.lwjgl.glfw.GLFW;
+
+import net.minecraftforge.client.event.InputEvent;
+import net.minecraftforge.client.event.RegisterKeyMappingsEvent;
+import com.mojang.blaze3d.platform.InputConstants;
+
+
 @Mod(BotMod.MODID)
 public class BotMod {
     public static final String MODID = "ai_agent_bot";
@@ -25,6 +36,10 @@ public class BotMod {
 
     private ForgeWebSocketClient wsClient;
     private boolean triedConnect = false;
+    private static final KeyMapping TOGGLE_KEY =
+        new KeyMapping("key.aibot.toggle", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_P, "key.categories.misc");
+
+    private boolean aiEnabled = true;  // start with AI control ON
 
     public BotMod() {
         MinecraftForge.EVENT_BUS.register(this);
@@ -34,7 +49,6 @@ public class BotMod {
     public void onClientTick(TickEvent.ClientTickEvent event) {
         Minecraft mc = Minecraft.getInstance();
 
-        // --- Connect once when player exists ---
         if (!triedConnect && mc.player != null) {
             triedConnect = true;
             try {
@@ -47,9 +61,18 @@ public class BotMod {
             }
         }
 
-        // --- Every ~10 seconds, send an observation if connected ---
-        if (event.phase == TickEvent.Phase.END && mc.player != null && mc.level != null) {
-            if (mc.level.getGameTime() % 1 == 0 && wsClient != null && wsClient.isOpen()) {
+        // --- Handle key toggle ---
+        if (TOGGLE_KEY.consumeClick()) {
+            aiEnabled = !aiEnabled;
+            Minecraft.getInstance().player.displayClientMessage(
+                Component.literal("AI control: " + (aiEnabled ? "ENABLED" : "DISABLED")),
+                true
+            );
+        }
+
+        // --- Only send observations when AI is enabled ---
+        if (aiEnabled && event.phase == TickEvent.Phase.END && mc.player != null && mc.level != null) {
+            if (mc.level.getGameTime() % 10 == 0 && wsClient != null && wsClient.isOpen()) {
                 sendObservation(mc);
             }
         }
@@ -109,5 +132,23 @@ public class BotMod {
                     return 1;
                 })
         );
+    }
+    @SubscribeEvent
+    public static void onRegisterKeyMappings(RegisterKeyMappingsEvent event) {
+        event.register(TOGGLE_KEY);
+    }
+
+    @SubscribeEvent
+    public void onKeyInput(InputEvent.Key event) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player == null) return;
+
+        if (TOGGLE_KEY.consumeClick()) {
+            aiEnabled = !aiEnabled;
+            mc.player.displayClientMessage(
+                Component.literal("[AI-BOT] AI " + (aiEnabled ? "ENABLED" : "DISABLED")), true
+            );
+            System.out.println("[AI-BOT] AI " + (aiEnabled ? "ENABLED" : "DISABLED"));
+        }
     }
 }
