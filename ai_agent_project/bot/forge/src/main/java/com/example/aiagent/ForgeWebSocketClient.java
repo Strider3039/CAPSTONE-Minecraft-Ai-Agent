@@ -11,6 +11,9 @@ import com.google.gson.JsonObject;
 import java.net.URI;
 
 public class ForgeWebSocketClient extends WebSocketClient {
+    private int reconnectAttempts = 0;
+    private static final int MAX_RECONNECTS = 5;
+
 
     public ForgeWebSocketClient(URI serverUri) {
         super(serverUri);
@@ -19,19 +22,43 @@ public class ForgeWebSocketClient extends WebSocketClient {
     @Override
     public void onOpen(ServerHandshake handshakedata) {
         System.out.println("[WS] Connected to AI bridge");
+        reconnectAttempts = 0;
     }
 
     @Override
     public void onClose(int code, String reason, boolean remote) {
         System.out.println("[WS] Connection closed: " + reason);
+
+        // Try to reconnect
+        if (reconnectAttempts < MAX_RECONNECTS) {
+            reconnectAttempts++;
+            System.out.println("[WS] Attempting reconnect " + reconnectAttempts + "/" + MAX_RECONNECTS + "...");
+            try {
+                Thread.sleep(2000); // wait 2 seconds
+                this.reconnect();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        } else {
+            System.out.println("[WS] Max reconnect attempts reached. Giving up.");
+        }
     }
 
     @Override
     public void onError(Exception ex) {
         System.err.println("[WS ERROR] WebSocket error: " + ex.getMessage());
         ex.printStackTrace();
-    }
 
+        if (!this.isOpen() && reconnectAttempts < MAX_RECONNECTS) {
+            System.out.println("[WS] Socket error, retrying connection...");
+            try {
+                Thread.sleep(2000);
+                this.reconnect();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
+    }
 
     @Override
     public void onMessage(String message) {
