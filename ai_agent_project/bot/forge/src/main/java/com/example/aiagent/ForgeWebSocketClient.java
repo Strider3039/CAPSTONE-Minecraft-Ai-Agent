@@ -29,16 +29,20 @@ public class ForgeWebSocketClient extends WebSocketClient {
     public void onClose(int code, String reason, boolean remote) {
         System.out.println("[WS] Connection closed: " + reason);
 
-        // Try to reconnect
         if (reconnectAttempts < MAX_RECONNECTS) {
             reconnectAttempts++;
-            System.out.println("[WS] Attempting reconnect " + reconnectAttempts + "/" + MAX_RECONNECTS + "...");
-            try {
-                Thread.sleep(2000); // wait 2 seconds
-                this.reconnect();
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
+            int attempt = reconnectAttempts;
+            new Thread(() -> {
+                try {
+                    System.out.println("[WS] Attempting reconnect " + attempt + "/" + MAX_RECONNECTS + "...");
+                    Thread.sleep(2000);
+                    this.reconnectBlocking();  // safer than reconnect()
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                } catch (Exception e) {
+                    System.err.println("[WS] Reconnect attempt failed: " + e.getMessage());
+                }
+            }).start();
         } else {
             System.out.println("[WS] Max reconnect attempts reached. Giving up.");
         }
@@ -46,19 +50,9 @@ public class ForgeWebSocketClient extends WebSocketClient {
 
     @Override
     public void onError(Exception ex) {
-        System.err.println("[WS ERROR] WebSocket error: " + ex.getMessage());
-        ex.printStackTrace();
-
-        if (!this.isOpen() && reconnectAttempts < MAX_RECONNECTS) {
-            System.out.println("[WS] Socket error, retrying connection...");
-            try {
-                Thread.sleep(2000);
-                this.reconnect();
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
-        }
+        System.err.println("[WS ERROR] " + ex.getMessage());
     }
+
 
     @Override
     public void onMessage(String message) {
@@ -74,6 +68,22 @@ public class ForgeWebSocketClient extends WebSocketClient {
                 // --- Handle schema-wrapped actions ("type": "action") ---
                 if (json.has("type") && "action".equals(json.get("type").getAsString()) && json.has("payload")) {
                     JsonObject payload = json.getAsJsonObject("payload");
+                    long seq = json.has("seq") ? json.get("seq").getAsLong() : -1;
+
+                    // --- Compute latency ---
+                    Long sentTime = BotMod.getInstance().latencyMap.remove(seq);
+                    if (sentTime != null) {
+                        long latency = System.currentTimeMillis() - sentTime;
+
+                        // Print in terminal
+                        System.out.println("[AI-BOT] Round-trip latency: " + latency + " ms");
+
+                        // Show in-game chat (non-intrusive)
+                        mc.player.displayClientMessage(
+                            Component.literal("[AI-BOT] Latency: " + latency + " ms"), true
+                        );
+                    }
+
                     handleStructuredAction(payload, mc);
                     return;
                 }

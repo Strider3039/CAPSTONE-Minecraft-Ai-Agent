@@ -27,15 +27,19 @@ import org.lwjgl.glfw.GLFW;
 import net.minecraftforge.client.event.InputEvent;
 import net.minecraftforge.client.event.RegisterKeyMappingsEvent;
 import com.mojang.blaze3d.platform.InputConstants;
-
+import java.util.concurrent.ConcurrentHashMap;
 
 @Mod(BotMod.MODID)
 public class BotMod {
+    // --- Singleton instance so ForgeWebSocketClient can access BotMod fields ---
+    private static BotMod INSTANCE;
+    public static BotMod getInstance() { return INSTANCE; }
     public static final String MODID = "ai_agent_bot";
     public static final Gson GSON = new GsonBuilder().create();
 
     private ForgeWebSocketClient wsClient;
     private boolean triedConnect = false;
+    public final ConcurrentHashMap<Long, Long> latencyMap = new ConcurrentHashMap<>();
     private static final KeyMapping TOGGLE_KEY =
         new KeyMapping("key.aibot.toggle", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_P, "key.categories.misc");
 
@@ -43,6 +47,7 @@ public class BotMod {
 
     public BotMod() {
         MinecraftForge.EVENT_BUS.register(this);
+        INSTANCE = this;
     }
 
     @SubscribeEvent
@@ -102,10 +107,13 @@ public class BotMod {
         payload.add("rays", rays);
         payload.add("hotbar", hotbar);
 
+        long seq = mc.level.getGameTime();
+        latencyMap.put(seq, System.currentTimeMillis()); // record when this observation was sent
+
         JsonObject observation = new JsonObject();
         observation.addProperty("type", "observation");
         observation.addProperty("schema_version", "v0");
-        observation.addProperty("seq", mc.level.getGameTime());
+        observation.addProperty("seq", seq);
         observation.addProperty("timestamp", System.currentTimeMillis() / 1000.0);
         observation.add("payload", payload);
 
@@ -113,6 +121,8 @@ public class BotMod {
         System.out.println("[AI-BOT] Sending observation: " + jsonMessage);
 
         if (wsClient != null && wsClient.isOpen()) {
+            long sendTime = System.currentTimeMillis();
+            latencyMap.put(mc.level.getGameTime(), sendTime);
             wsClient.send(jsonMessage);
         }
     }
