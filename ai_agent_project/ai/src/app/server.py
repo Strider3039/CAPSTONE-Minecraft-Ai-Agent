@@ -107,6 +107,7 @@ async def Handle(ws: WebSocketServerProtocol):
 
     obsQueue: asyncio.Queue = asyncio.Queue(maxsize=obsQueueSize)
     actQueue: asyncio.Queue = asyncio.Queue(maxsize=actQueueSize)
+
     # attach queues to this websocket so other clients can access them
     ws.obsQueue = obsQueue
     ws.actQueue = actQueue
@@ -216,9 +217,7 @@ async def Handle(ws: WebSocketServerProtocol):
         with contextlib.suppress(Exception):
             await asyncio.gather(policyTask, hb_task, return_exceptions=True) # await asyncio.gather(policyTask, senderTask, hb_task, return_exceptions=True)
 
-
 async def Main():
-
 
     cfg = LoadConfig(env=os.getenv("APP_ENV", "dev"))
     SetupLogging(cfg.logging["level"], cfg.logging.get("json", True))
