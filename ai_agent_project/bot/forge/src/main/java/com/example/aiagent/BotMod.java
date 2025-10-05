@@ -36,14 +36,15 @@ public class BotMod {
     public static BotMod getInstance() { return INSTANCE; }
     public static final String MODID = "ai_agent_bot";
     public static final Gson GSON = new GsonBuilder().create();
-
     private ForgeWebSocketClient wsClient;
     private boolean triedConnect = false;
     public final ConcurrentHashMap<Long, Long> latencyMap = new ConcurrentHashMap<>();
     private static final KeyMapping TOGGLE_KEY =
         new KeyMapping("key.aibot.toggle", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_P, "key.categories.misc");
-
     private boolean aiEnabled = true;  // start with AI control ON
+    private JsonObject lastAction = null;      // store most recent action payload
+    private long lastActionTime = 0;           // timestamp (ms) of last action received
+    private static final long ACTION_TIMEOUT_MS = 500; // how long before reusing action
 
     public BotMod() {
         MinecraftForge.EVENT_BUS.register(this);

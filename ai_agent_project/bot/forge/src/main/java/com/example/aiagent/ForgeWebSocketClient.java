@@ -9,6 +9,9 @@ import com.google.gson.JsonObject;
 import java.net.URI;
 
 public class ForgeWebSocketClient extends WebSocketClient {
+    private JsonObject lastAction = null;   // store last known valid action
+    private long lastActionTime = 0;        // timestamp (ms) of when it was received
+
 
     public ForgeWebSocketClient(URI serverUri) {
         super(serverUri);
@@ -59,6 +62,9 @@ public class ForgeWebSocketClient extends WebSocketClient {
 
                 if (json.has("type") && "action".equals(json.get("type").getAsString()) && json.has("payload")) {
                     JsonObject payload = json.getAsJsonObject("payload");
+                    // Save this as the last known action
+                    lastAction = payload.deepCopy();
+                    lastActionTime = System.currentTimeMillis();
                     long seq = json.has("seq") ? json.get("seq").getAsLong() : -1;
 
                     // --- Compute latency ---
@@ -143,6 +149,15 @@ public class ForgeWebSocketClient extends WebSocketClient {
             default:
                 System.out.println("[AI-BOT] Unknown action: " + action);
                 break;
+        }
+    }
+    public void repeatLastActionIfNeeded(Minecraft mc) {
+        if (lastAction == null) return;
+
+        long now = System.currentTimeMillis();
+        if (now - lastActionTime > 500 && now - lastActionTime < 3000) { 
+            // If more than 0.5s since last AI message but less than 3s old
+            handleStructuredAction(lastAction, mc);
         }
     }
 }
