@@ -9,6 +9,8 @@ import logging as stdlog
 from typing import Any, Dict
 import contextlib
 
+clients = set() #temp variable
+
 #Server start time
 SERVER_START_TS = time.time()
 
@@ -82,7 +84,13 @@ async def OnDropEvent(ws: WebSocketServerProtocol, kind: str, why: str, qsize: i
 
 # Handle the WebSocket connection
 async def Handle(ws: WebSocketServerProtocol):
-    
+    #Temp
+    global clients
+    clients.add(ws)
+    print("Client added:", ws.remote_address)
+    print("All connected clients:", [str(c.remote_address) for c in clients])
+
+
     # remote_address is a (host, port) tuple
     try:
         peer = f"{ws.remote_address[0]}:{ws.remote_address[1]}"
@@ -99,6 +107,10 @@ async def Handle(ws: WebSocketServerProtocol):
 
     obsQueue: asyncio.Queue = asyncio.Queue(maxsize=obsQueueSize)
     actQueue: asyncio.Queue = asyncio.Queue(maxsize=actQueueSize)
+    # attach queues to this websocket so other clients can access them
+    ws.obsQueue = obsQueue
+    ws.actQueue = actQueue
+
 
     # Not yet added to schema
     # await SendEvents(ws, "connected", {"server": "ai-bridge", "version": "mvp1"})
@@ -120,13 +132,12 @@ async def Handle(ws: WebSocketServerProtocol):
         )
     )
 
-    senderTask = asyncio.create_task(SendActions(ws, actQueue, log))
-
     try:
         # Start an async loop to receive messages
         async for raw in ws:
             log.debug("recv", extra={"bytes": len(raw)})
-            
+            print(f"[DEBUG] raw from {ws.remote_address}: {raw[:200]}")#Temp
+
             # Try to parse the incoming message as JSON
             try:
                 msg = json.loads(raw)
@@ -146,15 +157,38 @@ async def Handle(ws: WebSocketServerProtocol):
                         obsQueue, msg, dropPolicy,
                         on_drop=lambda why: OnDropEvent(ws, "observation", why, obsQueue.qsize())
                     )
-                    
                     # TEMP: immediately forward the observation to the dummy AI client
-                    await ws.send(json.dumps(msg))
+                    print("Connected clients:", [str(c.remote_address) for c in clients])
+                    for client in list(clients):
+                        if client is not ws and not client.closed:
+                            try:
+                                await client.send(json.dumps(msg))
+                                print("[SERVER] Forwarded observation to:", client.remote_address)
+
+                                # NEW: feed this observation into the other client’s queue
+                                if hasattr(client, "obsQueue"):
+                                    try:
+                                        client.obsQueue.put_nowait(msg)
+                                    except asyncio.QueueFull:
+                                        pass
+                            except Exception as e:
+                                print("[SERVER] Failed to send to", client.remote_address, ":", e)
 
                 elif myType == "action":
                     validate(instance=msg, schema=ACT)
                     log.info("valid action", extra={"seq": msg.get("seq")})
                     await SendEvents(ws, "ack", {"seq": msg.get("seq")})
-                    
+
+                    # TEMP: broadcast to all other clients (e.g., dummy AI)
+                    print("Connected clients:", [str(c.remote_address) for c in clients])
+                    for client in list(clients):
+                        if client is not ws and not client.closed:
+                            try:
+                                await client.send(json.dumps(msg))
+                                print("Forwarded observation to dummy:", msg)
+                            except Exception as e:
+                                print("Failed to send to", client.remote_address, ":", e)
+                                    
                 elif myType == "event":
                     validate(instance=msg, schema=EVT)
                     log.info("valid event", extra={"kind": msg.get("kind")})
@@ -171,14 +205,20 @@ async def Handle(ws: WebSocketServerProtocol):
     except Exception:
         log.exception("unexpected error handling client", extra={"peer": peer})
     finally:
+        #temp
+        clients.discard(ws)
+        print("Client disconnected:", ws.remote_address)
+        print("Remaining clients:", [str(c.remote_address) for c in clients])
+
         stop_evt.set()
-        for t in (policyTask, senderTask, hb_task):
+        for t in (policyTask, hb_task): #Temp deleted sender task : for t in (policyTask, senderTask, hb_task):
             t.cancel()
         with contextlib.suppress(Exception):
-            await asyncio.gather(policyTask, senderTask, hb_task, return_exceptions=True)
+            await asyncio.gather(policyTask, hb_task, return_exceptions=True) # await asyncio.gather(policyTask, senderTask, hb_task, return_exceptions=True)
 
 
 async def Main():
+
 
     cfg = LoadConfig(env=os.getenv("APP_ENV", "dev"))
     SetupLogging(cfg.logging["level"], cfg.logging.get("json", True))

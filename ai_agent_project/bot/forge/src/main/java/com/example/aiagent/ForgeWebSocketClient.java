@@ -28,8 +28,10 @@ public class ForgeWebSocketClient extends WebSocketClient {
 
     @Override
     public void onError(Exception ex) {
+        System.err.println("[WS ERROR] WebSocket error: " + ex.getMessage());
         ex.printStackTrace();
     }
+
 
     @Override
     public void onMessage(String message) {
@@ -42,13 +44,14 @@ public class ForgeWebSocketClient extends WebSocketClient {
             mc.execute(() -> {
                 if (mc.player == null) return;
 
-                // --- NEW: handle structured dummy.py messages ---
-                if (json.has("look") || json.has("move") || json.has("jump")) {
-                    handleStructuredAction(json, mc);
+                // --- Handle schema-wrapped actions ("type": "action") ---
+                if (json.has("type") && "action".equals(json.get("type").getAsString()) && json.has("payload")) {
+                    JsonObject payload = json.getAsJsonObject("payload");
+                    handleStructuredAction(payload, mc);
                     return;
                 }
 
-                // --- existing flat action messages ---
+                // --- Fallback for direct/flat action messages (old) ---
                 if (json.has("action")) {
                     String action = json.get("action").getAsString();
                     JsonObject params = json.has("params") ? json.get("params").getAsJsonObject() : new JsonObject();
@@ -61,34 +64,32 @@ public class ForgeWebSocketClient extends WebSocketClient {
         }
     }
 
-    private void handleStructuredAction(JsonObject json, Minecraft mc) {
-        // --- Handle "look" ---
-        if (json.has("look")) {
-            JsonObject look = json.getAsJsonObject("look");
-            float dYaw = look.has("dYaw") ? look.get("dYaw").getAsFloat() : 0f;
-            float dPitch = look.has("dPitch") ? look.get("dPitch").getAsFloat() : 0f;
+    private void handleStructuredAction(JsonObject payload, Minecraft mc) {
+        // --- Handle look ---
+        if (payload.has("look")) {
+            JsonObject look = payload.getAsJsonObject("look");
+            float dYaw = look.get("dYaw").getAsFloat();
+            float dPitch = look.get("dPitch").getAsFloat();
             mc.player.turn(dYaw, dPitch);
         }
 
-        // --- Handle "move" ---
-        if (json.has("move")) {
-            JsonObject move = json.getAsJsonObject("move");
-            double forward = move.has("forward") ? move.get("forward").getAsDouble() : 0.0;
-            double strafe = move.has("strafe") ? move.get("strafe").getAsDouble() : 0.0;
+        // --- Handle move ---
+        if (payload.has("move")) {
+            JsonObject move = payload.getAsJsonObject("move");
+            double forward = move.get("forward").getAsDouble();
+            double strafe = move.get("strafe").getAsDouble();
 
-            // Use moveRelative to apply movement based on player's facing direction
-            float moveSpeed = 0.1f; // adjust for smoother or faster motion
+            float moveSpeed = 0.1f;
             mc.player.moveRelative(moveSpeed, new net.minecraft.world.phys.Vec3((float) strafe, 0.0, (float) forward));
         }
 
-        // --- Handle "jump" ---
-        if (json.has("jump") && json.get("jump").getAsBoolean()) {
-            if (mc.player.onGround()) {  // method name updated in 1.21.x
+        // --- Handle jump ---
+        if (payload.has("jump") && payload.get("jump").getAsBoolean()) {
+            if (mc.player.onGround()) {
                 mc.player.jumpFromGround();
             }
         }
     }
-
 
     private void handleSimpleAction(String action, JsonObject params, Minecraft mc) {
         switch (action) {

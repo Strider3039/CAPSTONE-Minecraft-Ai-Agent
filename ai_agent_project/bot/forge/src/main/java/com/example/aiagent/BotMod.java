@@ -13,10 +13,10 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
-
 
 @Mod(BotMod.MODID)
 public class BotMod {
@@ -24,36 +24,67 @@ public class BotMod {
     public static final Gson GSON = new GsonBuilder().create();
 
     private ForgeWebSocketClient wsClient;
+    private boolean triedConnect = false;
 
     public BotMod() {
         MinecraftForge.EVENT_BUS.register(this);
-        try {
-            wsClient = new ForgeWebSocketClient(new URI("ws://localhost:8080")); // update server address if needed
-            wsClient.connect();
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
     }
 
     @SubscribeEvent
     public void onClientTick(TickEvent.ClientTickEvent event) {
         Minecraft mc = Minecraft.getInstance();
+
+        // --- Connect once when player exists ---
+        if (!triedConnect && mc.player != null) {
+            triedConnect = true;
+            try {
+                wsClient = new ForgeWebSocketClient(new URI("ws://127.0.0.1:8765"));
+                wsClient.connect();
+                System.out.println("[AI-BOT] Attempting to connect...");
+            } catch (Exception e) {
+                System.err.println("[AI-BOT] Failed to connect to WebSocket:");
+                e.printStackTrace();
+            }
+        }
+
+        // --- Every ~10 seconds, send an observation if connected ---
         if (event.phase == TickEvent.Phase.END && mc.player != null && mc.level != null) {
-            if (mc.level.getGameTime() % 200 == 0) { // every 200 ticks (~10s)
+            if (mc.level.getGameTime() % 1 == 0 && wsClient != null && wsClient.isOpen()) {
                 sendObservation(mc);
             }
         }
     }
 
     private void sendObservation(Minecraft mc) {
+        JsonObject pos = new JsonObject();
+        pos.addProperty("x", mc.player.getX());
+        pos.addProperty("y", mc.player.getY());
+        pos.addProperty("z", mc.player.getZ());
+
+        JsonObject pose = new JsonObject();
+        pose.add("pos", pos);
+        pose.addProperty("yaw", mc.player.getYRot());
+        pose.addProperty("pitch", mc.player.getXRot());
+
+        JsonArray rays = new JsonArray();
+        rays.add(1.0);
+        rays.add(0.8);
+        rays.add(0.7);
+
+        JsonArray hotbar = new JsonArray();
+        for (int i = 0; i < 9; i++) hotbar.add((String) null);
+
+        JsonObject payload = new JsonObject();
+        payload.add("pose", pose);
+        payload.add("rays", rays);
+        payload.add("hotbar", hotbar);
+
         JsonObject observation = new JsonObject();
-        observation.addProperty("event", "observation");
-        observation.addProperty("timestamp", System.currentTimeMillis());
-        observation.addProperty("player_name", mc.player.getName().getString());
-        observation.addProperty("health", mc.player.getHealth());
-        observation.addProperty("x", mc.player.getX());
-        observation.addProperty("y", mc.player.getY());
-        observation.addProperty("z", mc.player.getZ());
+        observation.addProperty("type", "observation");
+        observation.addProperty("schema_version", "v0");
+        observation.addProperty("seq", mc.level.getGameTime());
+        observation.addProperty("timestamp", System.currentTimeMillis() / 1000.0);
+        observation.add("payload", payload);
 
         String jsonMessage = GSON.toJson(observation);
         System.out.println("[AI-BOT] Sending observation: " + jsonMessage);
