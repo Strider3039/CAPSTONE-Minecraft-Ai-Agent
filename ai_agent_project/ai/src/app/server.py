@@ -90,7 +90,6 @@ async def Handle(ws: WebSocketServerProtocol):
     print("Client added:", ws.remote_address)
     print("All connected clients:", [str(c.remote_address) for c in clients])
 
-
     # remote_address is a (host, port) tuple
     try:
         peer = f"{ws.remote_address[0]}:{ws.remote_address[1]}"
@@ -113,8 +112,8 @@ async def Handle(ws: WebSocketServerProtocol):
     ws.actQueue = actQueue
 
 
-    # Not yet added to schema
-    # await SendEvents(ws, "connected", {"server": "ai-bridge", "version": "mvp1"})
+
+    await SendEvents(ws, "connected", {"server": "ai-bridge", "version": "mvp1"})
 
     # Add Heartbeat logic to Handle()
     stop_evt = asyncio.Event()
