@@ -6,6 +6,9 @@
 !build.gradle
 !settings.gradle
 !gradle.properties
+# Optional: ignore Gradle problem reports and logs explicitly
+build/reports/
+build/tmp/
 
 # Gradle local cache files
 **/gradle-app.setting
