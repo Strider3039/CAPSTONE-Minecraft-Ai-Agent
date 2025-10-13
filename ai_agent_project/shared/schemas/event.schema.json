@@ -1,89 +1,25 @@
 {
-  "$schema": "https://json-schema.org/draft-07/schema",
-  "title": "Event v0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AI Agent Event v1",
   "type": "object",
-  "required": ["type", "timestamp", "schema_version", "kind", "payload"],
+  "required": ["proto", "kind"],
   "properties": {
-    "type": { "const": "event" },
-    "schema_version": { "const": "v0" },
-    "timestamp": { "type": "number" },
+    "proto": { "type": "string", "const": "1.0" },
     "kind": {
       "type": "string",
-      "enum": ["ack", "schema_mismatch", "heartbeat", "latency_stats", "policy_error", "connected", "dropped"]
+      "enum": ["action_result", "bridge_health"]
     },
-    "payload": { "type": "object" }
+    "seq": { "type": "integer" },
+    "action": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": ["success", "fail", "cooldown"]
+    },
+    "reason": { "type": "string" },
+    "latency_ms": { "type": "integer", "minimum": 0 },
+    "level": { "type": "string", "enum": ["info", "warn", "error"] },
+    "detail": { "type": "string" },
+    "timestamp": { "type": "number" }
   },
-  "additionalProperties": false,
-  "$defs": {
-    "ack": {
-      "type": "object",
-      "required": ["seq"],
-      "properties": { "seq": { "type": "integer", "minimum": 0 } },
-      "additionalProperties": false
-    },
-    "schema_mismatch": {
-      "type": "object",
-      "required": ["reason"],
-      "properties": { "reason": { "type": "string" } },
-      "additionalProperties": true
-    },
-    "heartbeat": {
-      "type": "object",
-      "required": ["uptime_s"],
-      "properties": { "uptime_s": { "type": "number", "minimum": 0 } },
-      "additionalProperties": false
-    },
-    "latency_stats": {
-      "type": "object",
-      "required": ["p50_ms", "p90_ms", "hz"],
-      "properties": {
-        "p50_ms": { "type": "number", "minimum": 0 },
-        "p90_ms": { "type": "number", "minimum": 0 },
-        "hz": { "type": "number", "minimum": 0 }
-      },
-      "additionalProperties": false
-    },
-    "policy_error": {
-      "type": "object",
-      "required": ["error"],
-      "properties": { "error": { "type": "string" } },
-      "additionalProperties": true
-    },
-    "connected": {
-      "type": "object",
-      "required": ["server", "version"],
-      "properties": {
-        "server": { "type": "string" },
-        "version": { "type": "string" }
-      },
-      "additionalProperties": false
-    },
-    "dropped": {
-      "type": "object",
-      "required": ["kind", "policy", "qsize"],
-      "properties": {
-        "kind":   { "type": "string" },
-        "policy": { "type": "string", "enum": ["oldest", "newest", "block"] },
-        "qsize":  { "type": "integer", "minimum": 0 }
-      },
-      "additionalProperties": false
-    }
-  },
-  "allOf": [
-    { "if": { "properties": { "kind": { "const": "ack" } } }, 
-      "then": { "properties": { "payload": { "$ref": "#/$defs/ack" } } } },
-    { "if": { "properties": { "kind": { "const": "schema_mismatch" } } }, 
-      "then": { "properties": { "payload": { "$ref": "#/$defs/schema_mismatch" } } } },
-    { "if": { "properties": { "kind": { "const": "heartbeat" } } }, 
-      "then": { "properties": { "payload": { "$ref": "#/$defs/heartbeat" } } } },
-    { "if": { "properties": { "kind": { "const": "latency_stats" } } }, 
-      "then": { "properties": { "payload": { "$ref": "#/$defs/latency_stats" } } } },
-    { "if": { "properties": { "kind": { "const": "policy_error" } } }, 
-      "then": { "properties": { "payload": { "$ref": "#/$defs/policy_error" } } } },
-    { "if": { "properties": { "kind": { "const": "connected" } } },
-      "then": { "properties": { "payload": { "$ref": "#/$defs/connected" } } } },
-    { "if": { "properties": { "kind": { "const": "dropped" } } },
-      "then": { "properties": { "payload": { "$ref": "#/$defs/dropped" } } } }
-
-  ]
+  "additionalProperties": false
 }

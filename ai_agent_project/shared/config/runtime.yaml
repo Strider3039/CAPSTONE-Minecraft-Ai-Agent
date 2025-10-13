@@ -1,0 +1,14 @@
+policy:
+  tick_hz: 12
+  budget_ms: 80
+  action_rates:
+    look_hz: 15
+    move_hz: 10
+    interact_cooldown_ms: 500
+
+raycasts:
+  count: 5
+  max_dist: 6.0
+  fov_deg: 30
+
+worker_tasks: 1

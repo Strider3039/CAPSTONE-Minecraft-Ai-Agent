@@ -1,40 +1,38 @@
 {
-  "$schema": "https://json-schema.org/draft-07/schema",
-  "title": "Action v0",
-  "description": "Control-style actions for the game client.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AI Agent Action v1",
   "type": "object",
-  "required": ["type", "timestamp", "seq", "schema_version", "payload"],
+  "required": ["proto", "kind", "seq", "payload"],
   "properties": {
-    "type": { "const": "action" },
-    "schema_version": { "const": "v0" },
-    "timestamp": { "type": "number" },
+    "proto": { "type": "string", "const": "1.0" },
+    "kind": { "type": "string", "const": "action" },
     "seq": { "type": "integer", "minimum": 0 },
+    "timestamp": { "type": "number" },
     "payload": {
       "type": "object",
-      "required": ["look", "move", "jump"],
       "properties": {
         "look": {
           "type": "object",
-          "required": ["dYaw", "dPitch"],
           "properties": {
-            "dYaw": { "type": "number", "minimum": -45, "maximum": 45 },
-            "dPitch": { "type": "number", "minimum": -45, "maximum": 45 }
-          },
-          "additionalProperties": false
+            "dYaw": { "type": "number" },
+            "dPitch": { "type": "number" }
+          }
         },
         "move": {
           "type": "object",
-          "required": ["forward", "strafe"],
           "properties": {
-            "forward": { "type": "number", "minimum": -1, "maximum": 1 },
-            "strafe":  { "type": "number", "minimum": -1, "maximum": 1 }
-          },
-          "additionalProperties": false
+            "forward": { "type": "number" },
+            "strafe": { "type": "number" }
+          }
         },
-        "jump": { "type": "boolean" }
+        "jump": { "type": "boolean" },
+        "sneak": { "type": "boolean" },
+        "attack": { "type": "boolean" },
+        "use": { "type": "boolean" },
+        "place": { "type": "boolean" },
+        "select_slot": { "type": "integer", "minimum": 0, "maximum": 8 }
       },
       "additionalProperties": false
     }
-  },
-  "additionalProperties": false
+  }
 }

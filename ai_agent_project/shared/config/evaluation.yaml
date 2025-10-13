@@ -1,0 +1,6 @@
+worlds: ["flat_clear"]
+trials_per_world: 20
+success_dist_threshold: 1.0
+no_progress_ticks: 30
+max_steps: 1200
+report_dir: "reports"

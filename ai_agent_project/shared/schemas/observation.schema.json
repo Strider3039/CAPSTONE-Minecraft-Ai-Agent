@@ -1,52 +1,91 @@
 {
-  "$schema": "https://json-schema.org/draft-07/schema",
-  "title": "Observation v0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AI Agent Observation v1",
   "type": "object",
-  "description": "Observations acquired from the game client",
-  "required": ["type", "timestamp", "seq", "schema_version", "payload"],
+  "required": ["proto", "kind", "seq", "payload"],
   "properties": {
-    "type": { "const": "observation" },
-    "schema_version": { "const": "v0" },
-    "timestamp": { "type": "number" },
+    "proto": { "type": "string", "const": "1.0" },
+    "kind": { "type": "string", "const": "observation" },
     "seq": { "type": "integer", "minimum": 0 },
+    "timestamp": { "type": "number" },
     "payload": {
       "type": "object",
-      "required": ["pose", "rays", "hotbar"],
+      "required": ["pose", "rays", "entities", "world", "inventory", "collision"],
       "properties": {
         "pose": {
           "type": "object",
-          "required": ["pos", "yaw", "pitch"],
+          "required": ["x", "y", "z", "yaw", "pitch"],
           "properties": {
-            "pos": {
-              "type": "object",
-              "required": ["x", "y", "z"],
-              "properties": {
-                "x": { "type": "number" },
-                "y": { "type": "number" },
-                "z": { "type": "number" }
-              },
-              "additionalProperties": false
-            },
+            "x": { "type": "number" },
+            "y": { "type": "number" },
+            "z": { "type": "number" },
             "yaw": { "type": "number" },
             "pitch": { "type": "number" }
-          },
-          "additionalProperties": false
+          }
         },
         "rays": {
           "type": "array",
-          "items": { "type": "number", "minimum": 0 },
-          "minItems": 3,
-          "maxItems": 5
+          "items": {
+            "type": "object",
+            "required": ["hit", "dist"],
+            "properties": {
+              "hit": { "type": "boolean" },
+              "dist": { "type": "number", "minimum": 0 }
+            }
+          }
         },
-        "hotbar": {
+        "entities": {
           "type": "array",
-          "items": { "type": ["string", "null"] },
-          "minItems": 9,
-          "maxItems": 9
+          "items": {
+            "type": "object",
+            "required": ["id", "type", "dist"],
+            "properties": {
+              "id": { "type": "integer" },
+              "type": { "type": "string" },
+              "dist": { "type": "number", "minimum": 0 },
+              "tags": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        "world": {
+          "type": "object",
+          "required": ["time_of_day", "weather", "biome"],
+          "properties": {
+            "time_of_day": { "type": "integer" },
+            "weather": { "type": "string", "enum": ["clear", "rain", "thunder"] },
+            "biome": { "type": "string" }
+          }
+        },
+        "inventory": {
+          "type": "object",
+          "required": ["selected_slot", "hotbar"],
+          "properties": {
+            "selected_slot": { "type": "integer", "minimum": 0, "maximum": 8 },
+            "hotbar": {
+              "type": "array",
+              "minItems": 9,
+              "maxItems": 9,
+              "items": {
+                "type": "object",
+                "required": ["id", "count"],
+                "properties": {
+                  "id": { "type": "string" },
+                  "count": { "type": "integer", "minimum": 0 }
+                }
+              }
+            }
+          }
+        },
+        "collision": {
+          "type": "object",
+          "required": ["is_grounded", "is_colliding", "no_progress"],
+          "properties": {
+            "is_grounded": { "type": "boolean" },
+            "is_colliding": { "type": "boolean" },
+            "no_progress": { "type": "boolean" }
+          }
         }
-      },
-      "additionalProperties": false
+      }
     }
-  },
-  "additionalProperties": false
+  }
 }

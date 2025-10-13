@@ -2,6 +2,7 @@ package com.example.aiagent;
 
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.RegisterClientCommandsEvent;
+import net.minecraftforge.client.event.RegisterKeyMappingsEvent;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.eventbus.api.listener.SubscribeEvent;
@@ -10,6 +11,7 @@ import net.minecraftforge.fml.common.Mod;
 import java.net.URI;
 
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.KeyMapping;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
 
@@ -18,33 +20,34 @@ import com.google.gson.JsonObject;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 
-import net.minecraftforge.client.event.InputEvent;
-import net.minecraftforge.client.settings.KeyConflictContext;
-import net.minecraftforge.client.settings.KeyModifier;
-import net.minecraft.client.KeyMapping;
+import com.mojang.blaze3d.platform.InputConstants;
 import org.lwjgl.glfw.GLFW;
 
-import net.minecraftforge.client.event.InputEvent;
-import net.minecraftforge.client.event.RegisterKeyMappingsEvent;
-import com.mojang.blaze3d.platform.InputConstants;
+import java.net.URI;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Mod(BotMod.MODID)
 public class BotMod {
-    // --- Singleton instance so ForgeWebSocketClient can access BotMod fields ---
+
+
+    public static final String MODID = "ai_agent_bot";
     private static BotMod INSTANCE;
     public static BotMod getInstance() { return INSTANCE; }
-    public static final String MODID = "ai_agent_bot";
+
     public static final Gson GSON = new GsonBuilder().create();
     private ForgeWebSocketClient wsClient;
     private boolean triedConnect = false;
+
     public final ConcurrentHashMap<Long, Long> latencyMap = new ConcurrentHashMap<>();
+
     private static final KeyMapping TOGGLE_KEY =
         new KeyMapping("key.aibot.toggle", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_P, "key.categories.misc");
-    private boolean aiEnabled = true;  // start with AI control ON
-    private JsonObject lastAction = null;      // store most recent action payload
-    private long lastActionTime = 0;           // timestamp (ms) of last action received
-    private static final long ACTION_TIMEOUT_MS = 500; // how long before reusing action
+
+    private boolean aiEnabled = true;
+    private long lastSendMs = 0;
+    private static final long MIN_SEND_INTERVAL_MS = 70; // safety limit (~14 Hz)
+    private long reconnectCount = 0;
+    private long droppedCount = 0;
 
     public BotMod() {
         MinecraftForge.EVENT_BUS.register(this);
@@ -53,16 +56,24 @@ public class BotMod {
 
     @SubscribeEvent
     public void onClientTick(TickEvent.ClientTickEvent event) {
+        if (event.phase != TickEvent.Phase.END) return;
         Minecraft mc = Minecraft.getInstance();
+        if (mc.player == null) return;
 
-        if (!triedConnect && mc.player != null) {
+        // one-time connect
+        if (!triedConnect) {
             triedConnect = true;
             try {
                 wsClient = new ForgeWebSocketClient(new URI("ws://127.0.0.1:8765"));
                 wsClient.connect();
-                System.out.println("[AI-BOT] Attempting to connect...");
+                wsClient.setOnReconnect(() -> {
+                    reconnectCount++;
+                    System.out.println("[AI-BOT] Reconnected (" + reconnectCount + ")");
+                    sendObservation(mc); // resync snapshot
+                });
+                System.out.println("[AI-BOT] Connecting to AI bridge…");
             } catch (Exception e) {
-                System.err.println("[AI-BOT] Failed to connect to WebSocket:");
+                System.err.println("[AI-BOT] Failed to connect:");
                 e.printStackTrace();
             }
         }
@@ -70,61 +81,121 @@ public class BotMod {
         // --- Handle key toggle ---
         if (TOGGLE_KEY.consumeClick()) {
             aiEnabled = !aiEnabled;
-            Minecraft.getInstance().player.displayClientMessage(
-                Component.literal("AI control: " + (aiEnabled ? "ENABLED" : "DISABLED")),
-                true
-            );
+            mc.player.displayClientMessage(
+                Component.literal("[AI-BOT] AI " + (aiEnabled ? "ENABLED" : "DISABLED")), true);
         }
 
-        // --- Only send observations when AI is enabled ---
-        if (aiEnabled && event.phase == TickEvent.Phase.END && mc.player != null && mc.level != null) {
-            if (mc.level.getGameTime() % 10 == 0 && wsClient != null && wsClient.isOpen()) {
+        // send observations when AI is enabled
+        if (aiEnabled && wsClient != null && wsClient.isOpen()) {
+            long now = System.currentTimeMillis();
+            int hz = 12; // configurable later via ModConfig
+            long intervalMs = 1000L / hz;
+            if (now - lastSendMs >= intervalMs) {
                 sendObservation(mc);
+                lastSendMs = now;
             }
         }
     }
 
+
+    // ───────────────────────────── Observation ─────────────────────────────
     private void sendObservation(Minecraft mc) {
-        JsonObject pos = new JsonObject();
-        pos.addProperty("x", mc.player.getX());
-        pos.addProperty("y", mc.player.getY());
-        pos.addProperty("z", mc.player.getZ());
+        var p = mc.player;
+        var level = mc.level;
+        if (p == null || level == null) return;
 
         JsonObject pose = new JsonObject();
-        pose.add("pos", pos);
-        pose.addProperty("yaw", mc.player.getYRot());
-        pose.addProperty("pitch", mc.player.getXRot());
+        pose.addProperty("x", p.getX());
+        pose.addProperty("y", p.getY());
+        pose.addProperty("z", p.getZ());
+        pose.addProperty("yaw", p.getYRot());
+        pose.addProperty("pitch", p.getXRot());
 
+        // ── Raycasts ──
         JsonArray rays = new JsonArray();
-        rays.add(1.0);
-        rays.add(0.8);
-        rays.add(0.7);
+        int rayCount = 7;
+        double fov = 60.0;
+        double maxDist = 6.0;
+        for (int i = 0; i < rayCount; i++) {
+            double rel = (i / (double) (rayCount - 1)) * 2 - 1;
+            float yaw = (float) (p.getYRot() + rel * (fov / 2));
+            var from = p.getEyePosition(1f);
+            var dir = net.minecraft.world.phys.Vec3.directionFromRotation(p.getXRot(), yaw);
+            var to = from.add(dir.scale(maxDist));
+            var hit = level.clip(new net.minecraft.world.level.ClipContext(
+                from, to,
+                net.minecraft.world.level.ClipContext.Block.COLLIDER,
+                net.minecraft.world.level.ClipContext.Fluid.NONE,
+                p));
+            JsonObject r = new JsonObject();
+            r.addProperty("hit", hit.getType() != net.minecraft.world.phys.HitResult.Type.MISS);
+            r.addProperty("dist", from.distanceTo(hit.getLocation()));
+            rays.add(r);
+        }
 
+        // ── Entities ──
+        JsonArray entities = new JsonArray();
+        for (var e : level.getEntities(p, p.getBoundingBox().inflate(8))) {
+            JsonObject ent = new JsonObject();
+            ent.addProperty("id", e.getId());
+            ent.addProperty("type", e.getType().toShortString());
+            ent.addProperty("dist", e.distanceTo(p));
+            entities.add(ent);
+        }
+
+        // ── World ──
+        JsonObject world = new JsonObject();
+        world.addProperty("time_of_day", level.getDayTime());
+        world.addProperty("weather", level.isRaining() ? "rain" : "clear");
+        world.addProperty("biome",
+            level.getBiome(p.blockPosition()).unwrapKey().get().location().toString());
+
+        // ── Inventory ──
         JsonArray hotbar = new JsonArray();
-        for (int i = 0; i < 9; i++) hotbar.add((String) null);
+        var inv = p.getInventory();
+        for (int i = 0; i < 9; i++) {
+            var stack = inv.getItem(i);
+            JsonObject item = new JsonObject();
+            item.addProperty("id", stack.getItem().toString());
+            item.addProperty("count", stack.getCount());
+            hotbar.add(item);
+        }
+        JsonObject inventory = new JsonObject();
+        inventory.addProperty("selected_slot", inv.selected);
+        inventory.add("hotbar", hotbar);
 
+        // ── Collision ──
+        JsonObject collision = new JsonObject();
+        collision.addProperty("is_grounded", p.onGround());
+        collision.addProperty("is_colliding", p.horizontalCollision);
+        collision.addProperty("no_progress", false);
+
+        // ── Combine ──
         JsonObject payload = new JsonObject();
         payload.add("pose", pose);
         payload.add("rays", rays);
-        payload.add("hotbar", hotbar);
+        payload.add("entities", entities);
+        payload.add("world", world);
+        payload.add("inventory", inventory);
+        payload.add("collision", collision);
 
-        long seq = mc.level.getGameTime();
-        latencyMap.put(seq, System.currentTimeMillis()); // record when this observation was sent
+        JsonObject obs = new JsonObject();
+        obs.addProperty("proto", "1.0");
+        obs.addProperty("kind", "observation");
+        long seq = level.getGameTime();
+        obs.addProperty("seq", seq);
+        obs.add("payload", payload);
 
-        JsonObject observation = new JsonObject();
-        observation.addProperty("type", "observation");
-        observation.addProperty("schema_version", "v0");
-        observation.addProperty("seq", seq);
-        observation.addProperty("timestamp", System.currentTimeMillis() / 1000.0);
-        observation.add("payload", payload);
-
-        String jsonMessage = GSON.toJson(observation);
-        System.out.println("[AI-BOT] Sending observation: " + jsonMessage);
-
-        if (wsClient != null && wsClient.isOpen()) {
-            long sendTime = System.currentTimeMillis();
-            latencyMap.put(mc.level.getGameTime(), sendTime);
-            wsClient.send(jsonMessage);
+        try {
+            if (wsClient != null && wsClient.isOpen()) {
+                wsClient.send(GSON.toJson(obs));
+                latencyMap.put(seq, System.currentTimeMillis());
+            } else {
+                droppedCount++;
+            }
+        } catch (Exception e) {
+            droppedCount++;
+            System.err.println("[AI-BOT] Send failed: " + e.getMessage());
         }
     }
 
@@ -147,19 +218,5 @@ public class BotMod {
     @SubscribeEvent
     public static void onRegisterKeyMappings(RegisterKeyMappingsEvent event) {
         event.register(TOGGLE_KEY);
-    }
-
-    @SubscribeEvent
-    public void onKeyInput(InputEvent.Key event) {
-        Minecraft mc = Minecraft.getInstance();
-        if (mc.player == null) return;
-
-        if (TOGGLE_KEY.consumeClick()) {
-            aiEnabled = !aiEnabled;
-            mc.player.displayClientMessage(
-                Component.literal("[AI-BOT] AI " + (aiEnabled ? "ENABLED" : "DISABLED")), true
-            );
-            System.out.println("[AI-BOT] AI " + (aiEnabled ? "ENABLED" : "DISABLED"));
-        }
     }
 }

@@ -1,0 +1,22 @@
+server:
+  host: 0.0.0.0
+  port: 8765
+  ping_interval_s: 5
+  ping_timeout_s: 5
+  max_msg_bytes: 1048576
+
+schema_version: "1.0"
+
+queues:
+  obs_max: 128
+  act_max: 64
+  obs_drop_policy: oldest
+  act_full_behavior: block_then_drop_latest
+
+reconnect:
+  backoff_ms: [250, 1000, 2000, 5000]
+  jitter_ms: 150
+
+logging:
+  level: INFO
+  json: true

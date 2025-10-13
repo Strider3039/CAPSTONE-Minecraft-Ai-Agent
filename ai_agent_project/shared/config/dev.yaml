@@ -1,2 +1,13 @@
 logging:
   level: DEBUG
+
+policy:
+  tick_hz: 15
+
+queues:
+  obs_max: 96
+  act_max: 48
+
+reconnect:
+  backoff_ms: [100, 300, 600, 1200]
+  jitter_ms: 100
