@@ -2,28 +2,28 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "AI Agent Action v1",
   "type": "object",
-  "required": ["proto", "kind", "seq", "payload"],
+  "required": ["proto", "kind", "seq", "action_id", "payload"],
   "properties": {
-    "proto": { "type": "string", "const": "1.0" },
+    "proto": { "type": "string", "const": "1" },
     "kind": { "type": "string", "const": "action" },
     "seq": { "type": "integer", "minimum": 0 },
     "timestamp": { "type": "number" },
+    "action_id": { "type": "string", "minLength": 1 },
+    "deadline_ms": { "type": "integer", "minimum": 0 },
     "payload": {
       "type": "object",
       "properties": {
         "look": {
           "type": "object",
-          "properties": {
-            "dYaw": { "type": "number" },
-            "dPitch": { "type": "number" }
-          }
+          "properties": { "dYaw": { "type": "number" }, "dPitch": { "type": "number" } },
+          "required": ["dYaw", "dPitch"],
+          "additionalProperties": false
         },
         "move": {
           "type": "object",
-          "properties": {
-            "forward": { "type": "number" },
-            "strafe": { "type": "number" }
-          }
+          "properties": { "forward": { "type": "number" }, "strafe": { "type": "number" } },
+          "required": ["forward", "strafe"],
+          "additionalProperties": false
         },
         "jump": { "type": "boolean" },
         "sneak": { "type": "boolean" },
@@ -34,5 +34,43 @@
       },
       "additionalProperties": false
     }
-  }
+  },
+  "allOf": [
+    {
+      "oneOf": [
+        {
+          "required": ["payload", "action_id"],
+          "properties": { "payload": { "required": ["look"] } }
+        },
+        {
+          "required": ["payload", "action_id"],
+          "properties": { "payload": { "required": ["move"] } }
+        },
+        {
+          "required": ["payload", "action_id"],
+          "properties": { "payload": { "required": ["jump"] } }
+        },
+        {
+          "required": ["payload", "action_id"],
+          "properties": { "payload": { "required": ["sneak"] } }
+        },
+        {
+          "required": ["payload", "action_id"],
+          "properties": { "payload": { "required": ["attack"] } }
+        },
+        {
+          "required": ["payload", "action_id"],
+          "properties": { "payload": { "required": ["use"] } }
+        },
+        {
+          "required": ["payload", "action_id"],
+          "properties": { "payload": { "required": ["place"] } }
+        },
+        {
+          "required": ["payload", "action_id"],
+          "properties": { "payload": { "required": ["select_slot"] } }
+        }
+      ]
+    }
+  ]
 }
