@@ -1,6 +1,41 @@
-worlds: ["flat_clear"]
+# evaluation.yaml — Sprint 2
+worlds:                           # worlds, not final yet
+  - name: flat_clear
+    start: {x: 0, y: 64, z: 0, yaw: 0.0, pitch: 0.0}
+    target: {x: 20, y: 64, z: 0}
+  - name: pylons
+    start: {x: 0, y: 64, z: 0, yaw: 0.0, pitch: 0.0}
+    target: {x: 25, y: 64, z: 0}
+  - name: corridor
+    start: {x: 0, y: 64, z: 0, yaw: 0.0, pitch: 0.0}
+    target: {x: 30, y: 64, z: 0}
+
 trials_per_world: 20
+episode_timeout_s: 120
 success_dist_threshold: 1.0
 no_progress_ticks: 30
 max_steps: 1200
-report_dir: "reports"
+seeds: [1,2,3,4,5,6,7,8,9,10]   # recycled if < trials, tbd later
+
+metrics:
+  capture:
+    - success
+    - steps
+    - collisions
+    - path_length
+    - avg_tick_ms
+    - queue_obs_high_watermark
+    - queue_act_high_watermark
+    - obs_dropped
+    - action_timeouts
+    - reconnects
+  bridge_metrics_path: "logs/bridge_metrics.ndjson"
+
+report:
+  out_dir: "reports"
+  csv_name: "eval.csv"
+  plots:
+    success_by_world: true
+    steps_distribution: true
+    collisions_distribution: true
+    queue_watermarks: true
