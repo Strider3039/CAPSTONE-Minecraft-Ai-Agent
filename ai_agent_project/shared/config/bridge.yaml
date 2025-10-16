@@ -1,3 +1,4 @@
+# Handles configuration for the bridge component that connects the AI agent to the Minecraft server.
 server:
   host: 0.0.0.0
   port: 8765
@@ -5,17 +6,46 @@ server:
   ping_timeout_s: 5
   max_msg_bytes: 1048576
 
-schema_version: "1.0"
+schema_version: "1.1"
+
+streaming:
+  target_hz: 12
+  max_skips: 2
 
 queues:
   obs_max: 128
   act_max: 64
-  obs_drop_policy: oldest
-  act_full_behavior: block_then_drop_latest
+  obs_drop_policy: oldest         # observations are ephemeral
+  act_full_behavior: block        # never silently drop critical actions
+  coalesce:                       # Coalesce look and move actions to reduce latency
+    enabled: true
+    kinds: ["look", "move"]       # only continuous actions get coalesced
+
+# Bridge-side guardrails to prevent spamming the server
+rate_limits:
+  look_hz: 15
+  move_hz: 15
+  jump_min_ms: 200
+  interact_cooldown_ms: 150       # umbrella for use/place/attack/select/sneak
 
 reconnect:
   backoff_ms: [250, 1000, 2000, 5000]
   jitter_ms: 150
+  max_attempts: 0                 # retry forever
+  clear_queues_on_reconnect: true
+  new_session_on_reconnect: true
+
+metrics:
+  enabled: true
+  sample_interval_s: 2
+  emit:
+    queue_watermarks: true
+    drops_and_timeouts: true
+    tick_latency_ms: true
+    reconnects: true
+  sink:
+    kind: file
+    path: "logs/bridge_metrics.ndjson"
 
 logging:
   level: INFO
