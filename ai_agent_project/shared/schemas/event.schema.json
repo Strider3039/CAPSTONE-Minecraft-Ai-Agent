@@ -1,25 +1,45 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "AI Agent Event v1",
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "title": "AI Agent Event v1.1",
   "type": "object",
-  "required": ["proto", "kind"],
+  "required": ["proto", "kind", "payload"],
   "properties": {
-    "proto": { "type": "string", "const": "1.0" },
-    "kind": {
-      "type": "string",
-      "enum": ["action_result", "bridge_health"]
-    },
-    "seq": { "type": "integer" },
-    "action": { "type": "string" },
-    "status": {
-      "type": "string",
-      "enum": ["success", "fail", "cooldown"]
-    },
-    "reason": { "type": "string" },
-    "latency_ms": { "type": "integer", "minimum": 0 },
-    "level": { "type": "string", "enum": ["info", "warn", "error"] },
-    "detail": { "type": "string" },
-    "timestamp": { "type": "number" }
+    "proto": { "type": "string", "const": "1.1" },
+    "kind": { "type": "string", "enum": ["action_result", "bridge_health"] },
+    "seq": { "type": "integer", "minimum": 0 },
+    "timestamp": { "type": "number" },
+    "payload": {
+      "type": "object",
+      "oneOf": [{ "required": ["action_result"] }, { "required": ["bridge_health"] }],
+      "properties": {
+        "action_result": {
+          "type": "object",
+          "required": ["action_id", "status"],
+          "properties": {
+            "action_id": { "type": "string" },
+            "status": {
+              "type": "string",
+              "enum": ["success", "fail", "cooldown", "blocked", "timeout"]
+            },
+            "reason": { "type": "string" },
+            "server_tick": { "type": "integer", "minimum": 0 },
+            "ts_server": { "type": "number" },
+            "latency_ms": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "bridge_health": {
+          "type": "object",
+          "required": ["level"],
+          "properties": {
+            "level": { "type": "string", "enum": ["info", "warn", "error"] },
+            "detail": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
   },
   "additionalProperties": false
 }

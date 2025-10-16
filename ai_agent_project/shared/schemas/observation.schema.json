@@ -1,10 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "AI Agent Observation v1",
+  "title": "AI Agent Observation v1.1",
   "type": "object",
   "required": ["proto", "kind", "seq", "payload"],
   "properties": {
-    "proto": { "type": "string", "const": "1.0" },
+    "proto": { "type": "string", "const": "1.1" },
     "kind": { "type": "string", "const": "observation" },
     "seq": { "type": "integer", "minimum": 0 },
     "timestamp": { "type": "number" },
@@ -21,21 +21,27 @@
             "z": { "type": "number" },
             "yaw": { "type": "number" },
             "pitch": { "type": "number" }
-          }
+          },
+          "additionalProperties": false
         },
         "rays": {
           "type": "array",
+          "maxItems": 8,
           "items": {
             "type": "object",
             "required": ["hit", "dist"],
             "properties": {
               "hit": { "type": "boolean" },
               "dist": { "type": "number", "minimum": 0 }
-            }
+            },
+            "additionalProperties": false
           }
         },
+        "front_clear": { "type": "boolean" },
+
         "entities": {
           "type": "array",
+          "maxItems": 8,
           "items": {
             "type": "object",
             "required": ["id", "type", "dist"],
@@ -43,8 +49,10 @@
               "id": { "type": "integer" },
               "type": { "type": "string" },
               "dist": { "type": "number", "minimum": 0 },
+              "los": { "type": "boolean" },
               "tags": { "type": "array", "items": { "type": "string" } }
-            }
+            },
+            "additionalProperties": false
           }
         },
         "world": {
@@ -54,7 +62,8 @@
             "time_of_day": { "type": "integer" },
             "weather": { "type": "string", "enum": ["clear", "rain", "thunder"] },
             "biome": { "type": "string" }
-          }
+          },
+          "additionalProperties": false
         },
         "inventory": {
           "type": "object",
@@ -71,10 +80,12 @@
                 "properties": {
                   "id": { "type": "string" },
                   "count": { "type": "integer", "minimum": 0 }
-                }
+                },
+                "additionalProperties": false
               }
             }
-          }
+          },
+          "additionalProperties": false
         },
         "collision": {
           "type": "object",
@@ -83,9 +94,12 @@
             "is_grounded": { "type": "boolean" },
             "is_colliding": { "type": "boolean" },
             "no_progress": { "type": "boolean" }
-          }
+          },
+          "additionalProperties": false
         }
-      }
+      },
+      "additionalProperties": false
     }
-  }
+  },
+  "additionalProperties": false
 }
