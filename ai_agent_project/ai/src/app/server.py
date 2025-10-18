@@ -40,31 +40,29 @@ EVT = json.loads((schemas / "event.schema.json").read_text("utf-8"))
 
 # Utility to send well-formed events to the client
 async def SendEvents(ws: WebSocketServerProtocol, kind: str, payload: dict) -> None:
+    # kind must be "action_result" or "bridge_health" per schema
     msg = {
-        "type": "event",
-        "schema_version": "v0",
-        "timestamp": time.time(),
+        "proto": "1",
         "kind": kind,
-        "payload": payload,
+        "seq": 0,                 # optional: increment if you maintain a seq
+        "timestamp": time.time(),
+        "payload": { kind: payload },
     }
-
-    # Validate the event against the schema before sending
     try:
         validate(instance=msg, schema=EVT)
     except ValidationError as e:
         log.warning("internal event failed schema", extra={"error": str(e), "kind": kind})
     await ws.send(json.dumps(msg))
 
+
 # Create a heartbeat that pings the server and checks for responsiveness
 async def HeartBeatLoop(ws: WebSocketServerProtocol, stop_evt: asyncio.Event):
     try:
-        # emit one immediately so clients see liveness right away
-        await SendEvents(ws, "heartbeat", {"uptime_s": time.time() - SERVER_START_TS})
+        await SendEvents(ws, "bridge_health", {"level": "info", "detail": "alive"})
         while not stop_evt.is_set():
             await asyncio.sleep(2.0)
-            await SendEvents(ws, "heartbeat", {"uptime_s": time.time() - SERVER_START_TS})
+            await SendEvents(ws, "bridge_health", {"level": "info", "detail": "alive"})
     except (asyncio.CancelledError, ConnectionClosed, ConnectionClosedOK, ConnectionClosedError):
-        # normal shutdown/close
         pass
     except Exception as e:
         log.warning("heartbeat loop error", extra={"error": str(e)})
@@ -98,11 +96,12 @@ async def Handle(ws: WebSocketServerProtocol):
     log.info("client connected", extra={"peer": peer})
 
     cfg = LoadConfig(env=os.getenv("APP_ENV", "dev"))
-    runTime = getattr(cfg, "runtime", None) or (cfg.get("runtime", {}) if isinstance(cfg, dict) else {})
-
-    obsQueueSize = runTime.get("obs_queue_size", 100)
-    actQueueSize = runTime.get("act_queue_size", 100)
-    dropPolicy = runTime.get("drop_policy", "oldest")
+    bq = cfg.bridge["queues"]
+    obsQueueSize = bq.get("obs_max", 128)
+    actQueueSize = bq.get("act_max", 64)
+    dropPolicy   = cfg.bridge.get("queues", {}).get("obs_drop_policy", "oldest")  # for obs only
+    actBehavior  = cfg.bridge.get("queues", {}).get("act_full_behavior", "block") # we'll use in Step 3
+    coalesceCfg  = cfg.bridge.get("queues", {}).get("coalesce", {"enabled": True, "kinds": ["look","move"]})
 
     obsQueue: asyncio.Queue = asyncio.Queue(maxsize=obsQueueSize)
     actQueue: asyncio.Queue = asyncio.Queue(maxsize=actQueueSize)
@@ -111,9 +110,7 @@ async def Handle(ws: WebSocketServerProtocol):
     ws.obsQueue = obsQueue
     ws.actQueue = actQueue
 
-
-
-    await SendEvents(ws, "connected", {"server": "ai-bridge", "version": "mvp1"})
+    await SendEvents(ws, "bridge_health", {"level": "info", "detail": "connected"})
 
     # Add Heartbeat logic to Handle()
     stop_evt = asyncio.Event()
@@ -219,16 +216,17 @@ async def Handle(ws: WebSocketServerProtocol):
 async def Main():
 
     cfg = LoadConfig(env=os.getenv("APP_ENV", "dev"))
-    SetupLogging(cfg.logging["level"], cfg.logging.get("json", True))
+    # pass the logging dict to SetupLogging (your upgraded logging.py supports this)
+    SetupLogging(cfg.bridge.get("logging", {}))
 
-    host = cfg.server["host"]
-    port = cfg.server["port"]
+    host = cfg.bridge["server"]["host"]
+    port = cfg.bridge["server"]["port"]
 
     async with serve(
         Handle, host, port,
-        ping_interval=cfg.server["ping_interval_s"],
-        ping_timeout=cfg.server["ping_timeout_s"],
-        max_size=cfg.server["max_msg_bytes"]
+        ping_interval=cfg.bridge["server"]["ping_interval_s"],
+        ping_timeout=cfg.bridge["server"]["ping_timeout_s"],
+        max_size=cfg.bridge["server"]["max_msg_bytes"]
     ):
         log.info("ws server started", extra={"host": host, "port": port})
         await asyncio.Future()  # run forever

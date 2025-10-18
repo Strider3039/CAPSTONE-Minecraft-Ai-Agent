@@ -1,88 +1,88 @@
-# tests/test_logging.py
-import json
-import logging as py_logging  # stdlib
-import importlib.util
-from pathlib import Path
-import pytest
+from __future__ import annotations
+import json, logging, sys, time, pathlib
+from typing import Any, Dict, Optional
 
-def find_project_root(start: Path) -> Path:
-    p = start.resolve()
-    for q in [p, *p.parents]:
-        if (q / "utils" / "logging.py").exists():
-            return q
-    raise RuntimeError("Could not find project root (wanted utils/logging.py)")
-
-def load_module_by_path(name: str, path: Path):
-    spec = importlib.util.spec_from_file_location(name, str(path))
-    if not spec or not spec.loader:
-        raise RuntimeError(f"Cannot load module {name} from {path}")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)  # type: ignore[attr-defined]
-    return mod
-
-@pytest.fixture(scope="module")
-def app_logging():
-    project_root = find_project_root(Path(__file__))
-    return load_module_by_path("app_logging", project_root / "utils" / "logging.py")
-
-def test_setup_logging_json_stdout(app_logging, tmp_path, capsys):
-    metrics_path = tmp_path / "logs" / "bridge_metrics.ndjson"
-    cfg = {
-        "level": "DEBUG",
-        "json": True,
-        "metrics": {"sink": {"path": str(metrics_path)}},
+# Custom logger that outputs JSON formatted logs
+# utils/logging.py
+class JsonFormatter(logging.Formatter):
+    _EXCLUDE = {
+        "name","msg","args","levelname","levelno","pathname","filename","module",
+        "exc_info","exc_text","stack_info","lineno","funcName","created","msecs",
+        "relativeCreated","thread","threadName","processName","process"
     }
 
-    app_logging.SetupLogging(cfg)
-    logger = py_logging.getLogger("test.json")
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "timestamp": time.time(),
+            "level": record.levelname,
+            "name": record.name,
+            "msg": record.getMessage(),
+        }
 
-    logger.info("hello world", extra={"foo": "bar"})
-    captured = capsys.readouterr().out.strip().splitlines()
-    assert captured, "No logs captured to stdout"
+        # Include exception info if present
+        if record.exc_info:
+            payload["exc_info"] = self.formatException(record.exc_info)
 
-    rec = json.loads(captured[-1])
-    assert rec["level"] == "INFO"
-    assert rec["name"] == "test.json"
-    assert rec["msg"] == "hello world"
-    assert rec["foo"] == "bar"
+        # Merge extras added via `extra=...`
+        for k, v in record.__dict__.items():
+            if k in self._EXCLUDE:
+                continue
+            # avoid overwriting core keys
+            if k in payload:
+                continue
+            # best-effort JSON-serializable filter
+            try:
+                json.dumps(v)
+            except TypeError:
+                v = str(v)
+            payload[k] = v
 
-    assert metrics_path.exists()
-    with metrics_path.open("r", encoding="utf-8") as f:
-        first_line = f.readline().strip()
-        assert first_line
-        json.loads(first_line)
+        return json.dumps(payload)
 
-def test_setup_logging_plain_stdout(app_logging, capsys):
-    cfg = {"level": "INFO", "json": False}
-    app_logging.SetupLogging(cfg)
-    logger = py_logging.getLogger("plain.logger")
+def SetupLogging(cfg: Optional[Dict[str, Any]] = None, level: str = "INFO", json_logs: bool = True) -> logging.Logger:
+    """
+    Configure root logger.
+    You can pass cfg.bridge.logging dict or rely on defaults.
+    """
+    if cfg and "level" in cfg:
+        level = cfg["level"]
+    if cfg and "json" in cfg:
+        json_logs = bool(cfg["json"])
 
-    logger.warning("warn message")
-    out = capsys.readouterr().out
-    assert "WARNING" in out
-    assert "plain.logger" in out
-    assert "warn message" in out
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.setLevel(getattr(logging, level.upper(), logging.INFO))
 
-def test_log_level_effect_error_only(app_logging, capsys):
-    cfg = {"level": "ERROR", "json": True}
-    app_logging.SetupLogging(cfg)
-    logger = py_logging.getLogger("lvl.test")
+    # always stream to stdout
+    h = logging.StreamHandler(sys.stdout)
+    h.setFormatter(JsonFormatter() if json_logs else
+                   logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    root.addHandler(h)
 
-    logger.info("should not be emitted")
-    out = capsys.readouterr().out.strip()
-    assert out == ""
+    # optional file sink (from cfg.bridge.metrics.sink)
+    metrics_path = None
+    try:
+        metrics_path = cfg.get("metrics", {}).get("sink", {}).get("path") if cfg else None
+    except Exception:
+        pass
+    if metrics_path:
+        path = pathlib.Path(metrics_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fh = logging.FileHandler(path, mode="a", encoding="utf-8")
+        fh.setFormatter(JsonFormatter())
+        root.addHandler(fh)
 
-def test_write_metric_appends_ndjson(app_logging, tmp_path):
-    p = tmp_path / "metrics" / "bridge_metrics.ndjson"
-    app_logging.WriteMetric(p, {"queue_obs_high_watermark": 7})
-    app_logging.WriteMetric(p, {"queue_obs_high_watermark": 9, "obs_dropped": 1})
+    root.info("Logging initialized", extra={"level": level, "json": json_logs})
+    return root
 
-    lines = p.read_text(encoding="utf-8").strip().splitlines()
-    assert len(lines) == 2
-
-    rec1 = json.loads(lines[0])
-    rec2 = json.loads(lines[1])
-    assert "timestamp" in rec1 and "timestamp" in rec2
-    assert rec1["queue_obs_high_watermark"] == 7
-    assert rec2["queue_obs_high_watermark"] == 9
-    assert rec2["obs_dropped"] == 1
+def WriteMetric(path: str | pathlib.Path, data: Dict[str, Any]) -> None:
+    """
+    Append a single metric record as one JSON line (NDJSON).
+    Safe to call from async tasks.
+    """
+    path = pathlib.Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data["timestamp"] = time.time()
+    line = json.dumps(data, separators=(",", ":")) + "\n"
+    with path.open("a", encoding="utf-8") as f:
+        f.write(line)
