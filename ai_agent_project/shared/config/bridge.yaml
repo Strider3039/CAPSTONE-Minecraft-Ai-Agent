@@ -6,7 +6,7 @@ server:
   ping_timeout_s: 5
   max_msg_bytes: 1048576
 
-schema_version: "1.1"
+schema_version: "1"
 
 streaming:
   target_hz: 12
