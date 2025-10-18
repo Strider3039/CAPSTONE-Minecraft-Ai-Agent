@@ -62,6 +62,3 @@ desktop.ini
 .venv38
 .venv38.local
 .venv38.*.local
-
-# Testing files
-tests
