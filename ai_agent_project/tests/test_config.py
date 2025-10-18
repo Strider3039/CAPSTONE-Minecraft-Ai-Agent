@@ -6,8 +6,7 @@ import importlib
 from pathlib import Path
 import pytest
 
-sys.path.append(str(Path(__file__).resolve().parents[1]))
-from utils import config as cfg_mod
+from ai.src.utils import config as cfg_mod
 
 def write_yaml(p: Path, content: str):
     p.write_text(textwrap.dedent(content).strip() + "\n", encoding="utf-8")
