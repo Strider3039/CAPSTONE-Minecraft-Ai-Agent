@@ -1,74 +1,104 @@
 from __future__ import annotations
-import asyncio, time, statistics, sys, pathlib as _pathlib
-from typing import Any
+import asyncio, time, statistics, sys, uuid
+import pathlib as _pathlib
+from typing import Any, Dict, Optional
 from jsonschema import validate, ValidationError
 from collections import deque
 
-SRC = _pathlib.Path(__file__).resolve().parents[1] # ai/src
+SRC = _pathlib.Path(__file__).resolve().parents[1]  # ai/src
 if str(SRC) not in sys.path:
     sys.path.append(str(SRC))
 
-from actions.codec import ClampAction
+from actions.codec import ClampAction  # keep if you still want extra safety
 from policy.dummy import decide
 
-# Safe implementation of adding items to a queue
-async def QueueAdd(q: asyncio.Queue, item: Any, drop_policy: str, on_drop):
-    try:
-        q.put_nowait(item)
-    except asyncio.QueueFull:
-        if drop_policy == "oldest":
-            q.get_nowait()  
-            
-            # on_drop polict might be implemented later
-            if on_drop: await on_drop("oldest")
-            q.put_nowait(item)
-        elif drop_policy == "newest":
-            if on_drop: await on_drop("newest")
-        else:
-            await q.put(item)
 
-def _idle_payload():
+async def QueueAdd(q: asyncio.Queue, item: Any) -> None:
+    """Actions should never be dropped; block until there is space."""
+    await q.put(item)
+
+
+def IdlePayload() -> Dict[str, Any]:
     return {
         "look": {"dYaw": 0.0, "dPitch": 0.0},
         "move": {"forward": 0.0, "strafe": 0.0},
-        "jump": False
+        "jump": False,
     }
 
-def _percentile(sorted_vals, p):
-    # p in [0,1]; input should be pre-sorted
-    if not sorted_vals:
+
+def Percentile(sortedVals, p: float) -> float:
+    if not sortedVals:
         return 0.0
-    k = max(0, min(len(sorted_vals) - 1, int(round(p * (len(sorted_vals) - 1)))))
-    return sorted_vals[k]
+    k = max(0, min(len(sortedVals) - 1, int(round(p * (len(sortedVals) - 1)))))
+    return float(sortedVals[k])
+
+
+def _aid() -> str:
+    return uuid.uuid4().hex
+
+
+def MakeLook(yawDelta: float, pitchDelta: float) -> Dict[str, Any]:
+    return {
+        "proto": "1",
+        "kind": "action",
+        "seq": 0,
+        "timestamp": time.time(),
+        "action_id": _aid(),
+        "payload": {"look": {"dYaw": float(yawDelta), "dPitch": float(pitchDelta)}},
+    }
+
+
+def MakeMove(forward: float, strafe: float) -> Dict[str, Any]:
+    return {
+        "proto": "1",
+        "kind": "action",
+        "seq": 0,
+        "timestamp": time.time(),
+        "action_id": _aid(),
+        "payload": {"move": {"forward": float(forward), "strafe": float(strafe)}},
+    }
+
+
+def MakeJump() -> Dict[str, Any]:
+    return {
+        "proto": "1",
+        "kind": "action",
+        "seq": 0,
+        "timestamp": time.time(),
+        "action_id": _aid(),
+        "payload": {"jump": True},
+    }
+
 
 async def PolicyWorker(
     obs_q: asyncio.Queue,
     act_q: asyncio.Queue,
-    drop_policy: str,
+    drop_policy: str,        # kept for signature compatibility; ignored (we block)
     act_schema: dict,
-    on_drop,
+    on_drop,                 # kept for signature compatibility; not used (no drops)
     log,
-    emit_event=None,   # <-- NEW: async callable kind,payload -> None (optional)
+    emit_event=None,         # async callable(kind, payload) that must comply with event.schema.json
 ):
     """
-    Runs at 10 Hz. Each tick:
+    Runs at ~10 Hz. Each tick:
       - drains obs_q and keeps only the most recent observation
       - runs decide(obs) with a 100 ms budget
-      - clamps, validates, and enqueues the action
-      - tracks latency and emits latency_stats ~every 2 s (if emit_event provided)
+      - emits separate one-kind action messages (look, move, jump)
+      - validates each action against act_schema
+      - tracks latency and periodically emits a bridge_health 'latency_stats' info
     """
-    seq_out = 0
-    tick_hz = 10.0
-    tick_dt = 1.0 / tick_hz
-    next_tick = time.time()
+    seqOut = 0
+    tickHz = 10.0
+    tickDt = 1.0 / tickHz
+    nextTick = time.time()
 
-    latest_obs = None
-    lat_samples_ms = deque(maxlen=200)  # ~20 s of samples @10 Hz
-    last_stats_ts = time.time()
+    latestObs: Optional[dict] = None
+    latSamplesMs = deque(maxlen=200)  # ~20 s of samples @10 Hz
+    lastStatsTs = time.time()
     loop = asyncio.get_running_loop()
 
-    async def _drain_latest():
-        nonlocal latest_obs
+    async def DrainLatest() -> bool:
+        nonlocal latestObs
         drained = False
         while True:
             try:
@@ -76,71 +106,78 @@ async def PolicyWorker(
             except asyncio.QueueEmpty:
                 break
             else:
-                latest_obs = item
+                latestObs = item
                 obs_q.task_done()
                 drained = True
         return drained
 
     while True:
-        # pace to 10 Hz
         now = time.time()
-        if now < next_tick:
-            await asyncio.sleep(next_tick - now)
-        next_tick += tick_dt
+        if now < nextTick:
+            await asyncio.sleep(nextTick - now)
+        nextTick += tickDt
 
-        # keep only the most recent observation
-        await _drain_latest()
+        await DrainLatest()
 
-        # decide with 100 ms budget
-        if latest_obs is None:
-            payload = _idle_payload()
-        else:
-            obs_ts = float(latest_obs.get("timestamp", time.time()))
-            try:
-                decision = await asyncio.wait_for(
-                    loop.run_in_executor(None, decide, latest_obs),
-                    timeout=0.100
-                )
-                payload = decision
-            except asyncio.TimeoutError:
-                log.warning("decide() timed out; sending idle")
-                payload = _idle_payload()
-                if emit_event:
-                    await emit_event("policy_error", {"error": "decide_timeout"})
-            except Exception as e:
-                log.warning("decide() error; sending idle", extra={"error": str(e)})
-                payload = _idle_payload()
-                if emit_event:
-                    await emit_event("policy_error", {"error": str(e)})
+        # If no observation yet, skip producing actions this tick
+        if latestObs is None:
+            continue
 
-            # track e2e latency from obs timestamp (seconds → ms)
-            lat_ms = max(0.0, (time.time() - obs_ts) * 1000.0)
-            lat_samples_ms.append(lat_ms)
-
-        # build action message
-        msg = {
-            "type": "action",
-            "timestamp": time.time(),       # seconds
-            "seq": seq_out,
-            "schema_version": "v0",
-            "payload": payload
-        }
-
-        # clamp + validate; fallback to idle if invalid
-        msg = ClampAction(msg)
+        obsTs = float(latestObs.get("timestamp", time.time()))
         try:
-            validate(instance=msg, schema=act_schema)
-        except ValidationError as e:
-            log.warning("outgoing action failed schema; using idle", extra={"error": str(e)})
-            msg["payload"] = _idle_payload()
+            decision = await asyncio.wait_for(
+                loop.run_in_executor(None, decide, latestObs),
+                timeout=0.100,
+            )
+            payload = decision if isinstance(decision, dict) else IdlePayload()
+        except asyncio.TimeoutError:
+            log.warning("decide() timed out; skipping tick")
+            payload = IdlePayload()
+            if emit_event:
+                # standards-compliant event: bridge_health
+                await emit_event("bridge_health", {"level": "warn", "detail": "decide_timeout"})
+            continue
+        except Exception as e:
+            log.warning("decide() error; skipping tick", extra={"error": str(e)})
+            payload = IdlePayload()
+            if emit_event:
+                await emit_event("bridge_health", {"level": "warn", "detail": f"decide_error:{e}"})
+            continue
 
-        await QueueAdd(act_q, msg, drop_policy, on_drop)
-        seq_out += 1
+        # Track latency from observation timestamp
+        latMs = max(0.0, (time.time() - obsTs) * 1000.0)
+        latSamplesMs.append(latMs)
 
-        # emit latency_stats ~every 2 s
-        if emit_event and (time.time() - last_stats_ts >= 2.0) and len(lat_samples_ms) >= 5:
-            samples = sorted(lat_samples_ms)
+        # Split into one-action-per-message
+        outMsgs: list[Dict[str, Any]] = []
+
+        look = payload.get("look")
+        if look and isinstance(look, dict):
+            outMsgs.append(MakeLook(look.get("dYaw", 0.0), look.get("dPitch", 0.0)))
+
+        move = payload.get("move")
+        if move and isinstance(move, dict):
+            outMsgs.append(MakeMove(move.get("forward", 0.0), move.get("strafe", 0.0)))
+
+        if payload.get("jump"):
+            outMsgs.append(MakeJump())
+
+        # Validate + (optionally) clamp, then enqueue (block)
+        for msg in outMsgs:
+            # If ClampAction expects old envelope, you can remove this call.
+            try:
+                validate(instance=msg, schema=act_schema)
+            except ValidationError as e:
+                log.warning("outgoing action failed schema; dropping", extra={"error": str(e)})
+                continue
+            await QueueAdd(act_q, msg)
+            seqOut += 1
+
+        # Emit latency stats ~every 2 s (as bridge_health informational)
+        if emit_event and (time.time() - lastStatsTs >= 2.0) and len(latSamplesMs) >= 5:
+            samples = sorted(latSamplesMs)
             p50 = statistics.median(samples)
-            p90 = _percentile(samples, 0.90)
-            await emit_event("latency_stats", {"p50_ms": p50, "p90_ms": p90, "hz": tick_hz})
-            last_stats_ts = time.time()
+            p90 = Percentile(samples, 0.90)
+            detail = f"latency_stats p50_ms={p50:.1f} p90_ms={p90:.1f} hz={tickHz:.0f}"
+            await emit_event("bridge_health", {"level": "info", "detail": detail})
+            lastStatsTs = time.time()
