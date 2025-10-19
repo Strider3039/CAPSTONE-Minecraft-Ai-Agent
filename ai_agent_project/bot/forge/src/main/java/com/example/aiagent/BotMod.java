@@ -98,7 +98,6 @@ public class BotMod {
     }
 
 
-    // ───────────────────────────── Observation ─────────────────────────────
     private void sendObservation(Minecraft mc) {
         var p = mc.player;
         var level = mc.level;
@@ -113,7 +112,7 @@ public class BotMod {
 
         // ── Raycasts ──
         JsonArray rays = new JsonArray();
-        int rayCount = 7;
+        int rayCount = 8;
         double fov = 60.0;
         double maxDist = 6.0;
         for (int i = 0; i < rayCount; i++) {
@@ -140,13 +139,17 @@ public class BotMod {
             ent.addProperty("id", e.getId());
             ent.addProperty("type", e.getType().toShortString());
             ent.addProperty("dist", e.distanceTo(p));
+            ent.addProperty("los", true); // optional schema field
             entities.add(ent);
         }
 
         // ── World ──
         JsonObject world = new JsonObject();
         world.addProperty("time_of_day", level.getDayTime());
-        world.addProperty("weather", level.isRaining() ? "rain" : "clear");
+        String weather = "clear";
+        if (level.isThundering()) weather = "thunder";
+        else if (level.isRaining()) weather = "rain";
+        world.addProperty("weather", weather);
         world.addProperty("biome",
             level.getBiome(p.blockPosition()).unwrapKey().get().location().toString());
 
@@ -174,16 +177,18 @@ public class BotMod {
         JsonObject payload = new JsonObject();
         payload.add("pose", pose);
         payload.add("rays", rays);
+        payload.addProperty("front_clear", rays.size() > 0 && !rays.get(0).getAsJsonObject().get("hit").getAsBoolean());
         payload.add("entities", entities);
         payload.add("world", world);
         payload.add("inventory", inventory);
         payload.add("collision", collision);
 
         JsonObject obs = new JsonObject();
-        obs.addProperty("proto", "1.0");
+        obs.addProperty("proto", "1");
         obs.addProperty("kind", "observation");
         long seq = level.getGameTime();
         obs.addProperty("seq", seq);
+        obs.addProperty("timestamp", System.currentTimeMillis());
         obs.add("payload", payload);
 
         try {
