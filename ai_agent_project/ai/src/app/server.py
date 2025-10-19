@@ -39,10 +39,10 @@ EVT = json.loads((schemasDir / "event.schema.json").read_text("utf-8"))
 #  Utilities 
 
 async def SendEvents(ws: WebSocketServerProtocol, kind: str, payload: dict) -> None:
-    """Emit an event that conforms to event.schema.json v1.1."""
+    """Emit an event that conforms to event.schema.json v1."""
     log = stdlog.getLogger("bridge.server.SendEvents")
     msg = {
-        "proto": "1.1",
+        "proto": "1",
         "kind": kind,
         "seq": 0,
         "timestamp": time.time(),
@@ -244,7 +244,7 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
                 await SendEvents(ws, "bridge_health", {"level": "warn", "detail": "invalid_json"})
                 continue
 
-            if msg.get("proto") != "1.1":
+            if msg.get("proto") != "1":
                 log.warning("bad proto", extra={"got": msg.get("proto")})
                 continue
 
