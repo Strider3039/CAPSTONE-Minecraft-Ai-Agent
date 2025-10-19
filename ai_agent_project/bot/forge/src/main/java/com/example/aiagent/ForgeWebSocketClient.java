@@ -13,9 +13,9 @@ import java.util.concurrent.ArrayBlockingQueue;
 
 public class ForgeWebSocketClient extends WebSocketClient {
     private final Map<String, Long> nextAllowed = new HashMap<>();
-    private static final long ATTACK_COOLDOWN_MS = 400;
-    private static final long USE_COOLDOWN_MS    = 400;
-    private static final long PLACE_COOLDOWN_MS  = 450;
+    private static final long ATTACK_COOLDOWN_MS = 150;
+    private static final long USE_COOLDOWN_MS    = 150;
+    private static final long PLACE_COOLDOWN_MS  = 150;
 
     private static final int MAX_INFLIGHT = 32;
     private final ArrayBlockingQueue<JsonObject> inflight = new ArrayBlockingQueue<>(MAX_INFLIGHT);
@@ -69,10 +69,12 @@ public class ForgeWebSocketClient extends WebSocketClient {
 
         try {
             JsonObject json = BotMod.GSON.fromJson(message, JsonObject.class);
-            if (json == null) return
+            if (json == null) return;
 
             if (json.has("kind") && "action".equals(json.get("kind").getAsString())) {
                 long seq = json.has("seq") ? json.get("seq").getAsLong() : -1;
+                String actionId = json.has("action_id") ? json.get("action_id").getAsString() : "unknown";
+
                 if (seq <= lastAckSeq) {
                     System.out.println("[WS] Ignoring stale action seq=" + seq);
                     return;
@@ -88,15 +90,17 @@ public class ForgeWebSocketClient extends WebSocketClient {
                 }
                 inflight.offer(payload);
 
-                mc.execute(() -> handleStructuredAction(payload, mc));
+                // Execute the action safely on the main game thread
+                mc.execute(() -> handleStructuredAction(actionId, payload, mc));
             }
         } catch (Exception e) {
             System.err.println("[WS] Parse error: " + e.getMessage());
         }
     }
 
+
     // ───────────────────────────── Action handling ─────────────────────────────
-    private void handleStructuredAction(JsonObject payload, Minecraft mc) {
+    private void handleStructuredAction(String actionId, JsonObject payload, Minecraft mc) {
         var p = mc.player;
         if (p == null) return;
 
@@ -106,7 +110,7 @@ public class ForgeWebSocketClient extends WebSocketClient {
             float dYaw = look.has("dYaw") ? look.get("dYaw").getAsFloat() : 0f;
             float dPitch = look.has("dPitch") ? look.get("dPitch").getAsFloat() : 0f;
             p.turn(dYaw, dPitch);
-            emitActionResult("look", "success", "");
+            emitActionResult(actionId, "success", "");
         }
 
         // MOVE / STRAFE
@@ -116,16 +120,16 @@ public class ForgeWebSocketClient extends WebSocketClient {
             double strafe  = move.has("strafe") ? move.get("strafe").getAsDouble() : 0;
             float moveSpeed = 0.1f;
             p.moveRelative(moveSpeed, new net.minecraft.world.phys.Vec3((float)strafe, 0.0f, (float)forward));
-            emitActionResult("move", "success", "");
+            emitActionResult(actionId, "success", "");
         }
 
         // JUMP
         if (payload.has("jump") && payload.get("jump").getAsBoolean()) {
             if (p.onGround()) {
                 p.jumpFromGround();
-                emitActionResult("jump", "success", "");
+                emitActionResult(actionId, "success", "");
             } else {
-                emitActionResult("jump", "fail", "not_grounded");
+                emitActionResult(actionId, "fail", "not_grounded");
             }
         }
 
@@ -133,49 +137,50 @@ public class ForgeWebSocketClient extends WebSocketClient {
         if (payload.has("sneak")) {
             boolean sneak = payload.get("sneak").getAsBoolean();
             p.setShiftKeyDown(sneak);
-            emitActionResult("sneak", "success", "");
+            emitActionResult(actionId, "success", "");
         }
 
         // SELECT SLOT
         if (payload.has("select_slot")) {
             int slot = payload.get("select_slot").getAsInt();
             p.getInventory().selected = Math.max(0, Math.min(8, slot));
-            emitActionResult("select_slot", "success", "");
+            emitActionResult(actionId, "success", "");
         }
 
         // ATTACK
         if (payload.has("attack") && payload.get("attack").getAsBoolean()) {
             if (inCooldown("attack")) {
-                emitActionResult("attack", "cooldown", "attack_cooldown");
+                emitActionResult(actionId, "cooldown", "attack_cooldown");
             } else {
                 mc.gameMode.attack(p);
                 setCooldown("attack", ATTACK_COOLDOWN_MS);
-                emitActionResult("attack", "success", "");
+                emitActionResult(actionId, "success", "");
             }
         }
 
         // USE
         if (payload.has("use") && payload.get("use").getAsBoolean()) {
             if (inCooldown("use")) {
-                emitActionResult("use", "cooldown", "use_cooldown");
+                emitActionResult(actionId, "cooldown", "use_cooldown");
             } else {
                 mc.gameMode.useItem(p, p.getUsedItemHand());
                 setCooldown("use", USE_COOLDOWN_MS);
-                emitActionResult("use", "success", "");
+                emitActionResult(actionId, "success", "");
             }
         }
 
         // PLACE
         if (payload.has("place") && payload.get("place").getAsBoolean()) {
             if (inCooldown("place")) {
-                emitActionResult("place", "cooldown", "place_cooldown");
+                emitActionResult(actionId, "cooldown", "place_cooldown");
             } else {
                 mc.gameMode.useItemOn(p, p.getUsedItemHand());
                 setCooldown("place", PLACE_COOLDOWN_MS);
-                emitActionResult("place", "success", "");
+                emitActionResult(actionId, "success", "");
             }
         }
     }
+
 
     // ───────────────────────────── Cooldown helpers ─────────────────────────────
     private boolean inCooldown(String kind) {
@@ -187,21 +192,43 @@ public class ForgeWebSocketClient extends WebSocketClient {
     }
 
     // ───────────────────────────── Feedback emitters ─────────────────────────────
-    private void emitActionResult(String action, String status, String reason) {
+    private void emitActionResult(String actionId, String status, String reason) {
+        JsonObject payload = new JsonObject();
+        JsonObject result = new JsonObject();
+
+        result.addProperty("action_id", actionId);
+        result.addProperty("status", status);
+        result.addProperty("reason", reason);
+        result.addProperty("server_tick", Minecraft.getInstance().level != null ? Minecraft.getInstance().level.getGameTime() : 0);
+        result.addProperty("ts_server", System.currentTimeMillis() / 1000.0);
+        result.addProperty("latency_ms", 0);
+
+        payload.add("action_result", result);
+
         JsonObject evt = new JsonObject();
+        evt.addProperty("proto", "1");
         evt.addProperty("kind", "action_result");
-        evt.addProperty("action", action);
-        evt.addProperty("status", status);
-        evt.addProperty("reason", reason);
-        evt.addProperty("latency_ms", 0);
+        evt.addProperty("timestamp", System.currentTimeMillis());
+        evt.add("payload", payload);
+
         send(evt.toString());
     }
 
+
     private void emitBridgeHealth(String level, String detail) {
+        JsonObject payload = new JsonObject();
+        JsonObject health = new JsonObject();
+        health.addProperty("level", level);
+        health.addProperty("detail", detail);
+        payload.add("bridge_health", health);
+
         JsonObject evt = new JsonObject();
+        evt.addProperty("proto", "1");
         evt.addProperty("kind", "bridge_health");
-        evt.addProperty("level", level);
-        evt.addProperty("detail", detail);
+        evt.addProperty("timestamp", System.currentTimeMillis());
+        evt.add("payload", payload);
+
         send(evt.toString());
     }
+
 }

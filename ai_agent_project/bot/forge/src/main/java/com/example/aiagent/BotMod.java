@@ -98,7 +98,6 @@ public class BotMod {
     }
 
 
-    // ───────────────────────────── Observation ─────────────────────────────
     private void sendObservation(Minecraft mc) {
         var p = mc.player;
         var level = mc.level;
@@ -113,8 +112,8 @@ public class BotMod {
 
         // ── Raycasts ──
         JsonArray rays = new JsonArray();
-        int rayCount = 7;
-        double fov = 60.0;
+        int rayCount = 5;        // from runtime.yaml
+        double fov = 30.0;       // narrower vision cone from runtime.yaml
         double maxDist = 6.0;
         for (int i = 0; i < rayCount; i++) {
             double rel = (i / (double) (rayCount - 1)) * 2 - 1;
@@ -135,18 +134,24 @@ public class BotMod {
 
         // ── Entities ──
         JsonArray entities = new JsonArray();
+        int count = 0;
         for (var e : level.getEntities(p, p.getBoundingBox().inflate(8))) {
+            if (count++ >= 8) break; // runtime.obs.entity_cap
             JsonObject ent = new JsonObject();
             ent.addProperty("id", e.getId());
             ent.addProperty("type", e.getType().toShortString());
             ent.addProperty("dist", e.distanceTo(p));
+            ent.addProperty("los", true);
             entities.add(ent);
         }
 
         // ── World ──
         JsonObject world = new JsonObject();
         world.addProperty("time_of_day", level.getDayTime());
-        world.addProperty("weather", level.isRaining() ? "rain" : "clear");
+        String weather = "clear";
+        if (level.isThundering()) weather = "thunder";
+        else if (level.isRaining()) weather = "rain";
+        world.addProperty("weather", weather);
         world.addProperty("biome",
             level.getBiome(p.blockPosition()).unwrapKey().get().location().toString());
 
@@ -174,16 +179,24 @@ public class BotMod {
         JsonObject payload = new JsonObject();
         payload.add("pose", pose);
         payload.add("rays", rays);
+
+        // Match runtime.yaml (front_clear_threshold = 1.2)
+        double frontClearThreshold = 1.2;
+        boolean frontClear = rays.size() > 0 &&
+            rays.get(0).getAsJsonObject().get("dist").getAsDouble() >= frontClearThreshold;
+        payload.addProperty("front_clear", frontClear);
+
         payload.add("entities", entities);
         payload.add("world", world);
         payload.add("inventory", inventory);
         payload.add("collision", collision);
 
         JsonObject obs = new JsonObject();
-        obs.addProperty("proto", "1.0");
+        obs.addProperty("proto", "1");
         obs.addProperty("kind", "observation");
         long seq = level.getGameTime();
         obs.addProperty("seq", seq);
+        obs.addProperty("timestamp", System.currentTimeMillis());
         obs.add("payload", payload);
 
         try {
