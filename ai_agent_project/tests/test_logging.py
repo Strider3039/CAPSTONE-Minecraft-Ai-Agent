@@ -4,7 +4,7 @@ import logging as py_logging  # stdlib
 import pytest
 
 # Make project root importable (…/ai_agent_project)
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from ai.src.utils import logging as app_logging  # noqa: E402
 
 
