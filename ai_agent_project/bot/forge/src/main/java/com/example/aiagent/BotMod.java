@@ -179,11 +179,13 @@ public class BotMod {
         JsonObject payload = new JsonObject();
         payload.add("pose", pose);
         payload.add("rays", rays);
-        // Optional: use threshold distance from runtime.yaml
+
+        // Match runtime.yaml (front_clear_threshold = 1.2)
         double frontClearThreshold = 1.2;
         boolean frontClear = rays.size() > 0 &&
             rays.get(0).getAsJsonObject().get("dist").getAsDouble() >= frontClearThreshold;
         payload.addProperty("front_clear", frontClear);
+
         payload.add("entities", entities);
         payload.add("world", world);
         payload.add("inventory", inventory);
