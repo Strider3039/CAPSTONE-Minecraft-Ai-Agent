@@ -112,8 +112,8 @@ public class BotMod {
 
         // ── Raycasts ──
         JsonArray rays = new JsonArray();
-        int rayCount = 8;
-        double fov = 60.0;
+        int rayCount = 5;        // from runtime.yaml
+        double fov = 30.0;       // narrower vision cone from runtime.yaml
         double maxDist = 6.0;
         for (int i = 0; i < rayCount; i++) {
             double rel = (i / (double) (rayCount - 1)) * 2 - 1;
@@ -134,12 +134,14 @@ public class BotMod {
 
         // ── Entities ──
         JsonArray entities = new JsonArray();
+        int count = 0;
         for (var e : level.getEntities(p, p.getBoundingBox().inflate(8))) {
+            if (count++ >= 8) break; // runtime.obs.entity_cap
             JsonObject ent = new JsonObject();
             ent.addProperty("id", e.getId());
             ent.addProperty("type", e.getType().toShortString());
             ent.addProperty("dist", e.distanceTo(p));
-            ent.addProperty("los", true); // optional schema field
+            ent.addProperty("los", true);
             entities.add(ent);
         }
 
@@ -177,7 +179,11 @@ public class BotMod {
         JsonObject payload = new JsonObject();
         payload.add("pose", pose);
         payload.add("rays", rays);
-        payload.addProperty("front_clear", rays.size() > 0 && !rays.get(0).getAsJsonObject().get("hit").getAsBoolean());
+        // Optional: use threshold distance from runtime.yaml
+        double frontClearThreshold = 1.2;
+        boolean frontClear = rays.size() > 0 &&
+            rays.get(0).getAsJsonObject().get("dist").getAsDouble() >= frontClearThreshold;
+        payload.addProperty("front_clear", frontClear);
         payload.add("entities", entities);
         payload.add("world", world);
         payload.add("inventory", inventory);

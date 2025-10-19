@@ -13,9 +13,9 @@ import java.util.concurrent.ArrayBlockingQueue;
 
 public class ForgeWebSocketClient extends WebSocketClient {
     private final Map<String, Long> nextAllowed = new HashMap<>();
-    private static final long ATTACK_COOLDOWN_MS = 400;
-    private static final long USE_COOLDOWN_MS    = 400;
-    private static final long PLACE_COOLDOWN_MS  = 450;
+    private static final long ATTACK_COOLDOWN_MS = 150;
+    private static final long USE_COOLDOWN_MS    = 150;
+    private static final long PLACE_COOLDOWN_MS  = 150;
 
     private static final int MAX_INFLIGHT = 32;
     private final ArrayBlockingQueue<JsonObject> inflight = new ArrayBlockingQueue<>(MAX_INFLIGHT);
