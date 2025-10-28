@@ -24,6 +24,9 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parents[3]))
 from ai.src.utils.config import LoadConfig
 from ai.src.utils.logging import SetupLogging, WriteMetric
 
+from ai.src.policy.Goal_Nav_Policy import GoalNavPolicy
+
+
 
 #  Schemas 
 
@@ -146,8 +149,27 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
 
     stopEvt = asyncio.Event()
     tasks: list[asyncio.Task] = []
+
+    # --- Policy setup ---
+    policy = GoalNavPolicy(cfg)
+
+    async def PolicyLoop():
+        """Run the navigation policy: consume obsQueue, produce actions."""
+        while not stopEvt.is_set():
+            try:
+                obs = await obsQueue.get()
+                acts = await policy.step(obs)
+                for act in acts:
+                    await actQueue.put(act)
+            except Exception as e:
+                log.warning("policy loop error", extra={"error": str(e)})
+                await asyncio.sleep(0.1)
+
+    # Register background loops
+    tasks.append(asyncio.create_task(PolicyLoop()))
     tasks.append(asyncio.create_task(MetricsLoop(stopEvt, cfg, obsState, obsQueue, actState, actQueue)))
     tasks.append(asyncio.create_task(HeartBeatLoop(ws, stopEvt)))
+    tasks.append(asyncio.create_task(ActionSenderLoop(stopEvt)))
 
     log.info("client connected", extra={"remote": getattr(ws, "remote_address", None)})
 
@@ -231,6 +253,8 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
             await asyncio.sleep(dt)
 
     tasks.append(asyncio.create_task(ActionSenderLoop(stopEvt)))
+
+
 
     # Main recv loop
 
