@@ -22,4 +22,8 @@ class BasePolicy:
                 for act in acts:
                     await act_q.put(act)
             except asyncio.QueueEmpty:
+                # no observation available, wait and try again
                 await asyncio.sleep(dt)
+                continue
+            await asyncio.sleep(dt)
+            continue
