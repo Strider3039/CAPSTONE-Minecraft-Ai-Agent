@@ -166,7 +166,18 @@ public class BotMod {
             hotbar.add(item);
         }
         JsonObject inventory = new JsonObject();
-        inventory.addProperty("selected_slot", inv.selected);
+        // Determine selected hotbar slot by matching the main-hand stack
+        int selectedIdx = 0;
+        var held = p.getMainHandItem();
+        for (int i = 0; i < 9; i++) {
+            var s = inv.getItem(i);
+            // Use a robust comparison (same item + same tags)
+            if (net.minecraft.world.item.ItemStack.isSameItemSameComponents(held, s)) {
+                selectedIdx = i;
+                break;
+            }
+        }
+        inventory.addProperty("selected_slot", selectedIdx);
         inventory.add("hotbar", hotbar);
 
         // ── Collision ──

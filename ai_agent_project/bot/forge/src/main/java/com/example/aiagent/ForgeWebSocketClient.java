@@ -4,8 +4,10 @@ import org.java_websocket.client.WebSocketClient;
 import org.java_websocket.handshake.ServerHandshake;
 
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 
-import net.minecraft.network.chat.Component;
 import com.google.gson.JsonObject;
 import java.net.URI;
 import java.util.*;
@@ -101,7 +103,7 @@ public class ForgeWebSocketClient extends WebSocketClient {
 
     // ───────────────────────────── Action handling ─────────────────────────────
     private void handleStructuredAction(String actionId, JsonObject payload, Minecraft mc) {
-        var p = mc.player;
+        LocalPlayer p = mc.player;
         if (p == null) return;
 
         // LOOK
@@ -143,7 +145,8 @@ public class ForgeWebSocketClient extends WebSocketClient {
         // SELECT SLOT
         if (payload.has("select_slot")) {
             int slot = payload.get("select_slot").getAsInt();
-            p.getInventory().selected = Math.max(0, Math.min(8, slot));
+            slot = Math.max(0, Math.min(8, slot));
+            p.getInventory().pickSlot(slot);
             emitActionResult(actionId, "success", "");
         }
 
@@ -152,7 +155,13 @@ public class ForgeWebSocketClient extends WebSocketClient {
             if (inCooldown("attack")) {
                 emitActionResult(actionId, "cooldown", "attack_cooldown");
             } else {
-                mc.gameMode.attack(p);
+                var hit = p.pick(5.0D, 0.0F, false);
+                if (hit.getType() == net.minecraft.world.phys.HitResult.Type.ENTITY) {
+                    var target = ((net.minecraft.world.phys.EntityHitResult) hit).getEntity();
+                    Minecraft.getInstance().gameMode.attack(p, target);
+                } else {
+                    p.swing(p.getUsedItemHand()); // no target, just swing
+                }
                 setCooldown("attack", ATTACK_COOLDOWN_MS);
                 emitActionResult(actionId, "success", "");
             }
@@ -174,7 +183,10 @@ public class ForgeWebSocketClient extends WebSocketClient {
             if (inCooldown("place")) {
                 emitActionResult(actionId, "cooldown", "place_cooldown");
             } else {
-                mc.gameMode.useItemOn(p, p.getUsedItemHand());
+                var hit = p.pick(5.0D, 0.0F, false);
+                if (hit instanceof net.minecraft.world.phys.BlockHitResult bhr) {
+                    Minecraft.getInstance().gameMode.useItemOn(p, p.getUsedItemHand(), bhr);
+                }
                 setCooldown("place", PLACE_COOLDOWN_MS);
                 emitActionResult(actionId, "success", "");
             }
@@ -187,9 +199,11 @@ public class ForgeWebSocketClient extends WebSocketClient {
         long now = System.currentTimeMillis();
         return nextAllowed.getOrDefault(kind, 0L) > now;
     }
+
     private void setCooldown(String kind, long ms) {
         nextAllowed.put(kind, System.currentTimeMillis() + ms);
     }
+
 
     // ───────────────────────────── Feedback emitters ─────────────────────────────
     private void emitActionResult(String actionId, String status, String reason) {
@@ -199,7 +213,8 @@ public class ForgeWebSocketClient extends WebSocketClient {
         result.addProperty("action_id", actionId);
         result.addProperty("status", status);
         result.addProperty("reason", reason);
-        result.addProperty("server_tick", Minecraft.getInstance().level != null ? Minecraft.getInstance().level.getGameTime() : 0);
+        result.addProperty("server_tick",
+                Minecraft.getInstance().level != null ? Minecraft.getInstance().level.getGameTime() : 0);
         result.addProperty("ts_server", System.currentTimeMillis() / 1000.0);
         result.addProperty("latency_ms", 0);
 
@@ -213,7 +228,6 @@ public class ForgeWebSocketClient extends WebSocketClient {
 
         send(evt.toString());
     }
-
 
     private void emitBridgeHealth(String level, String detail) {
         JsonObject payload = new JsonObject();
@@ -230,5 +244,4 @@ public class ForgeWebSocketClient extends WebSocketClient {
 
         send(evt.toString());
     }
-
 }
