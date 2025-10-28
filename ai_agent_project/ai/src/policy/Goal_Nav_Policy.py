@@ -1,6 +1,6 @@
 # ai/src/policy/goal_nav_policy.py
 import math, time
-from .base_policy import BasePolicy
+from .Base_Policy import BasePolicy
 
 class GoalNavPolicy(BasePolicy):
     def __init__(self, cfg, target=(20, 64, 0)):
