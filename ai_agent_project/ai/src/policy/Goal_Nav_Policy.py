@@ -2,7 +2,7 @@ import math, time
 from .Base_Policy import BasePolicy
 
 class GoalNavPolicy(BasePolicy):
-    def __init__(self, cfg, target=(20, 64, 0)):
+    def __init__(self, cfg, target=(4, -60, 33)):
         super().__init__(cfg)
         self.target = {"x": target[0], "y": target[1], "z": target[2]}
         self.prev_pos = None
