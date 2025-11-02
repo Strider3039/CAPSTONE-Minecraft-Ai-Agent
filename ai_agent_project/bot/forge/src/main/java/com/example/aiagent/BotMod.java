@@ -9,11 +9,14 @@ import net.minecraftforge.eventbus.api.listener.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 
 import java.net.URI;
+import java.util.concurrent.ConcurrentHashMap;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
+import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.item.ItemStack;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
@@ -23,12 +26,8 @@ import com.google.gson.GsonBuilder;
 import com.mojang.blaze3d.platform.InputConstants;
 import org.lwjgl.glfw.GLFW;
 
-import java.net.URI;
-import java.util.concurrent.ConcurrentHashMap;
-
 @Mod(BotMod.MODID)
 public class BotMod {
-
 
     public static final String MODID = "ai_agent_bot";
     private static BotMod INSTANCE;
@@ -38,14 +37,14 @@ public class BotMod {
     private ForgeWebSocketClient wsClient;
     private boolean triedConnect = false;
 
-    public final ConcurrentHashMap<Long, Long> latencyMap = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, Long> latencyMap = new ConcurrentHashMap<>();
 
     private static final KeyMapping TOGGLE_KEY =
         new KeyMapping("key.aibot.toggle", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_P, "key.categories.misc");
 
     private boolean aiEnabled = true;
     private long lastSendMs = 0;
-    private static final long MIN_SEND_INTERVAL_MS = 70; // safety limit (~14 Hz)
+    private static final long MIN_SEND_INTERVAL_MS = 70; // ~14 Hz
     private long reconnectCount = 0;
     private long droppedCount = 0;
 
@@ -56,7 +55,7 @@ public class BotMod {
 
     @SubscribeEvent
     public void onClientTick(TickEvent.ClientTickEvent event) {
-        if (event.phase != TickEvent.Phase.END) return;
+        if (event.phase == TickEvent.Phase.START) return; // skip start phase
         Minecraft mc = Minecraft.getInstance();
         if (mc.player == null) return;
 
@@ -69,7 +68,7 @@ public class BotMod {
                 wsClient.setOnReconnect(() -> {
                     reconnectCount++;
                     System.out.println("[AI-BOT] Reconnected (" + reconnectCount + ")");
-                    sendObservation(mc); // resync snapshot
+                    sendObservation(mc);
                 });
                 System.out.println("[AI-BOT] Connecting to AI bridge…");
             } catch (Exception e) {
@@ -78,31 +77,28 @@ public class BotMod {
             }
         }
 
-        // --- Handle key toggle ---
+        // toggle enable/disable
         if (TOGGLE_KEY.consumeClick()) {
             aiEnabled = !aiEnabled;
             mc.player.displayClientMessage(
                 Component.literal("[AI-BOT] AI " + (aiEnabled ? "ENABLED" : "DISABLED")), true);
         }
 
-        // send observations when AI is enabled
         if (aiEnabled && wsClient != null && wsClient.isOpen()) {
             long now = System.currentTimeMillis();
-            int hz = 12; // configurable later via ModConfig
-            long intervalMs = 1000L / hz;
-            if (now - lastSendMs >= intervalMs) {
+            if (now - lastSendMs >= 100) { // 10 Hz
                 sendObservation(mc);
                 lastSendMs = now;
             }
         }
     }
 
-
     private void sendObservation(Minecraft mc) {
         var p = mc.player;
         var level = mc.level;
         if (p == null || level == null) return;
 
+        // pose
         JsonObject pose = new JsonObject();
         pose.addProperty("x", p.getX());
         pose.addProperty("y", p.getY());
@@ -110,16 +106,16 @@ public class BotMod {
         pose.addProperty("yaw", p.getYRot());
         pose.addProperty("pitch", p.getXRot());
 
-        // ── Raycasts ──
+        // rays
         JsonArray rays = new JsonArray();
-        int rayCount = 5;        // from runtime.yaml
-        double fov = 30.0;       // narrower vision cone from runtime.yaml
-        double maxDist = 6.0;
+        int rayCount = 8;
+        double fov = 60.0;
+        double maxDist = 5.0;
         for (int i = 0; i < rayCount; i++) {
             double rel = (i / (double) (rayCount - 1)) * 2 - 1;
             float yaw = (float) (p.getYRot() + rel * (fov / 2));
             var from = p.getEyePosition(1f);
-            var dir = net.minecraft.world.phys.Vec3.directionFromRotation(p.getXRot(), yaw);
+            Vec3 dir = Vec3.directionFromRotation(p.getXRot(), yaw);
             var to = from.add(dir.scale(maxDist));
             var hit = level.clip(new net.minecraft.world.level.ClipContext(
                 from, to,
@@ -127,16 +123,23 @@ public class BotMod {
                 net.minecraft.world.level.ClipContext.Fluid.NONE,
                 p));
             JsonObject r = new JsonObject();
-            r.addProperty("hit", hit.getType() != net.minecraft.world.phys.HitResult.Type.MISS);
-            r.addProperty("dist", from.distanceTo(hit.getLocation()));
+            boolean hitBlock = hit.getType() != net.minecraft.world.phys.HitResult.Type.MISS;
+            double dist = hitBlock ? from.distanceTo(hit.getLocation()) : maxDist;
+            r.addProperty("hit", hitBlock);
+            r.addProperty("dist", dist);
             rays.add(r);
         }
 
-        // ── Entities ──
+        // front_clear
+        double frontClearThreshold = 1.2;
+        boolean frontClear = !(rays.size() > 0
+            && rays.get(0).getAsJsonObject().get("dist").getAsDouble() < frontClearThreshold);
+
+        // entities
         JsonArray entities = new JsonArray();
         int count = 0;
         for (var e : level.getEntities(p, p.getBoundingBox().inflate(8))) {
-            if (count++ >= 8) break; // runtime.obs.entity_cap
+            if (count++ >= 8) break;
             JsonObject ent = new JsonObject();
             ent.addProperty("id", e.getId());
             ent.addProperty("type", e.getType().toShortString());
@@ -145,17 +148,16 @@ public class BotMod {
             entities.add(ent);
         }
 
-        // ── World ──
+        // world
         JsonObject world = new JsonObject();
         world.addProperty("time_of_day", level.getDayTime());
-        String weather = "clear";
-        if (level.isThundering()) weather = "thunder";
-        else if (level.isRaining()) weather = "rain";
+        String weather = level.isThundering() ? "thunder" :
+                         (level.isRaining() ? "rain" : "clear");
         world.addProperty("weather", weather);
         world.addProperty("biome",
             level.getBiome(p.blockPosition()).unwrapKey().get().location().toString());
 
-        // ── Inventory ──
+        // inventory
         JsonArray hotbar = new JsonArray();
         var inv = p.getInventory();
         for (int i = 0; i < 9; i++) {
@@ -165,49 +167,43 @@ public class BotMod {
             item.addProperty("count", stack.getCount());
             hotbar.add(item);
         }
-        JsonObject inventory = new JsonObject();
-        // Determine selected hotbar slot by matching the main-hand stack
+        // find selected slot by comparing main-hand item
         int selectedIdx = 0;
-        var held = p.getMainHandItem();
+        ItemStack held = p.getMainHandItem();
         for (int i = 0; i < 9; i++) {
-            var s = inv.getItem(i);
-            // Use a robust comparison (same item + same tags)
-            if (net.minecraft.world.item.ItemStack.isSameItemSameComponents(held, s)) {
+            ItemStack s = inv.getItem(i);
+            if (ItemStack.isSameItemSameComponents(held, s)) {
                 selectedIdx = i;
                 break;
             }
         }
+        JsonObject inventory = new JsonObject();
         inventory.addProperty("selected_slot", selectedIdx);
         inventory.add("hotbar", hotbar);
 
-        // ── Collision ──
+        // collision
         JsonObject collision = new JsonObject();
         collision.addProperty("is_grounded", p.onGround());
         collision.addProperty("is_colliding", p.horizontalCollision);
         collision.addProperty("no_progress", false);
 
-        // ── Combine ──
+        // payload
         JsonObject payload = new JsonObject();
         payload.add("pose", pose);
         payload.add("rays", rays);
-
-        // Match runtime.yaml (front_clear_threshold = 1.2)
-        double frontClearThreshold = 1.2;
-        boolean frontClear = rays.size() > 0 &&
-            rays.get(0).getAsJsonObject().get("dist").getAsDouble() >= frontClearThreshold;
         payload.addProperty("front_clear", frontClear);
-
         payload.add("entities", entities);
         payload.add("world", world);
         payload.add("inventory", inventory);
         payload.add("collision", collision);
 
+        // wrapper
         JsonObject obs = new JsonObject();
         obs.addProperty("proto", "1");
         obs.addProperty("kind", "observation");
         long seq = level.getGameTime();
         obs.addProperty("seq", seq);
-        obs.addProperty("timestamp", System.currentTimeMillis());
+        obs.addProperty("timestamp", System.currentTimeMillis() / 1000.0);
         obs.add("payload", payload);
 
         try {
@@ -229,16 +225,11 @@ public class BotMod {
             Commands.literal("aibot")
                 .executes(ctx -> {
                     ctx.getSource().sendSystemMessage(Component.literal("AI bot is alive!"));
-                    if (wsClient != null && wsClient.isOpen()) {
-                        JsonObject ping = new JsonObject();
-                        ping.addProperty("event", "command");
-                        ping.addProperty("cmd", "/aibot");
-                        wsClient.send(GSON.toJson(ping));
-                    }
                     return 1;
                 })
         );
     }
+
     @SubscribeEvent
     public static void onRegisterKeyMappings(RegisterKeyMappingsEvent event) {
         event.register(TOGGLE_KEY);

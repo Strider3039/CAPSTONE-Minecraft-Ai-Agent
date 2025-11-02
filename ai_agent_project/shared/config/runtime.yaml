@@ -1,17 +1,18 @@
-policy:
-  tick_hz: 12                 # how often the policy is called 
-  budget_ms: 80               # max time allowed per tick
-  max_actions_per_tick: 2     # max actions the policy can emit per tick
+schema_version: 1
 
-  # success and stuck criteria for navigation tasks
-  success_radius: 1.5         # radius for considering a goal reached
-  stuck_speed_thresh: .02     # speed below which the agent is considered stuck
-  stuck_ticks: 15             # number of consecutive ticks below speed thresh to be stuck
+policy:
+  tick_hz: 12
+  budget_ms: 80
+  max_actions_per_tick: 2
+
+  success_radius: 1.5
+  stuck_speed_thresh: 0.02
+  stuck_ticks: 15
 
   heading:
-    max_look_deg: 6.0         # max degrees to turn per tick
-    yaw_p_gain: 0.6           # proportional controller gain for turning
-    stop_on_collision: true   # stop movement if raycast detects obstacle
+    max_look_deg: 6.0
+    yaw_p_gain: 0.6
+    stop_on_collision: true
 
   action_rates:
     look_hz: 15
@@ -21,13 +22,13 @@ policy:
 
 obs:
   rate_hz: 12
-  entity_cap: 8                # limit nearby entity count in obs
+  entity_cap: 8
   include:
     pose: true
     world_time_weather_biome: true
     inventory_hotbar_summary: true
     entities_nearby: true
-    los_flags: true            # include line-of-sight flags in entity list
+    los_flags: true
   quantization:
     pos_decimals: 2
     angle_decimals: 2
@@ -37,6 +38,6 @@ raycasts:
   count: 5
   max_dist: 6.0
   fov_deg: 30
-  front_clear_threshold: 1.2   # meters; below this means “blocked”
+  front_clear_threshold: 1.2
 
 worker_tasks: 1

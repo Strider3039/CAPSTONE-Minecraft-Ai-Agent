@@ -35,42 +35,23 @@
       "additionalProperties": false
     }
   },
-  "allOf": [
+  "anyOf": [
     {
-      "oneOf": [
-        {
-          "required": ["payload", "action_id"],
-          "properties": { "payload": { "required": ["look"] } }
-        },
-        {
-          "required": ["payload", "action_id"],
-          "properties": { "payload": { "required": ["move"] } }
-        },
-        {
-          "required": ["payload", "action_id"],
-          "properties": { "payload": { "required": ["jump"] } }
-        },
-        {
-          "required": ["payload", "action_id"],
-          "properties": { "payload": { "required": ["sneak"] } }
-        },
-        {
-          "required": ["payload", "action_id"],
-          "properties": { "payload": { "required": ["attack"] } }
-        },
-        {
-          "required": ["payload", "action_id"],
-          "properties": { "payload": { "required": ["use"] } }
-        },
-        {
-          "required": ["payload", "action_id"],
-          "properties": { "payload": { "required": ["place"] } }
-        },
-        {
-          "required": ["payload", "action_id"],
-          "properties": { "payload": { "required": ["select_slot"] } }
+      "required": ["payload", "action_id"],
+      "properties": {
+        "payload": {
+          "anyOf": [
+            { "required": ["look"] },
+            { "required": ["move"] },
+            { "required": ["jump"] },
+            { "required": ["sneak"] },
+            { "required": ["attack"] },
+            { "required": ["use"] },
+            { "required": ["place"] },
+            { "required": ["select_slot"] }
+          ]
         }
-      ]
+      }
     }
   ]
 }

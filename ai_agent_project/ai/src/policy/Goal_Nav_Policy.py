@@ -22,7 +22,7 @@ class GoalNavPolicy(BasePolicy):
 
         # ---- success check ----
         if dist < policy_cfg["success_radius"]:
-            self.log.info("goal reached", extra={"dist": dist})
+            self.log.info("Goal reached!", extra={"dist": dist})
             return []
 
         # ---- stuck detection ----
@@ -35,23 +35,22 @@ class GoalNavPolicy(BasePolicy):
         self.prev_pos = (pose["x"], pose["z"])
 
         if self.stuck_ticks > policy_cfg["stuck_ticks"]:
-            self.log.info("stuck recovery")
+            self.log.info("Stuck recovery")
             self.stuck_ticks = 0
-            # Try jump recovery if stuck
-            return [self._make_action(0.0, 0.0, 0.0, jump=True)]
+            return [self._make_action(0.5, 0.0, 0.0, jump=True)]
 
-        # ---- obstacle avoidance ----
+        # ---- obstacle detection ----
         blocked = (not front_clear) or (
-            rays and rays[0].get("dist", ray_cfg["front_clear_threshold"]) < ray_cfg["front_clear_threshold"]
+            rays and rays[0].get("hit", False) and
+            rays[0].get("dist", ray_cfg["front_clear_threshold"]) < ray_cfg["front_clear_threshold"]
         )
 
         if blocked:
-            # Jump if grounded and something is just in front
             if collision.get("is_grounded", False):
-                return [self._make_action(0.0, 0.0, 0.0, jump=True)]
+                return [self._make_action(0.3, 0.0, 0.0, jump=True)]
             else:
-                # rotate slightly to search for open path
-                return [self._make_action(0.0, 0.0, 10.0)]
+                # turn slightly right to find opening
+                return [self._make_action(0.0, 0.0, 15.0)]
 
         # ---- yaw controller ----
         desired_yaw = math.degrees(math.atan2(-dx, dz))
@@ -60,11 +59,10 @@ class GoalNavPolicy(BasePolicy):
         dYaw = max(-policy_cfg["heading"]["max_look_deg"],
                    min(policy_cfg["heading"]["max_look_deg"], dYaw))
 
-        # ---- forward movement ----
+        # ---- forward move ----
         return [self._make_action(1.0, 0.0, dYaw)]
 
     def _make_action(self, forward=0.0, strafe=0.0, dYaw=0.0, jump=False):
-        """Create a fully schema-compliant action message."""
         payload = {
             "move": {"forward": forward, "strafe": strafe},
             "look": {"dYaw": dYaw, "dPitch": 0.0}
@@ -73,11 +71,10 @@ class GoalNavPolicy(BasePolicy):
             payload["jump"] = True
 
         return {
-            "proto": "1",  # ✅ match schema
+            "proto": "1",
             "kind": "action",
             "seq": int(time.time() * 1000),
             "timestamp": time.time(),
-            "action_id": f"act_{int(time.time() * 1000)}",  # ✅ required
+            "action_id": f"act_{int(time.time() * 1000)}",
             "payload": payload
         }
-
