@@ -12,9 +12,12 @@ import com.google.gson.JsonObject;
 import java.net.URI;
 import java.util.*;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class ForgeWebSocketClient extends WebSocketClient {
     private final Map<String, Long> nextAllowed = new HashMap<>();
+    private final AtomicBoolean reconnecting = new AtomicBoolean(false);
+
     private static final long ATTACK_COOLDOWN_MS = 150;
     private static final long USE_COOLDOWN_MS    = 150;
     private static final long PLACE_COOLDOWN_MS  = 150;
@@ -40,23 +43,26 @@ public class ForgeWebSocketClient extends WebSocketClient {
     public void onClose(int code, String reason, boolean remote) {
         System.out.println("[WS] Connection closed: " + reason);
 
-        // Persistent reconnect loop
+        // Prevent overlapping reconnects
+        if (reconnecting.getAndSet(true)) return;
+
         new Thread(() -> {
-            while (true) {
+            while (!isOpen()) {
                 try {
-                    System.out.println("[WS] Attempting reconnect…");
-                    this.reconnectBlocking();  // safer synchronous reconnect
+                    System.out.println("[WS] Attempting reconnect...");
+                    reconnectBlocking();  // blocks until connected or fails
                     System.out.println("[WS] Reconnected successfully!");
                     inflight.clear();
                     emitBridgeHealth("info", "reconnected");
                     if (onReconnect != null) onReconnect.run();
+                    reconnecting.set(false);
                     break;
                 } catch (Exception e) {
                     System.err.println("[WS] Reconnect failed: " + e.getMessage());
                     try { Thread.sleep(5000); } catch (InterruptedException ignored) {}
                 }
             }
-        }).start();
+        }, "WS-Reconnector").start();
     }
 
     @Override
