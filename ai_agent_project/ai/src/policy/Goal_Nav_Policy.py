@@ -63,19 +63,21 @@ class GoalNavPolicy(BasePolicy):
         # ---- forward movement ----
         return [self._make_action(1.0, 0.0, dYaw)]
 
-    def _make_action(self, forward, strafe, dYaw, jump=False):
-        """Builds a complete action message for the bridge."""
+    def _make_action(self, forward=0.0, strafe=0.0, dYaw=0.0, jump=False):
+        """Create a fully schema-compliant action message."""
         payload = {
             "move": {"forward": forward, "strafe": strafe},
-            "look": {"dYaw": dYaw, "dPitch": 0.0},
+            "look": {"dYaw": dYaw, "dPitch": 0.0}
         }
         if jump:
             payload["jump"] = True
 
         return {
-            "proto": "1.1",
+            "proto": "1",  # ✅ match schema
             "kind": "action",
             "seq": int(time.time() * 1000),
             "timestamp": time.time(),
-            "payload": payload,
+            "action_id": f"act_{int(time.time() * 1000)}",  # ✅ required
+            "payload": payload
         }
+
