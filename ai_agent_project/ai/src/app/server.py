@@ -165,11 +165,6 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
                 log.warning("policy loop error", extra={"error": str(e)})
                 await asyncio.sleep(0.1)
 
-    # Register background loops
-    tasks.append(asyncio.create_task(PolicyLoop()))
-    tasks.append(asyncio.create_task(MetricsLoop(stopEvt, cfg, obsState, obsQueue, actState, actQueue)))
-    tasks.append(asyncio.create_task(HeartBeatLoop(ws, stopEvt)))
-    tasks.append(asyncio.create_task(ActionSenderLoop(stopEvt)))
 
     log.info("client connected", extra={"remote": getattr(ws, "remote_address", None)})
 
@@ -251,10 +246,12 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
                 sent += 1
 
             await asyncio.sleep(dt)
-
+            
+    # Register background loops
+    tasks.append(asyncio.create_task(PolicyLoop()))
+    tasks.append(asyncio.create_task(MetricsLoop(stopEvt, cfg, obsState, obsQueue, actState, actQueue)))
+    tasks.append(asyncio.create_task(HeartBeatLoop(ws, stopEvt)))
     tasks.append(asyncio.create_task(ActionSenderLoop(stopEvt)))
-
-
 
     # Main recv loop
 
