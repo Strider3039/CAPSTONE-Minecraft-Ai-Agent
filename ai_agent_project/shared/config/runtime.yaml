@@ -1,7 +1,7 @@
 schema_version: 1
 
 policy:
-  tick_hz: 12
+  tick_hz: 10                # Slightly lower rate = smoother updates, less stutter
   budget_ms: 80
   max_actions_per_tick: 2
 
@@ -10,13 +10,13 @@ policy:
   stuck_ticks: 15
 
   heading:
-    max_look_deg: 6.0
-    yaw_p_gain: 0.6
+    max_look_deg: 25.0        # was 6.0 → allows faster, more decisive turns
+    yaw_p_gain: 1.0           # was 0.6 → improves angular response
     stop_on_collision: true
 
   action_rates:
-    look_hz: 15
-    move_hz: 12
+    look_hz: 10               # sync with tick_hz for steady pacing
+    move_hz: 10
     jump_min_ms: 200
     interact_cooldown_ms: 500
 
@@ -35,9 +35,9 @@ obs:
     dist_decimals: 2
 
 raycasts:
-  count: 5
+  count: 8                    # was 5 → wider sampling improves obstacle sense
   max_dist: 6.0
-  fov_deg: 30
-  front_clear_threshold: 1.2
+  fov_deg: 60                 # was 30 → better peripheral awareness
+  front_clear_threshold: 1.3  # tiny bump to react sooner to walls
 
 worker_tasks: 1
