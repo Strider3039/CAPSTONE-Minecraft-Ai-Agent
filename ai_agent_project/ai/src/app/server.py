@@ -228,12 +228,19 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
 
             # Send one look and move per tick
             if latestLook:
-                try: await SendAction(latestLook)
-                except Exception: pass
+                log.info("sending look action", extra={"payload": latestLook})
+                try:
+                    await SendAction(latestLook)
+                except Exception as e:
+                    log.warning("look send failed", extra={"error": str(e)})
                 latestLook = None
+
             if latestMove:
-                try: await SendAction(latestMove)
-                except Exception: pass
+                log.info("sending move action", extra={"payload": latestMove})
+                try:
+                    await SendAction(latestMove)
+                except Exception as e:
+                    log.warning("move send failed", extra={"error": str(e)})
                 latestMove = None
 
             # Send limited discrete actions
@@ -241,12 +248,16 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
             sent = 0
             while discrete and sent < maxPerTick:
                 msg = discrete.popleft()
-                try: await SendAction(msg)
-                except Exception: pass
+                log.info("sending discrete action", extra={"payload": msg})
+                try:
+                    await SendAction(msg)
+                except Exception as e:
+                    log.warning("discrete send failed", extra={"error": str(e)})
                 sent += 1
 
+
             await asyncio.sleep(dt)
-            
+
     # Register background loops
     tasks.append(asyncio.create_task(PolicyLoop()))
     tasks.append(asyncio.create_task(MetricsLoop(stopEvt, cfg, obsState, obsQueue, actState, actQueue)))

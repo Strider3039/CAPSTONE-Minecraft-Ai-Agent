@@ -97,6 +97,8 @@ public class ForgeWebSocketClient extends WebSocketClient {
                     emitBridgeHealth("warn", "dropped_input");
                 }
                 inflight.offer(payload);
+                
+                System.out.println("[WS] Action received: " + payload.toString());
 
                 // Execute the action safely on the main game thread
                 mc.execute(() -> handleStructuredAction(actionId, payload, mc));
