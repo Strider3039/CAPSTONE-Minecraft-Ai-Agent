@@ -1,4 +1,4 @@
-# server.py  (Sprint-2 complete through Step 3)
+# server.py  (Sprint-2 complete through Step 3, updated for proper seq + policy fix)
 
 import asyncio
 import json
@@ -164,29 +164,37 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
 
     # --- Policy setup ---
     policy = GoalNavPolicy(cfg)
-    # Inject command-sending helper into the policy so teleporting works
+
+    # ✅ Added: helper so policy can issue /tp and similar commands
     async def send_command(cmd: str):
         await SendCommand(ws, cmd)
 
     policy.send_command = send_command
 
-    # Optionally, start the evaluation loop automatically when connected
+    # ✅ Added: automatically start evaluation loop when connected
     asyncio.create_task(policy.evaluate(bridge=policy))
+
+    # ✅ Added: action seq counter to prevent stale drops on client
+    seqCounter = 0
 
     async def PolicyLoop():
         """Run the navigation policy: consume obsQueue, produce actions."""
         while not stopEvt.is_set():
             try:
                 obs = await obsQueue.get()
+
+                # Attach live queues for policy bridge compatibility
+                policy._latest_obs = obs
+                if not hasattr(policy, "_action_queue"):
+                    policy._action_queue = actQueue
+
                 acts = await policy.step(obs)
                 for act in acts:
                     await actQueue.put(act)
+
             except Exception as e:
                 log.warning("policy loop error", extra={"error": str(e)})
                 await asyncio.sleep(0.1)
-
-
-    log.info("client connected", extra={"remote": getattr(ws, "remote_address", None)})
 
     # Helpers inside Handle 
 
@@ -197,10 +205,20 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
 
     async def SendAction(actionMsg: dict, timeoutMs: int = 300) -> dict:
         """Validate, send, and await action_result."""
+        nonlocal seqCounter
+        # ✅ Added: monotonic sequence number so Java client accepts actions
+        seqCounter += 1
+        actionMsg["seq"] = seqCounter
+        actionMsg.setdefault("proto", "1")
+        actionMsg.setdefault("kind", "action")
+        actionMsg.setdefault("timestamp", time.time())
+
         validate(instance=actionMsg, schema=ACT)
+
         actionId = actionMsg.get("action_id") or actionMsg.get("payload", {}).get("action_id")
         if not actionId:
             raise ValueError("action_id missing in action message")
+
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         pending[actionId] = fut
         await ws.send(json.dumps(actionMsg))
@@ -275,7 +293,6 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
                     log.warning("discrete send failed", extra={"error": str(e)})
                 sent += 1
 
-
             await asyncio.sleep(dt)
 
     # Register background loops
@@ -285,7 +302,6 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
     tasks.append(asyncio.create_task(ActionSenderLoop(stopEvt)))
 
     # Main recv loop
-
     try:
         async for raw in ws:
             log.debug("recv", extra={"bytes": len(raw)})
