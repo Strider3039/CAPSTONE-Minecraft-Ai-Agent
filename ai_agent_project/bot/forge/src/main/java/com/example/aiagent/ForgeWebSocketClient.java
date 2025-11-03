@@ -81,6 +81,7 @@ public class ForgeWebSocketClient extends WebSocketClient {
             JsonObject json = BotMod.GSON.fromJson(message, JsonObject.class);
             if (json == null) return;
 
+            // ───── Handle ACTION messages ─────
             if (json.has("kind") && "action".equals(json.get("kind").getAsString())) {
                 long seq = json.has("seq") ? json.get("seq").getAsLong() : -1;
                 String actionId = json.has("action_id") ? json.get("action_id").getAsString() : "unknown";
@@ -104,7 +105,30 @@ public class ForgeWebSocketClient extends WebSocketClient {
 
                 // Execute the action safely on the main game thread
                 mc.execute(() -> handleStructuredAction(actionId, payload, mc));
+                return;
             }
+
+            // ───── Handle COMMAND messages (e.g., /tp, /say) ─────
+            if (json.has("kind") && "command".equals(json.get("kind").getAsString())) {
+                JsonObject payload = json.getAsJsonObject("payload");
+                if (payload != null && payload.has("cmd")) {
+                    String command = payload.get("cmd").getAsString();
+                    mc.execute(() -> {
+                        if (mc.player != null && mc.player.connection != null) {
+                            mc.player.connection.sendCommand(command);
+                            mc.player.displayClientMessage(
+                                net.minecraft.network.chat.Component.literal("§a[AI] Executed: " + command),
+                                true
+                            );
+                            System.out.println("[WS] Executed command: " + command);
+                        } else {
+                            System.err.println("[WS] Skipped command (no player): " + command);
+                        }
+                    });
+                }
+                return;
+            }
+
         } catch (Exception e) {
             System.err.println("[WS] Parse error: " + e.getMessage());
         }

@@ -57,6 +57,18 @@ async def SendEvents(ws: WebSocketServerProtocol, kind: str, payload: dict) -> N
         log.warning("internal event failed schema", extra={"error": str(e), "kind": kind})
     await ws.send(json.dumps(msg))
 
+async def SendCommand(ws: WebSocketServerProtocol, cmd: str) -> None:
+    """Send a Minecraft command to the client (e.g., tp, say, time set day)."""
+    msg = {
+        "proto": "1",
+        "kind": "command",
+        "seq": int(time.time() * 1000),
+        "timestamp": time.time(),
+        "payload": {"cmd": cmd},
+    }
+    await ws.send(json.dumps(msg))
+    stdlog.getLogger("bridge.server").info("sent command", extra={"cmd": cmd})
+
 
 async def EnqueueObservation(q: asyncio.Queue, item: dict, state: dict) -> None:
     """Put observation into bounded queue; drop oldest when full."""
@@ -152,6 +164,14 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
 
     # --- Policy setup ---
     policy = GoalNavPolicy(cfg)
+    # Inject command-sending helper into the policy so teleporting works
+    async def send_command(cmd: str):
+        await SendCommand(ws, cmd)
+
+    policy.send_command = send_command
+
+    # Optionally, start the evaluation loop automatically when connected
+    asyncio.create_task(policy.evaluate(bridge=policy))
 
     async def PolicyLoop():
         """Run the navigation policy: consume obsQueue, produce actions."""
