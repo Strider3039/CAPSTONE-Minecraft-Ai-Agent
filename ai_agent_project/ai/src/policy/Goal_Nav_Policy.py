@@ -13,12 +13,12 @@ class GoalNavPolicy(BasePolicy):
     - Forces clear daytime environment
     """
 
-    def __init__(self, cfg, target=(3.5, -60.0, 32.7), start=(-46, -60.0, -1)):
+    def __init__(self, cfg, target=(29.3, -60.0, 124.5), start=(-19, -60.0, 90)):
         super().__init__(cfg)
         self.target = {"x": target[0], "y": target[1], "z": target[2]}
         self.start = start
         self.episode_count = 20
-        self.results_file = pathlib.Path(__file__).resolve().parents[3] / "evaluation_results.csv"
+        self.results_file = pathlib.Path(__file__).resolve().parents[3] / "evaluation_results_for_Pylons.csv"
         self.reset_episode_vars()
 
     def reset_episode_vars(self):
@@ -174,48 +174,120 @@ class GoalNavPolicy(BasePolicy):
     # Navigation logic (with faster turn & move)
     # ───────────────────────────────────────────────
     async def step(self, obs):
+        """
+        Adaptive goal navigation with dynamic escape direction.
+        - Turns toward the side with more free space when stuck.
+        - Moves toward goal when clear.
+        - Avoids oscillation and traps by committing to escape until progress is made.
+        """
         try:
             payload = obs.get("payload", {})
             pose = payload.get("pose", {})
-            raycasts = payload.get("raycasts", [])
-            if not pose:
+            rays = payload.get("rays", [])
+            if not pose or not rays:
                 return []
 
+            # --- pose and goal ---
             px, pz = pose.get("x", 0.0), pose.get("z", 0.0)
             gx, gz = self.target["x"], self.target["z"]
             dx, dz = gx - px, gz - pz
-            dist = math.hypot(dx, dz)
-
-            if dist < 1.0:
+            dist_to_goal = math.hypot(dx, dz)
+            if dist_to_goal < 1.0:
                 return [self._make_action(0.0, 0.0)]
 
-            # Compute target yaw
             yaw_to_goal = math.degrees(math.atan2(-dx, dz))
             current_yaw = pose.get("yaw", 0.0)
-            yaw_error = ((yaw_to_goal - current_yaw + 180) % 360) - 180
 
-            yaw_adjust = max(min(yaw_error * 1.2, 15.0), -15.0)
+            # --- init persistent state ---
+            if not hasattr(self, "mode"):
+                self.mode = "move"  # move / turn / escape
+            if not hasattr(self, "turn_dir"):
+                self.turn_dir = 1  # +1 = clockwise, -1 = counterclockwise
+            if not hasattr(self, "_last_pos"):
+                self._last_pos = (px, pz)
+            if not hasattr(self, "_stuck_counter"):
+                self._stuck_counter = 0
+            if not hasattr(self, "_escape_progress"):
+                self._escape_progress = 0.0
 
-            forward_speed = 1.0
+            # --- rays ---
+            n = max(1, len(rays))
+            ray_angles = [r.get("angle_deg", i * (360.0 / n)) for i, r in enumerate(rays)]
+            ray_dists = [max(0.0, r.get("dist", 0.0)) for r in rays]
 
-            # Raycast obstacle avoidance
-            front = raycasts[2]["dist"] if len(raycasts) >= 3 else 999
-            left = raycasts[0]["dist"] if len(raycasts) >= 1 else 999
-            right = raycasts[-1]["dist"] if len(raycasts) >= 1 else 999
+            def ang_diff(a, b):
+                return ((a - b + 180) % 360) - 180
 
-            if front < 1.5:
+            # front clearance (±20°)
+            front_clear = sum(
+                d for a, d in zip(ray_angles, ray_dists)
+                if abs(ang_diff(a, current_yaw)) <= 20
+            ) / max(1, sum(1 for a in ray_angles if abs(ang_diff(a, current_yaw)) <= 20))
+
+            # ───────────── Escape Mode ─────────────
+            if self.mode == "escape":
+                dist_moved = math.hypot(px - self._escape_start[0], pz - self._escape_start[1])
+                if dist_moved > 1.0:
+                    print("[POLICY] Escape complete — resuming goal seeking.")
+                    self.mode = "move"
+                else:
+                    # keep turning and moving forward slightly
+                    return [self._make_action(0.4, 25.0 * self.turn_dir)]
+
+            # ───────────── Normal Movement ─────────────
+            forward_speed = 0.0
+            dYaw = 0.0
+
+            if front_clear < 0.5:
+                # too close to obstacle — turn clockwise
+                self.mode = "turn"
                 forward_speed = 0.0
-                if left > right:
-                    yaw_adjust += 8.0
-                elif right > left:
-                    yaw_adjust -= 8.0
+                dYaw = 30.0 * self.turn_dir
+            else:
+                # clear — move toward goal
+                self.mode = "move"
+                yaw_err = ang_diff(yaw_to_goal, current_yaw)
+                forward_speed = 0.4
+                dYaw = max(min(yaw_err, 20.0), -20.0)
 
-            if abs(yaw_error) > 20:
-                forward_speed = 0.0
+            # ───────────── Stuck Detection ─────────────
+            last_px, last_pz = self._last_pos
+            moved = math.hypot(px - last_px, pz - last_pz)
+            self._last_pos = (px, pz)
 
-            # Keep pitch level (no up/down tilt)
-            dPitch = 0.0
-            return [self._make_action(forward_speed, yaw_adjust)]
+            if moved < 0.05:
+                self._stuck_counter += 1
+            else:
+                self._stuck_counter = 0
+
+            if self._stuck_counter > 15:
+                # Decide escape direction dynamically
+                # Compare mean distance to left vs right side
+                left_clear = sum(
+                    d for a, d in zip(ray_angles, ray_dists)
+                    if 40 <= ang_diff(a, current_yaw) <= 100
+                ) / max(1, sum(1 for a in ray_angles if 40 <= ang_diff(a, current_yaw) <= 100))
+
+                right_clear = sum(
+                    d for a, d in zip(ray_angles, ray_dists)
+                    if -100 <= ang_diff(a, current_yaw) <= -40
+                ) / max(1, sum(1 for a in ray_angles if -100 <= ang_diff(a, current_yaw) <= -40))
+
+                self.turn_dir = 1 if right_clear >= left_clear else -1
+
+                side = "right" if self.turn_dir == 1 else "left"
+                print(f"[POLICY] Stuck detected — escaping to {side} (R={right_clear:.2f}, L={left_clear:.2f})")
+
+                self._stuck_counter = 0
+                self.mode = "escape"
+                self._escape_start = (px, pz)
+
+                return [
+                    self._make_action(-0.2, 0.0),
+                    self._make_action(0.0, 40.0 * self.turn_dir)
+                ]
+
+            return [self._make_action(forward_speed, dYaw)]
 
         except Exception as e:
             print("[POLICY ERROR] step:", e)

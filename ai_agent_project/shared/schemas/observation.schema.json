@@ -26,13 +26,14 @@
         },
         "rays": {
           "type": "array",
-          "maxItems": 8,
+          "maxItems": 16,
           "items": {
             "type": "object",
             "required": ["hit", "dist"],
             "properties": {
               "hit": { "type": "boolean" },
-              "dist": { "type": "number", "minimum": 0 }
+              "dist": { "type": "number", "minimum": 0 },
+              "angle_deg": { "type": "number", "minimum": 0, "maximum": 360 }
             },
             "additionalProperties": false
           }

@@ -106,27 +106,31 @@ public class BotMod {
         pose.addProperty("yaw", p.getYRot());
         pose.addProperty("pitch", p.getXRot());
 
-        // rays
-        JsonArray rays = new JsonArray();
-        int rayCount = 8;
-        double fov = 60.0;
+        // --- 360° raycast coverage ---
+        JsonArray rays = new JsonArray();  // ✅ <-- You need this line
+        int rayCount = 16;                 // more rays = smoother spatial awareness
+        double fov = 360.0;                // full circle around player
         double maxDist = 5.0;
+
         for (int i = 0; i < rayCount; i++) {
-            double rel = (i / (double) (rayCount - 1)) * 2 - 1;
-            float yaw = (float) (p.getYRot() + rel * (fov / 2));
+            double angle = (i / (double) rayCount) * fov;
+            float yaw = (float) (p.getYRot() + angle);
             var from = p.getEyePosition(1f);
             Vec3 dir = Vec3.directionFromRotation(p.getXRot(), yaw);
             var to = from.add(dir.scale(maxDist));
+
             var hit = level.clip(new net.minecraft.world.level.ClipContext(
                 from, to,
                 net.minecraft.world.level.ClipContext.Block.COLLIDER,
                 net.minecraft.world.level.ClipContext.Fluid.NONE,
                 p));
+
             JsonObject r = new JsonObject();
             boolean hitBlock = hit.getType() != net.minecraft.world.phys.HitResult.Type.MISS;
             double dist = hitBlock ? from.distanceTo(hit.getLocation()) : maxDist;
             r.addProperty("hit", hitBlock);
             r.addProperty("dist", dist);
+            r.addProperty("angle_deg", (i / (double) rayCount) * 360.0);
             rays.add(r);
         }
 

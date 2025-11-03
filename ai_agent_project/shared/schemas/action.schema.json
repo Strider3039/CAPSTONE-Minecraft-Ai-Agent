@@ -15,13 +15,21 @@
       "properties": {
         "look": {
           "type": "object",
-          "properties": { "dYaw": { "type": "number" }, "dPitch": { "type": "number" } },
+          "properties": {
+            "dYaw": { "type": "number" },
+            "dPitch": { "type": "number" },
+            "turn_speed": { "type": "number", "minimum": 0 }
+          },
           "required": ["dYaw", "dPitch"],
           "additionalProperties": false
         },
         "move": {
           "type": "object",
-          "properties": { "forward": { "type": "number" }, "strafe": { "type": "number" } },
+          "properties": {
+            "forward": { "type": "number" },
+            "strafe": { "type": "number" },
+            "speed": { "type": "number", "minimum": 0 }
+          },
           "required": ["forward", "strafe"],
           "additionalProperties": false
         },
