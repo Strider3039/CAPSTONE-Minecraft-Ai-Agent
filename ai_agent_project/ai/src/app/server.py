@@ -297,7 +297,7 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
         discrete: deque[dict] = deque()
 
         while not stopEvt.is_set():
-            # Drain queued actions (non-blocking)
+            # Drain queue (non-blocking)
             try:
                 while True:
                     item = actQueue.get_nowait()
@@ -470,15 +470,4 @@ async def Main() -> None:
 
 
 if __name__ == "__main__":
-    while True:
-        try:
-            print("[SERVER] Starting server.py ...")
-            asyncio.run(Main())
-        except KeyboardInterrupt:
-            print("[SERVER] Stopped manually.")
-            break
-        except Exception as e:
-            print(f"[SERVER] Crashed with error: {e}")
-            print("[SERVER] Restarting in 5 seconds...")
-            time.sleep(5)
-            continue
+    asyncio.run(Main())
