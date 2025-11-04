@@ -13,7 +13,7 @@ class GoalNavPolicy(BasePolicy):
     - Forces clear daytime environment
     """
 
-    def __init__(self, cfg, target=(29.3, -60.0, 124.5), start=(-19, -60.0, 90)):
+    def __init__(self, cfg, target=(89, -60.0, 55), start=(41, -60.0, 21)):
         super().__init__(cfg)
         self.target = {"x": target[0], "y": target[1], "z": target[2]}
         self.start = start
