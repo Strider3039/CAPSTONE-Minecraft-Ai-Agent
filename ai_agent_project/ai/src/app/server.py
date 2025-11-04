@@ -25,6 +25,7 @@ from ai.src.utils.config import LoadConfig
 from ai.src.utils.logging import SetupLogging, WriteMetric
 
 from ai.src.policy.Goal_Nav_Policy import GoalNavPolicy
+from policy_worker import PolicyWorker
 
 
 
@@ -180,35 +181,13 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
         except Exception as e:
             log.warning("immediate send failed", extra={"error": str(e)})
 
+    async def emit_event(kind: str, payload: dict) -> None:
+        await SendEvents(ws, kind, payload)
+
+
     def SendImmediate(item: dict) -> None:
         # Fire-and-forget, but errors are caught in the task
         asyncio.create_task(_send_immediate(item))
-
-
-    async def PolicyLoop():
-        """Run the navigation policy: consume obsQueue, produce actions."""
-        while not stopEvt.is_set():
-            try:
-                obs = await obsQueue.get()
-
-                # Attach live queues for policy bridge compatibility
-                policy._latest_obs = obs
-                if not hasattr(policy, "_action_queue"):
-                    policy._action_queue = actQueue
-
-                acts = await policy.step(obs)
-                for act in acts:
-                    payload = act.get("payload", {})
-                    # treat look/move as continuous; send immediately
-                    if "look" in payload or "move" in payload:
-                        SendImmediate(act)
-                    else:
-                        await EnqueueAction(act)
-
-            except Exception as e:
-                log.warning("policy loop error", extra={"error": str(e)})
-                await asyncio.sleep(0.1)
-
 
     # Helpers inside Handle 
 
@@ -280,10 +259,23 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
 
 
     # Register background loops
-    tasks.append(asyncio.create_task(PolicyLoop()))
     tasks.append(asyncio.create_task(MetricsLoop(stopEvt, cfg, obsState, obsQueue, actState, actQueue)))
     tasks.append(asyncio.create_task(HeartBeatLoop(ws, stopEvt)))
     tasks.append(asyncio.create_task(ActionSenderLoop(stopEvt)))
+
+    tasks.append(asyncio.create_task(
+        PolicyWorker(
+            obs_q=obsQueue,
+            act_q=actQueue,
+            drop_policy="block",
+            act_schema=ACT,
+            on_drop=None,
+            log=stdlog.getLogger("bridge.policy"),
+            emit_event=emit_event,
+            policy_step=policy.step,       # << scripted policy hook
+        )
+    ))
+
 
     # Main recv loop
     try:
