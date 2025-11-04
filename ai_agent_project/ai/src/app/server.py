@@ -180,10 +180,15 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
     # put this helper inside Handle(...) alongside SendAction
     async def SendActionNoWait(actionMsg: dict) -> None:
         """Validate and send without awaiting action_result (for continuous actions)."""
+        nonlocal seqCounter
+        seqCounter += 1
+        actionMsg["seq"] = seqCounter
+        actionMsg.setdefault("proto", "1")
+        actionMsg.setdefault("kind", "action")
+        actionMsg.setdefault("timestamp", time.time())
+
         validate(instance=actionMsg, schema=ACT)
         await ws.send(json.dumps(actionMsg))
-
-
 
     async def PolicyLoop():
         """Run the navigation policy: consume obsQueue, produce actions."""
@@ -387,4 +392,15 @@ async def Main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(Main())
+    while True:
+        try:
+            print("[SERVER] Starting server.py ...")
+            asyncio.run(Main())
+        except KeyboardInterrupt:
+            print("[SERVER] Stopped manually.")
+            break
+        except Exception as e:
+            print(f"[SERVER] Crashed with error: {e}")
+            print("[SERVER] Restarting in 5 seconds...")
+            time.sleep(5)
+            continue
