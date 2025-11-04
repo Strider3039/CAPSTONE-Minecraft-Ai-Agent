@@ -34,6 +34,7 @@ public class ForgeWebSocketClient extends WebSocketClient {
     public void setOnReconnect(Runnable r) { this.onReconnect = r; }
 
     private long lastAckSeq = -1;
+    private final AtomicBoolean bridgeReady = new AtomicBoolean(false);
 
     public ForgeWebSocketClient(URI serverUri) {
         super(serverUri);
@@ -43,12 +44,17 @@ public class ForgeWebSocketClient extends WebSocketClient {
     @Override
     public void onOpen(ServerHandshake handshakedata) {
         System.out.println("[WS] Connected to AI bridge");
+        bridgeReady.set(true);
         emitBridgeHealth("info", "connected");
+
+        // Let the server know the client is ready for action messages again
+        sendBridgeReady();
     }
 
     @Override
     public void onClose(int code, String reason, boolean remote) {
         System.out.println("[WS] Connection closed: " + reason);
+        bridgeReady.set(false);
 
         // Prevent overlapping reconnects
         if (reconnecting.getAndSet(true)) return;
@@ -57,11 +63,18 @@ public class ForgeWebSocketClient extends WebSocketClient {
             while (!isOpen()) {
                 try {
                     System.out.println("[WS] Attempting reconnect...");
-                    reconnectBlocking();  // blocks until connected or fails
+                    reconnectBlocking();
                     System.out.println("[WS] Reconnected successfully!");
+
                     inflight.clear();
+                    bridgeReady.set(true);
+
+                    // Send bridge health and ready signals
                     emitBridgeHealth("info", "reconnected");
+                    sendBridgeReady();
+
                     if (onReconnect != null) onReconnect.run();
+
                     reconnecting.set(false);
                     break;
                 } catch (Exception e) {
@@ -91,6 +104,11 @@ public class ForgeWebSocketClient extends WebSocketClient {
 
             // Handle action messages
             if ("action".equals(kind)) {
+                if (!bridgeReady.get()) {
+                    System.out.println("[WS] Ignoring action: bridge not ready yet");
+                    return;
+                }
+
                 long seq = json.has("seq") ? json.get("seq").getAsLong() : -1;
                 String actionId = json.has("action_id") ? json.get("action_id").getAsString() : "unknown";
 
@@ -184,26 +202,6 @@ public class ForgeWebSocketClient extends WebSocketClient {
         emitActionResult(actionId, overallStatus, reason);
     }
 
-    // ───────────────────────────── Helpers ─────────────────────────────
-    private static boolean safeGetBool(JsonObject obj, String name) {
-        try { return obj.get(name).getAsBoolean(); } catch (Exception e) { return false; }
-    }
-
-    private static String worstOf(String a, String b) {
-        if ("fail".equals(a) || "fail".equals(b)) return "fail";
-        if ("cooldown".equals(a) || "cooldown".equals(b)) return "cooldown";
-        return "success";
-    }
-
-    private boolean inCooldown(String kind) {
-        long now = System.currentTimeMillis();
-        return nextAllowed.getOrDefault(kind, 0L) > now;
-    }
-
-    private void setCooldown(String kind, long ms) {
-        nextAllowed.put(kind, System.currentTimeMillis() + ms);
-    }
-
     // ───────────────────────────── Feedback emitters ─────────────────────────────
     private void emitActionResult(String actionId, String status, String reason) {
         long now = System.currentTimeMillis();
@@ -268,5 +266,23 @@ public class ForgeWebSocketClient extends WebSocketClient {
         evt.add("payload", payload);
 
         send(evt.toString());
+    }
+
+    private void sendBridgeReady() {
+        JsonObject payload = new JsonObject();
+        JsonObject ready = new JsonObject();
+        ready.addProperty("level", "info");
+        ready.addProperty("detail", "bridge_ready");
+        payload.add("bridge_health", ready);
+
+        JsonObject evt = new JsonObject();
+        evt.addProperty("proto", "1");
+        evt.addProperty("kind", "bridge_health");
+        evt.addProperty("seq", seqCounter.incrementAndGet());
+        evt.addProperty("timestamp", System.currentTimeMillis() / 1000.0);
+        evt.add("payload", payload);
+
+        send(evt.toString());
+        System.out.println("[WS] Bridge ready for AI actions.");
     }
 }
