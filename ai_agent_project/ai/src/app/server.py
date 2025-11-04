@@ -470,4 +470,15 @@ async def Main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(Main())
+    while True:
+        try:
+            print("[SERVER] Starting server.py ...")
+            asyncio.run(Main())
+        except KeyboardInterrupt:
+            print("[SERVER] Stopped manually.")
+            break
+        except Exception as e:
+            print(f"[SERVER] Crashed with error: {e}")
+            print("[SERVER] Restarting in 5 seconds...")
+            time.sleep(5)
+            continue
