@@ -27,6 +27,29 @@ from ai.src.utils.logging import SetupLogging, WriteMetric
 from ai.src.policy.Goal_Nav_Policy import GoalNavPolicy
 from policy_worker import PolicyWorker
 
+# --- fast JSON encode/decode (prefers orjson) ---
+try:
+    import orjson as _fastjson
+
+    def _dumps(obj):
+        return _fastjson.dumps(obj)  # bytes
+
+    def _loads(s):
+        # websockets may give us str; orjson wants bytes
+        return _fastjson.loads(s if isinstance(s, (bytes, bytearray)) else s.encode("utf-8"))
+
+    _SEND_TEXT = False  # send binary frames for speed
+except Exception:
+    import json as _fastjson
+
+    def _dumps(obj):
+        # compact separators = smaller frames
+        return _fastjson.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+
+    def _loads(s):
+        return _fastjson.loads(s)
+
+    _SEND_TEXT = True  # text frames
 
 
 #  Schemas 
@@ -56,7 +79,8 @@ async def SendEvents(ws: WebSocketServerProtocol, kind: str, payload: dict) -> N
         validate(instance=msg, schema=EVT)
     except ValidationError as e:
         log.warning("internal event failed schema", extra={"error": str(e), "kind": kind})
-    await ws.send(json.dumps(msg))
+    payload = _dumps(msg)
+    await ws.send(payload)
 
 async def SendCommand(ws: WebSocketServerProtocol, cmd: str) -> None:
     """Send a Minecraft command to the client (e.g., tp, say, time set day)."""
@@ -67,7 +91,8 @@ async def SendCommand(ws: WebSocketServerProtocol, cmd: str) -> None:
         "timestamp": time.time(),
         "payload": {"cmd": cmd},
     }
-    await ws.send(json.dumps(msg))
+    payload = _dumps(msg)
+    await ws.send(payload)
     stdlog.getLogger("bridge.server").info("sent command", extra={"cmd": cmd})
 
 
@@ -250,11 +275,25 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
         except Exception:
             return True
 
+    def _exact_scheduler(hz: int):
+        dt = 1.0 / float(max(1, hz))
+        next_deadline = time.perf_counter()
+
+        async def sleep_exact():
+            nonlocal next_deadline
+            next_deadline += dt
+            delay = next_deadline - time.perf_counter()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            else:
+                next_deadline = time.perf_counter()  # snap forward if we drifted
+        return sleep_exact
+
 
     async def ActionSenderLoop(stopEvt: asyncio.Event) -> None:
         """Drain actQueue: stash continuous (look/move) into state, pace discretes."""
-        tickHz = cfg.runtime.get("policy", {}).get("tick_hz", 12)
-        dt = max(1.0 / float(tickHz), 0.01)
+        hz = max(20, int(cfg.runtime.get("policy", {}).get("tick_hz", 20)))  # align to MC
+        sleep_exact = _exact_scheduler(hz)
         discrete: deque[dict] = deque()
 
         while not stopEvt.is_set():
@@ -285,23 +324,25 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
                 pass
 
             # Send limited discrete actions per tick (ACKed path)
-            maxPerTick = cfg.runtime.get("policy", {}).get("max_actions_per_tick", 2)
+            maxPerTick = int(cfg.runtime.get("policy", {}).get("max_actions_per_tick", 2))
             sent = 0
             while discrete and sent < maxPerTick:
                 msg = discrete.popleft()
-                log.info("sending discrete action", extra={"payload": msg})
+                if log.isEnabledFor(stdlog.DEBUG):
+                    log.debug("sending discrete action")  # avoid heavy payload logging
                 try:
                     await SendAction(msg)  # wait_for_result=True (default)
                 except Exception as e:
                     log.warning("discrete send failed", extra={"error": str(e)})
                 sent += 1
 
-            await asyncio.sleep(dt)
+            await sleep_exact()
+
 
     async def ContinuousSenderLoop(stopEvt: asyncio.Event) -> None:
         """Re-emit latest look/move at ~20 Hz so motion feels like 'held' keys."""
         hz = max(20, int(cfg.runtime.get("policy", {}).get("tick_hz", 20)))
-        dt = max(1.0 / float(hz), 0.01)
+        sleep_exact = _exact_scheduler(hz)
 
         while not stopEvt.is_set():
             payload = {}
@@ -327,7 +368,7 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
                 except Exception as e:
                     log.warning("continuous send failed", extra={"error": str(e)})
 
-            await asyncio.sleep(dt)
+            await sleep_exact()
 
 
     # Register background loops
