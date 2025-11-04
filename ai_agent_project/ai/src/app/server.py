@@ -233,11 +233,26 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
             pending.pop(actionId, None)
             raise
 
+    continuous_state = {
+        "look": None,  # dict like {"dYaw": ..., "dPitch": ...} or None
+        "move": None,  # dict like {"forward": ..., "strafe": ...} or None
+    }
 
+    def _is_zero_move(m):
+        try:
+            return float(m.get("forward", 0.0)) == 0.0 and float(m.get("strafe", 0.0)) == 0.0
+        except Exception:
+            return True
+
+    def _is_zero_look(lk):
+        try:
+            return float(lk.get("dYaw", 0.0)) == 0.0 and float(lk.get("dPitch", 0.0)) == 0.0
+        except Exception:
+            return True
 
 
     async def ActionSenderLoop(stopEvt: asyncio.Event) -> None:
-        """Flush discrete (non-look/move) actions with a soft per-tick limit."""
+        """Drain actQueue: stash continuous (look/move) into state, pace discretes."""
         tickHz = cfg.runtime.get("policy", {}).get("tick_hz", 12)
         dt = max(1.0 / float(tickHz), 0.01)
         discrete: deque[dict] = deque()
@@ -247,27 +262,70 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
             try:
                 while True:
                     item = actQueue.get_nowait()
-                    payload = item.get("payload", {})
-                    if "look" in payload or "move" in payload:
-                        # Shouldn't happen anymore since PolicyLoop fast-paths them,
-                        # but keep a safety fast-path here just in case.
-                        SendImmediate(item)
-                    else:
+                    payload = item.get("payload", {}) or {}
+
+                    # Peel out continuous updates into the sticky state
+                    lk = payload.get("look")
+                    if isinstance(lk, dict):
+                        continuous_state["look"] = lk if not _is_zero_look(lk) else None
+
+                    mv = payload.get("move")
+                    if isinstance(mv, dict):
+                        continuous_state["move"] = mv if not _is_zero_move(mv) else None
+
+                    # Anything *else* is discrete and should be paced/ACKed
+                    discrete_keys = set(payload.keys()) - {"look", "move"}
+                    if discrete_keys:
+                        # strip continuous keys if present so discretes are clean
+                        if "look" in payload or "move" in payload:
+                            item = dict(item)
+                            item["payload"] = {k: payload[k] for k in discrete_keys}
                         discrete.append(item)
             except asyncio.QueueEmpty:
                 pass
 
-            # Send limited discrete actions per tick
+            # Send limited discrete actions per tick (ACKed path)
             maxPerTick = cfg.runtime.get("policy", {}).get("max_actions_per_tick", 2)
             sent = 0
             while discrete and sent < maxPerTick:
                 msg = discrete.popleft()
                 log.info("sending discrete action", extra={"payload": msg})
                 try:
-                    await SendAction(msg)
+                    await SendAction(msg)  # wait_for_result=True (default)
                 except Exception as e:
                     log.warning("discrete send failed", extra={"error": str(e)})
                 sent += 1
+
+            await asyncio.sleep(dt)
+
+    async def ContinuousSenderLoop(stopEvt: asyncio.Event) -> None:
+        """Re-emit latest look/move at ~20 Hz so motion feels like 'held' keys."""
+        hz = max(20, int(cfg.runtime.get("policy", {}).get("tick_hz", 20)))
+        dt = max(1.0 / float(hz), 0.01)
+
+        while not stopEvt.is_set():
+            payload = {}
+            lk = continuous_state["look"]
+            mv = continuous_state["move"]
+
+            if lk:
+                payload["look"] = lk
+            if mv:
+                payload["move"] = mv
+
+            if payload:
+                msg = {
+                    "proto": "1",
+                    "kind": "action",
+                    # seq will be filled in SendAction
+                    "timestamp": time.time(),
+                    "payload": payload,
+                }
+                # fire-and-forget, skip validation/ACK
+                try:
+                    await SendAction(msg, wait_for_result=False)
+                except Exception as e:
+                    log.warning("continuous send failed", extra={"error": str(e)})
 
             await asyncio.sleep(dt)
 
@@ -276,6 +334,8 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
     tasks.append(asyncio.create_task(MetricsLoop(stopEvt, cfg, obsState, obsQueue, actState, actQueue)))
     tasks.append(asyncio.create_task(HeartBeatLoop(ws, stopEvt)))
     tasks.append(asyncio.create_task(ActionSenderLoop(stopEvt)))
+    tasks.append(asyncio.create_task(ContinuousSenderLoop(stopEvt)))
+
 
     tasks.append(asyncio.create_task(
         PolicyWorker(

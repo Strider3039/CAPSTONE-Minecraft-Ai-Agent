@@ -90,7 +90,7 @@ async def PolicyWorker(
       - tracks latency and periodically emits a bridge_health 'latency_stats' info
     """
     seqOut = 0
-    tickHz = 10.0
+    tickHz = 20.0
     tickDt = 1.0 / tickHz
     nextTick = time.time()
 
