@@ -177,17 +177,17 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
 
     async def _send_immediate(item: dict) -> None:
         try:
-            await SendAction(item)  # still respects seq + waits for action_result (timeout handled)
+            # no ACK wait for continuous actions
+            await SendAction(item, wait_for_result=False)
         except Exception as e:
             log.warning("immediate send failed", extra={"error": str(e)})
 
+    def SendImmediate(item: dict) -> None:
+        # fire-and-forget task
+        asyncio.create_task(_send_immediate(item))
+
     async def emit_event(kind: str, payload: dict) -> None:
         await SendEvents(ws, kind, payload)
-
-
-    def SendImmediate(item: dict) -> None:
-        # Fire-and-forget, but errors are caught in the task
-        asyncio.create_task(_send_immediate(item))
 
     # Helpers inside Handle 
 
@@ -196,21 +196,32 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
         await actQueue.put(item)
         actState["actHighWatermark"] = max(actState["actHighWatermark"], actQueue.qsize())
 
-    async def SendAction(actionMsg: dict, timeoutMs: int = 300) -> dict:
-        """Validate, send, and await action_result."""
+    # at top you already have: from typing import Any, Dict, Optional
+
+    async def SendAction(actionMsg: dict, timeoutMs: int = 300, wait_for_result: bool = True) -> Optional[dict]:
+        """Validate, send, and (optionally) await action_result.
+
+        For look/move we pass wait_for_result=False to avoid pending churn and
+        any schema/action_id mismatches blocking the send.
+        """
         nonlocal seqCounter
-        # ✅ Added: monotonic sequence number so Java client accepts actions
         seqCounter += 1
         actionMsg["seq"] = seqCounter
         actionMsg.setdefault("proto", "1")
         actionMsg.setdefault("kind", "action")
         actionMsg.setdefault("timestamp", time.time())
 
+        if not wait_for_result:
+            # Fire-and-forget: skip validation and correlation.
+            await ws.send(json.dumps(actionMsg))
+            return None
+
+        # Awaiting a result → validate and require action_id so we can correlate.
         validate(instance=actionMsg, schema=ACT)
 
         actionId = actionMsg.get("action_id") or actionMsg.get("payload", {}).get("action_id")
         if not actionId:
-            raise ValueError("action_id missing in action message")
+            raise ValueError("action_id missing in action message (required when wait_for_result=True)")
 
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         pending[actionId] = fut
@@ -221,6 +232,9 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
             actState["actionTimeouts"] += 1
             pending.pop(actionId, None)
             raise
+
+
+
 
     async def ActionSenderLoop(stopEvt: asyncio.Event) -> None:
         """Flush discrete (non-look/move) actions with a soft per-tick limit."""
