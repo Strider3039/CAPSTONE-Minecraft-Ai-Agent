@@ -19,7 +19,7 @@ class GoalNavPolicy(BasePolicy):
         self.target = {"x": target[0], "y": target[1], "z": target[2]}
         self.start = start
         self.episode_count = 20
-        self.results_file = pathlib.Path(__file__).resolve().parents[3] / "evaluation_results_for_Pylons.csv"
+        self.results_file = pathlib.Path(__file__).resolve().parents[3] / "evaluation_results_for_corridor.csv"
 
         # smoothing (EMA); reinitialized each episode as well
         self._alpha_yaw = 0.35   # higher -> snappier turns
@@ -106,7 +106,7 @@ class GoalNavPolicy(BasePolicy):
     # Run one episode
     # ───────────────────────────────────────────────
     async def run_single_episode(self, bridge):
-        timeout_s = 180.0  # 3-minute limit
+        timeout_s = 90.0  # 3-minute limit
         start_time = time.time()
 
         while True:
