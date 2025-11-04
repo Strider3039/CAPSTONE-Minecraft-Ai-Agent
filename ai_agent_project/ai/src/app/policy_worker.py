@@ -183,4 +183,3 @@ async def PolicyWorker(
             detail = f"latency_stats p50_ms={p50:.1f} p90_ms={p90:.1f} hz={tickHz:.0f}"
             await emit_event("bridge_health", {"level": "info", "detail": detail})
             lastStatsTs = time.time()
-

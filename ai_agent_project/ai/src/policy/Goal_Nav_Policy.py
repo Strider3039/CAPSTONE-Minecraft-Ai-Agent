@@ -11,6 +11,7 @@ class GoalNavPolicy(BasePolicy):
     - Avoids obstacles using raycast distances
     - Re-teleports only if truly stuck or fallen
     - Forces clear daytime environment
+    - Smooths look/move outputs (EMA) for buttery motion
     """
 
     def __init__(self, cfg, target=(29.3, -60.0, 124.5), start=(-19, -60.0, 90)):
@@ -19,6 +20,19 @@ class GoalNavPolicy(BasePolicy):
         self.start = start
         self.episode_count = 20
         self.results_file = pathlib.Path(__file__).resolve().parents[3] / "evaluation_results_for_Pylons.csv"
+
+        # smoothing (EMA); reinitialized each episode as well
+        self._alpha_yaw = 0.35   # higher -> snappier turns
+        self._alpha_fwd = 0.50   # higher -> faster throttle response
+        # --- look controller (PD + slew) ---
+        self._yaw_kp = 0.9           # proportional gain
+        self._yaw_kd = 0.15          # derivative gain
+        self._yaw_slew_deg = 6.0     # max change in dYaw per tick (deg/tick @ 20Hz)
+        self._last_dyaw = 0.0
+        self._prev_yaw_err = 0.0
+        self._last_tick_ts = time.time()
+
+
         self.reset_episode_vars()
 
     def reset_episode_vars(self):
@@ -29,6 +43,23 @@ class GoalNavPolicy(BasePolicy):
         self.start_time = time.time()
         self.last_pose = None
         self.grounded = False  # track if landed after teleport
+
+        # transient state for smoothing & control
+        self._yaw_ema = 0.0
+        self._fwd_ema = 0.0
+        self._commit_turn_ticks = 0  # short commitment to turning to avoid twitch
+        self._last_dyaw = 0.0
+        self._prev_yaw_err = 0.0
+        self._last_tick_ts = time.time()
+
+
+        # navigation persistent state
+        self.mode = "move"        # move / turn / escape
+        self.turn_dir = 1         # +1 cw, -1 ccw
+        self._last_pos = None
+        self._stuck_counter = 0
+        self._escape_progress = 0.0
+        self._escape_start = (0.0, 0.0)
 
     # ───────────────────────────────────────────────
     # Evaluation loop
@@ -48,7 +79,6 @@ class GoalNavPolicy(BasePolicy):
             await asyncio.sleep(0.2)
 
             # Teleport slightly above start Y to avoid clipping into floor
-            x, y, z = self.start
             await self.send_command(f"tp @p {self.start[0]:.2f} {self.start[1] + 0.5:.2f} {self.start[2]:.2f}")
             await asyncio.sleep(1.0)
 
@@ -97,18 +127,16 @@ class GoalNavPolicy(BasePolicy):
             if not pose:
                 continue
 
-            y = pose.get("y", 0)
-            # Wait until landed after teleport
+            y = pose.get("y", 0.0)
+            # Wait until landed after teleport: watch for vertical stability
             if not self.grounded:
-                # Wait until player stops falling or is clearly on the ground
                 if self.last_pose:
                     dy = y - self.last_pose.get("y", y)
-                    # consider grounded if nearly stable for multiple ticks
                     if abs(dy) < 0.01:
                         self.stuck_ticks += 1
                     else:
                         self.stuck_ticks = 0
-                    if self.stuck_ticks > 5:  # roughly 5 ticks ≈ 0.4s
+                    if self.stuck_ticks > 5:  # ~0.25s at 20 Hz
                         self.grounded = True
                         print("Player stabilized on ground — starting navigation.")
                 self.last_pose = pose
@@ -120,8 +148,8 @@ class GoalNavPolicy(BasePolicy):
             for act in actions:
                 await bridge.send_action(act)
 
-            dx = self.target["x"] - pose.get("x", 0)
-            dz = self.target["z"] - pose.get("z", 0)
+            dx = self.target["x"] - pose.get("x", 0.0)
+            dz = self.target["z"] - pose.get("z", 0.0)
             dist = math.hypot(dx, dz)
 
             if dist < self.cfg["runtime"]["policy"]["success_radius"]:
@@ -129,7 +157,7 @@ class GoalNavPolicy(BasePolicy):
                 return True
 
             # Falling detection
-            if self.last_pose and y < self.last_pose.get("y", 0) - 3.0:
+            if self.last_pose and y < self.last_pose.get("y", 0.0) - 3.0:
                 self.fall_ticks += 1
             else:
                 self.fall_ticks = 0
@@ -143,7 +171,10 @@ class GoalNavPolicy(BasePolicy):
                 continue
 
             self.last_pose = pose
-            await asyncio.sleep(1.0 / self.cfg["runtime"]["policy"]["tick_hz"])
+
+            # run policy at least at 20 Hz to match server/game cadence
+            tick_hz = max(20.0, float(self.cfg["runtime"]["policy"].get("tick_hz", 20.0)))
+            await asyncio.sleep(1.0 / tick_hz)
 
     # ───────────────────────────────────────────────
     # Save results
@@ -171,14 +202,15 @@ class GoalNavPolicy(BasePolicy):
             await self._action_queue.put(act)
 
     # ───────────────────────────────────────────────
-    # Navigation logic (with faster turn & move)
+    # Navigation logic (with smoother turn & move)
     # ───────────────────────────────────────────────
     async def step(self, obs):
         """
         Adaptive goal navigation with dynamic escape direction.
         - Turns toward the side with more free space when stuck.
         - Moves toward goal when clear.
-        - Avoids oscillation and traps by committing to escape until progress is made.
+        - Short turn-commit window to avoid twitch.
+        - EMA smoothing on yaw and throttle to remove micro-stutter.
         """
         try:
             payload = obs.get("payload", {})
@@ -199,16 +231,8 @@ class GoalNavPolicy(BasePolicy):
             current_yaw = pose.get("yaw", 0.0)
 
             # --- init persistent state ---
-            if not hasattr(self, "mode"):
-                self.mode = "move"  # move / turn / escape
-            if not hasattr(self, "turn_dir"):
-                self.turn_dir = 1  # +1 = clockwise, -1 = counterclockwise
-            if not hasattr(self, "_last_pos"):
+            if self._last_pos is None:
                 self._last_pos = (px, pz)
-            if not hasattr(self, "_stuck_counter"):
-                self._stuck_counter = 0
-            if not hasattr(self, "_escape_progress"):
-                self._escape_progress = 0.0
 
             # --- rays ---
             n = max(1, len(rays))
@@ -219,10 +243,12 @@ class GoalNavPolicy(BasePolicy):
                 return ((a - b + 180) % 360) - 180
 
             # front clearance (±20°)
+            front_bins = [a for a in ray_angles if abs(ang_diff(a, current_yaw)) <= 20]
+            front_cnt = max(1, len(front_bins))
             front_clear = sum(
                 d for a, d in zip(ray_angles, ray_dists)
                 if abs(ang_diff(a, current_yaw)) <= 20
-            ) / max(1, sum(1 for a in ray_angles if abs(ang_diff(a, current_yaw)) <= 20))
+            ) / front_cnt
 
             # ───────────── Escape Mode ─────────────
             if self.mode == "escape":
@@ -231,24 +257,51 @@ class GoalNavPolicy(BasePolicy):
                     print("[POLICY] Escape complete — resuming goal seeking.")
                     self.mode = "move"
                 else:
-                    # keep turning and moving forward slightly
-                    return [self._make_action(0.4, 25.0 * self.turn_dir)]
+                    # steady escape posture (server will hold at 20 Hz)
+                    return [self._make_action(0.35, 22.0 * self.turn_dir)]
 
-            # ───────────── Normal Movement ─────────────
+            # ───────────── Normal Movement (full-speed mapping) ─────────────
             forward_speed = 0.0
             dYaw = 0.0
 
-            if front_clear < 0.5:
-                # too close to obstacle — turn clockwise
+            # angular error to goal
+            yaw_err = ang_diff(yaw_to_goal, current_yaw)
+
+            # Decide if front is too tight to proceed straight
+            too_close_front = (front_clear < 0.5)
+
+            if too_close_front:
+                # turn, but keep a bit of forward to maintain momentum
                 self.mode = "turn"
-                forward_speed = 0.0
                 dYaw = 30.0 * self.turn_dir
+                forward_speed = 0.25    # was 0.0 -> keep moving
+                self._commit_turn_ticks = max(self._commit_turn_ticks, 6)  # ~0.3s
             else:
-                # clear — move toward goal
+                # clear — go toward goal
                 self.mode = "move"
-                yaw_err = ang_diff(yaw_to_goal, current_yaw)
-                forward_speed = 0.4
-                dYaw = max(min(yaw_err, 20.0), -20.0)
+
+                # Map yaw error to forward speed: full speed when nearly aligned,
+                # taper when badly misaligned to avoid wide arcs.
+                abs_err = abs(yaw_err)
+                if abs_err < 8.0:
+                    forward_speed = 1.0
+                elif abs_err < 20.0:
+                    forward_speed = 0.8
+                elif abs_err < 30.0:
+                    forward_speed = 0.55
+                else:
+                    forward_speed = 0.35  # still move; server holds it at 20 Hz
+
+                # Turn proportionally toward goal, capped
+                dYaw = max(min(yaw_err, 30.0), -30.0)
+
+            # honor turn-commit window to avoid flip-flop (keep some forward!)
+            if self._commit_turn_ticks > 0:
+                self._commit_turn_ticks -= 1
+                self.mode = "turn"
+                dYaw = 25.0 * self.turn_dir
+                # keep a little forward push during the commit
+                forward_speed = max(forward_speed, 0.25)
 
             # ───────────── Stuck Detection ─────────────
             last_px, last_pz = self._last_pos
@@ -262,19 +315,22 @@ class GoalNavPolicy(BasePolicy):
 
             if self._stuck_counter > 15:
                 # Decide escape direction dynamically
-                # Compare mean distance to left vs right side
+                left_bins = [a for a in ray_angles if 40 <= ang_diff(a, current_yaw) <= 100]
+                right_bins = [a for a in ray_angles if -100 <= ang_diff(a, current_yaw) <= -40]
+                left_cnt = max(1, len(left_bins))
+                right_cnt = max(1, len(right_bins))
+
                 left_clear = sum(
                     d for a, d in zip(ray_angles, ray_dists)
                     if 40 <= ang_diff(a, current_yaw) <= 100
-                ) / max(1, sum(1 for a in ray_angles if 40 <= ang_diff(a, current_yaw) <= 100))
+                ) / left_cnt
 
                 right_clear = sum(
                     d for a, d in zip(ray_angles, ray_dists)
                     if -100 <= ang_diff(a, current_yaw) <= -40
-                ) / max(1, sum(1 for a in ray_angles if -100 <= ang_diff(a, current_yaw) <= -40))
+                ) / right_cnt
 
                 self.turn_dir = 1 if right_clear >= left_clear else -1
-
                 side = "right" if self.turn_dir == 1 else "left"
                 print(f"[POLICY] Stuck detected — escaping to {side} (R={right_clear:.2f}, L={left_clear:.2f})")
 
@@ -282,12 +338,46 @@ class GoalNavPolicy(BasePolicy):
                 self.mode = "escape"
                 self._escape_start = (px, pz)
 
-                return [
-                    self._make_action(-0.2, 0.0),
-                    self._make_action(0.0, 40.0 * self.turn_dir)
-                ]
+                # single steady escape command (server repeats it at 20 Hz)
+                return [self._make_action(-0.15, 35.0 * self.turn_dir)]
 
-            return [self._make_action(forward_speed, dYaw)]
+            # --- Smooth outputs (EMA) to remove micro-stutter ---
+            dYaw = max(min(dYaw, 30.0), -30.0)
+            forward_speed = max(min(forward_speed, 1.0), -1.0)
+
+            # --- PD controller for yaw rate (deg/tick) with slew-rate limiting ---
+            # error: desired heading - current heading
+            yaw_err = dYaw  # reuse your computed "needed turn" in degrees as the error proxy
+            now = time.time()
+            # Estimate tick dt from policy loop rate (fallback to 1/20 s)
+            dt = max(1e-3, min(0.2, now - self._last_tick_ts))
+            self._last_tick_ts = now
+
+            derr = (yaw_err - self._prev_yaw_err) / dt
+            self._prev_yaw_err = yaw_err
+
+            # raw command (deg per tick equivalent)
+            dyaw_cmd = self._yaw_kp * yaw_err + self._yaw_kd * derr
+            # cap absolute yaw rate
+            dyaw_cmd = max(min(dyaw_cmd, 30.0), -30.0)
+
+            # slew-rate limit: don't change dYaw faster than self._yaw_slew_deg per tick
+            delta = dyaw_cmd - self._last_dyaw
+            max_step = self._yaw_slew_deg
+            if delta > max_step:
+                dyaw_cmd = self._last_dyaw + max_step
+            elif delta < -max_step:
+                dyaw_cmd = self._last_dyaw - max_step
+            self._last_dyaw = dyaw_cmd
+
+            # --- Forward EMA (keeps throttle smooth)
+            self._fwd_ema = (1.0 - self._alpha_fwd) * self._fwd_ema + self._alpha_fwd * forward_speed
+
+            # deadzones: keep tiny noise away, but don't kill small forward during turn
+            yaw_out = 0.0 if abs(dyaw_cmd) < 0.25 else dyaw_cmd
+            fwd_out = 0.0 if abs(self._fwd_ema) < 0.01 else self._fwd_ema
+
+            return [self._make_action(fwd_out, yaw_out)]
 
         except Exception as e:
             print("[POLICY ERROR] step:", e)
@@ -304,7 +394,7 @@ class GoalNavPolicy(BasePolicy):
             "timestamp": time.time(),
             "action_id": str(uuid.uuid4()),
             "payload": {
-                "move": {"forward": forward, "strafe": 0.0},
-                "look": {"dYaw": dYaw, "dPitch": 0.0},
+                "move": {"forward": float(forward), "strafe": 0.0},
+                "look": {"dYaw": float(dYaw), "dPitch": 0.0},
             },
         }
