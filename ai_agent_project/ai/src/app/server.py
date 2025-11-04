@@ -25,7 +25,31 @@ from ai.src.utils.config import LoadConfig
 from ai.src.utils.logging import SetupLogging, WriteMetric
 
 from ai.src.policy.Goal_Nav_Policy import GoalNavPolicy
+from policy_worker import PolicyWorker
 
+# --- fast JSON encode/decode (prefers orjson) ---
+try:
+    import orjson as _fastjson
+
+    def _dumps(obj):
+        return _fastjson.dumps(obj)  # bytes
+
+    def _loads(s):
+        # websockets may give us str; orjson wants bytes
+        return _fastjson.loads(s if isinstance(s, (bytes, bytearray)) else s.encode("utf-8"))
+
+    _SEND_TEXT = False  # send binary frames for speed
+except Exception:
+    import json as _fastjson
+
+    def _dumps(obj):
+        # compact separators = smaller frames
+        return _fastjson.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+
+    def _loads(s):
+        return _fastjson.loads(s)
+
+    _SEND_TEXT = True  # text frames
 
 
 #  Schemas 
@@ -55,7 +79,8 @@ async def SendEvents(ws: WebSocketServerProtocol, kind: str, payload: dict) -> N
         validate(instance=msg, schema=EVT)
     except ValidationError as e:
         log.warning("internal event failed schema", extra={"error": str(e), "kind": kind})
-    await ws.send(json.dumps(msg))
+    payload = _dumps(msg)
+    await ws.send(payload)
 
 async def SendCommand(ws: WebSocketServerProtocol, cmd: str) -> None:
     """Send a Minecraft command to the client (e.g., tp, say, time set day)."""
@@ -66,7 +91,8 @@ async def SendCommand(ws: WebSocketServerProtocol, cmd: str) -> None:
         "timestamp": time.time(),
         "payload": {"cmd": cmd},
     }
-    await ws.send(json.dumps(msg))
+    payload = _dumps(msg)
+    await ws.send(payload)
     stdlog.getLogger("bridge.server").info("sent command", extra={"cmd": cmd})
 
 
@@ -165,44 +191,28 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
     # --- Policy setup ---
     policy = GoalNavPolicy(cfg)
 
-    # Added: helper so policy can issue /tp and similar commands
     async def send_command(cmd: str):
         await SendCommand(ws, cmd)
 
     policy.send_command = send_command
 
-    # Added: automatically start evaluation loop when connected
     asyncio.create_task(policy.evaluate(bridge=policy))
 
-    # Added: action seq counter to prevent stale drops on client
     seqCounter = 0
 
-    # put this helper inside Handle(...) alongside SendAction
-    async def SendActionNoWait(actionMsg: dict) -> None:
-        """Validate and send without awaiting action_result (for continuous actions)."""
-        validate(instance=actionMsg, schema=ACT)
-        await ws.send(json.dumps(actionMsg))
+    async def _send_immediate(item: dict) -> None:
+        try:
+            # no ACK wait for continuous actions
+            await SendAction(item, wait_for_result=False)
+        except Exception as e:
+            log.warning("immediate send failed", extra={"error": str(e)})
 
+    def SendImmediate(item: dict) -> None:
+        # fire-and-forget task
+        asyncio.create_task(_send_immediate(item))
 
-
-    async def PolicyLoop():
-        """Run the navigation policy: consume obsQueue, produce actions."""
-        while not stopEvt.is_set():
-            try:
-                obs = await obsQueue.get()
-
-                # Attach live queues for policy bridge compatibility
-                policy._latest_obs = obs
-                if not hasattr(policy, "_action_queue"):
-                    policy._action_queue = actQueue
-
-                acts = await policy.step(obs)
-                for act in acts:
-                    await actQueue.put(act)
-
-            except Exception as e:
-                log.warning("policy loop error", extra={"error": str(e)})
-                await asyncio.sleep(0.1)
+    async def emit_event(kind: str, payload: dict) -> None:
+        await SendEvents(ws, kind, payload)
 
     # Helpers inside Handle 
 
@@ -211,21 +221,32 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
         await actQueue.put(item)
         actState["actHighWatermark"] = max(actState["actHighWatermark"], actQueue.qsize())
 
-    async def SendAction(actionMsg: dict, timeoutMs: int = 300) -> dict:
-        """Validate, send, and await action_result."""
+    # at top you already have: from typing import Any, Dict, Optional
+
+    async def SendAction(actionMsg: dict, timeoutMs: int = 300, wait_for_result: bool = True) -> Optional[dict]:
+        """Validate, send, and (optionally) await action_result.
+
+        For look/move we pass wait_for_result=False to avoid pending churn and
+        any schema/action_id mismatches blocking the send.
+        """
         nonlocal seqCounter
-        # Added: monotonic sequence number so Java client accepts actions
         seqCounter += 1
         actionMsg["seq"] = seqCounter
         actionMsg.setdefault("proto", "1")
         actionMsg.setdefault("kind", "action")
         actionMsg.setdefault("timestamp", time.time())
 
+        if not wait_for_result:
+            # Fire-and-forget: skip validation and correlation.
+            await ws.send(json.dumps(actionMsg))
+            return None
+
+        # Awaiting a result → validate and require action_id so we can correlate.
         validate(instance=actionMsg, schema=ACT)
 
         actionId = actionMsg.get("action_id") or actionMsg.get("payload", {}).get("action_id")
         if not actionId:
-            raise ValueError("action_id missing in action message")
+            raise ValueError("action_id missing in action message (required when wait_for_result=True)")
 
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         pending[actionId] = fut
@@ -237,77 +258,139 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
             pending.pop(actionId, None)
             raise
 
-    # drop-in replacement for ActionSenderLoop inside Handle(...)
+    continuous_state = {
+        "look": None,  # dict like {"dYaw": ..., "dPitch": ...} or None
+        "move": None,  # dict like {"forward": ..., "strafe": ...} or None
+    }
+
+    def _is_zero_move(m):
+        try:
+            return float(m.get("forward", 0.0)) == 0.0 and float(m.get("strafe", 0.0)) == 0.0
+        except Exception:
+            return True
+
+    def _is_zero_look(lk):
+        try:
+            return float(lk.get("dYaw", 0.0)) == 0.0 and float(lk.get("dPitch", 0.0)) == 0.0
+        except Exception:
+            return True
+
+    def _exact_scheduler(hz: int):
+        dt = 1.0 / float(max(1, hz))
+        next_deadline = time.perf_counter()
+
+        async def sleep_exact():
+            nonlocal next_deadline
+            next_deadline += dt
+            delay = next_deadline - time.perf_counter()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            else:
+                next_deadline = time.perf_counter()  # snap forward if we drifted
+        return sleep_exact
+
+
     async def ActionSenderLoop(stopEvt: asyncio.Event) -> None:
-        """Ticked sender: coalesce continuous actions; non-blocking for look/move."""
-        tickHz = cfg.runtime.get("policy", {}).get("tick_hz", 20)
-        dt = max(1.0 / float(tickHz), 0.01)
-
-        latestLook: Optional[dict] = None
-        latestMove: Optional[dict] = None
+        """Drain actQueue: stash continuous (look/move) into state, pace discretes."""
+        hz = max(20, int(cfg.runtime.get("policy", {}).get("tick_hz", 20)))  # align to MC
+        sleep_exact = _exact_scheduler(hz)
         discrete: deque[dict] = deque()
-
-        def IsContinuous(kind: str) -> bool:
-            return coalCfg.get("enabled", True) and kind in set(coalCfg.get("kinds", ["look", "move"]))
 
         while not stopEvt.is_set():
             # Drain queued actions (non-blocking)
             try:
                 while True:
                     item = actQueue.get_nowait()
-                    payload = item.get("payload", {})
-                    kinds = [k for k in ("look","move","jump","sneak","attack","use","place","select_slot") if k in payload]
+                    payload = item.get("payload", {}) or {}
 
-                    if not kinds:
-                        # Unknown or multi-kind; treat as discrete to preserve order
+                    # Peel out continuous updates into the sticky state
+                    lk = payload.get("look")
+                    if isinstance(lk, dict):
+                        continuous_state["look"] = lk if not _is_zero_look(lk) else None
+
+                    mv = payload.get("move")
+                    if isinstance(mv, dict):
+                        continuous_state["move"] = mv if not _is_zero_move(mv) else None
+
+                    # Anything *else* is discrete and should be paced/ACKed
+                    discrete_keys = set(payload.keys()) - {"look", "move"}
+                    if discrete_keys:
+                        # strip continuous keys if present so discretes are clean
+                        if "look" in payload or "move" in payload:
+                            item = dict(item)
+                            item["payload"] = {k: payload[k] for k in discrete_keys}
                         discrete.append(item)
-                        continue
-
-                    k = kinds[0]
-                    if IsContinuous(k):
-                        if k == "look":
-                            latestLook = item            # coalesce to most recent
-                        elif k == "move":
-                            latestMove = item
-                    else:
-                        discrete.append(item)           # preserve arrival order for discrete
             except asyncio.QueueEmpty:
                 pass
 
-            # Fire-and-forget continuous actions (keep tick cadence tight)
-            if latestLook is not None:
-                try:
-                    await SendActionNoWait(latestLook)
-                except Exception:
-                    pass
-                latestLook = None
-
-            if latestMove is not None:
-                try:
-                    await SendActionNoWait(latestMove)
-                except Exception:
-                    pass
-                latestMove = None
-
-            # Flush a limited number of discrete actions per tick (await results)
-            maxPerTick = cfg.runtime.get("policy", {}).get("max_actions_per_tick", 3)
+            # Send limited discrete actions per tick (ACKed path)
+            maxPerTick = int(cfg.runtime.get("policy", {}).get("max_actions_per_tick", 2))
             sent = 0
             while discrete and sent < maxPerTick:
                 msg = discrete.popleft()
+                if log.isEnabledFor(stdlog.DEBUG):
+                    log.debug("sending discrete action")  # avoid heavy payload logging
                 try:
-                    # shorter timeout keeps the loop snappy if client is slow
-                    await SendAction(msg, timeoutMs=200)
-                except Exception:
-                    pass
+                    await SendAction(msg)  # wait_for_result=True (default)
+                except Exception as e:
+                    log.warning("discrete send failed", extra={"error": str(e)})
                 sent += 1
 
-            await asyncio.sleep(dt)
+            await sleep_exact()
+
+
+    async def ContinuousSenderLoop(stopEvt: asyncio.Event) -> None:
+        """Re-emit latest look/move at ~20 Hz so motion feels like 'held' keys."""
+        hz = max(20, int(cfg.runtime.get("policy", {}).get("tick_hz", 20)))
+        sleep_exact = _exact_scheduler(hz)
+
+        while not stopEvt.is_set():
+            payload = {}
+            lk = continuous_state["look"]
+            mv = continuous_state["move"]
+
+            if lk:
+                payload["look"] = lk
+            if mv:
+                payload["move"] = mv
+
+            if payload:
+                msg = {
+                    "proto": "1",
+                    "kind": "action",
+                    # seq will be filled in SendAction
+                    "timestamp": time.time(),
+                    "payload": payload,
+                }
+                # fire-and-forget, skip validation/ACK
+                try:
+                    await SendAction(msg, wait_for_result=False)
+                except Exception as e:
+                    log.warning("continuous send failed", extra={"error": str(e)})
+
+            await sleep_exact()
+
 
     # Register background loops
-    tasks.append(asyncio.create_task(PolicyLoop()))
     tasks.append(asyncio.create_task(MetricsLoop(stopEvt, cfg, obsState, obsQueue, actState, actQueue)))
     tasks.append(asyncio.create_task(HeartBeatLoop(ws, stopEvt)))
     tasks.append(asyncio.create_task(ActionSenderLoop(stopEvt)))
+    tasks.append(asyncio.create_task(ContinuousSenderLoop(stopEvt)))
+
+
+    tasks.append(asyncio.create_task(
+        PolicyWorker(
+            obs_q=obsQueue,
+            act_q=actQueue,
+            drop_policy="block",
+            act_schema=ACT,
+            on_drop=None,
+            log=stdlog.getLogger("bridge.policy"),
+            emit_event=emit_event,
+            policy_step=policy.step,       # << scripted policy hook
+        )
+    ))
+
 
     # Main recv loop
     try:

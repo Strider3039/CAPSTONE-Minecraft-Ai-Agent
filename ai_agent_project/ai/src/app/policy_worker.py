@@ -70,6 +70,7 @@ def MakeJump() -> Dict[str, Any]:
     }
 
 
+# --- change the function signature (add policy_step: Optional[callable]) ---
 async def PolicyWorker(
     obs_q: asyncio.Queue,
     act_q: asyncio.Queue,
@@ -78,22 +79,23 @@ async def PolicyWorker(
     on_drop,                 # kept for signature compatibility; not used (no drops)
     log,
     emit_event=None,         # async callable(kind, payload) that must comply with event.schema.json
+    policy_step=None,        # << NEW: e.g., GoalNavPolicy.step
 ):
     """
     Runs at ~10 Hz. Each tick:
       - drains obs_q and keeps only the most recent observation
-      - runs decide(obs) with a 100 ms budget
-      - emits separate one-kind action messages (look, move, jump)
-      - validates each action against act_schema
+      - if policy_step is provided: calls policy_step(obs) (scripted policy)
+        else: runs decide(obs) with a 100 ms budget
+      - enqueues action messages
       - tracks latency and periodically emits a bridge_health 'latency_stats' info
     """
     seqOut = 0
-    tickHz = 10.0
+    tickHz = 20.0
     tickDt = 1.0 / tickHz
     nextTick = time.time()
 
     latestObs: Optional[dict] = None
-    latSamplesMs = deque(maxlen=200)  # ~20 s of samples @10 Hz
+    latSamplesMs = deque(maxlen=200)
     lastStatsTs = time.time()
     loop = asyncio.get_running_loop()
 
@@ -118,53 +120,53 @@ async def PolicyWorker(
         nextTick += tickDt
 
         await DrainLatest()
-
-        # If no observation yet, skip producing actions this tick
         if latestObs is None:
             continue
 
         obsTs = float(latestObs.get("timestamp", time.time()))
+
+        # --- NEW: call scripted policy if provided; else fallback to decide() path ---
         try:
-            decision = await asyncio.wait_for(
-                loop.run_in_executor(None, decide, latestObs),
-                timeout=0.100,
-            )
-            payload = decision if isinstance(decision, dict) else IdlePayload()
+            if policy_step is not None:
+                # scripted policy path (GoalNavPolicy.step): returns list of already-built action messages
+                acts = await asyncio.wait_for(policy_step(latestObs), timeout=0.100)
+                if not isinstance(acts, list):
+                    acts = []  # be safe
+                outMsgs = acts
+            else:
+                # fallback to your existing dummy decide() producing payload dict
+                decision = await asyncio.wait_for(
+                    loop.run_in_executor(None, decide, latestObs),
+                    timeout=0.100,
+                )
+                payload = decision if isinstance(decision, dict) else IdlePayload()
+
+                # Build action messages from payload (unchanged from your current code)
+                outMsgs: list[Dict[str, Any]] = []
+                look = payload.get("look")
+                if look and isinstance(look, dict):
+                    outMsgs.append(MakeLook(look.get("dYaw", 0.0), look.get("dPitch", 0.0)))
+                move = payload.get("move")
+                if move and isinstance(move, dict):
+                    outMsgs.append(MakeMove(move.get("forward", 0.0), move.get("strafe", 0.0)))
+                if payload.get("jump"):
+                    outMsgs.append(MakeJump())
         except asyncio.TimeoutError:
-            log.warning("decide() timed out; skipping tick")
-            payload = IdlePayload()
             if emit_event:
-                # standards-compliant event: bridge_health
-                await emit_event("bridge_health", {"level": "warn", "detail": "decide_timeout"})
+                await emit_event("bridge_health", {"level": "warn", "detail": "policy_step_timeout"})
             continue
         except Exception as e:
-            log.warning("decide() error; skipping tick", extra={"error": str(e)})
-            payload = IdlePayload()
+            log.warning("policy step error; skipping tick", extra={"error": str(e)})
             if emit_event:
-                await emit_event("bridge_health", {"level": "warn", "detail": f"decide_error:{e}"})
+                await emit_event("bridge_health", {"level": "warn", "detail": f"policy_step_error:{e}"})
             continue
 
-        # Track latency from observation timestamp
+        # Track latency (unchanged)
         latMs = max(0.0, (time.time() - obsTs) * 1000.0)
         latSamplesMs.append(latMs)
 
-        # Split into one-action-per-message
-        outMsgs: list[Dict[str, Any]] = []
-
-        look = payload.get("look")
-        if look and isinstance(look, dict):
-            outMsgs.append(MakeLook(look.get("dYaw", 0.0), look.get("dPitch", 0.0)))
-
-        move = payload.get("move")
-        if move and isinstance(move, dict):
-            outMsgs.append(MakeMove(move.get("forward", 0.0), move.get("strafe", 0.0)))
-
-        if payload.get("jump"):
-            outMsgs.append(MakeJump())
-
-        # Validate + (optionally) clamp, then enqueue (block)
+        # Validate then enqueue (blocking); acts from GoalNavPolicy are already action messages
         for msg in outMsgs:
-            # If ClampAction expects old envelope, you can remove this call.
             try:
                 validate(instance=msg, schema=act_schema)
             except ValidationError as e:
@@ -173,7 +175,7 @@ async def PolicyWorker(
             await QueueAdd(act_q, msg)
             seqOut += 1
 
-        # Emit latency stats ~every 2 s (as bridge_health informational)
+        # Emit latency stats (unchanged)
         if emit_event and (time.time() - lastStatsTs >= 2.0) and len(latSamplesMs) >= 5:
             samples = sorted(latSamplesMs)
             p50 = statistics.median(samples)
@@ -181,3 +183,4 @@ async def PolicyWorker(
             detail = f"latency_stats p50_ms={p50:.1f} p90_ms={p90:.1f} hz={tickHz:.0f}"
             await emit_event("bridge_health", {"level": "info", "detail": detail})
             lastStatsTs = time.time()
+
