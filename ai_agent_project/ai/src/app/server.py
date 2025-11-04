@@ -165,17 +165,25 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
     # --- Policy setup ---
     policy = GoalNavPolicy(cfg)
 
-    # ✅ Added: helper so policy can issue /tp and similar commands
     async def send_command(cmd: str):
         await SendCommand(ws, cmd)
 
     policy.send_command = send_command
 
-    # ✅ Added: automatically start evaluation loop when connected
     asyncio.create_task(policy.evaluate(bridge=policy))
 
-    # ✅ Added: action seq counter to prevent stale drops on client
     seqCounter = 0
+
+    async def _send_immediate(item: dict) -> None:
+        try:
+            await SendAction(item)  # still respects seq + waits for action_result (timeout handled)
+        except Exception as e:
+            log.warning("immediate send failed", extra={"error": str(e)})
+
+    def SendImmediate(item: dict) -> None:
+        # Fire-and-forget, but errors are caught in the task
+        asyncio.create_task(_send_immediate(item))
+
 
     async def PolicyLoop():
         """Run the navigation policy: consume obsQueue, produce actions."""
@@ -190,11 +198,17 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
 
                 acts = await policy.step(obs)
                 for act in acts:
-                    await actQueue.put(act)
+                    payload = act.get("payload", {})
+                    # treat look/move as continuous; send immediately
+                    if "look" in payload or "move" in payload:
+                        SendImmediate(act)
+                    else:
+                        await EnqueueAction(act)
 
             except Exception as e:
                 log.warning("policy loop error", extra={"error": str(e)})
                 await asyncio.sleep(0.1)
+
 
     # Helpers inside Handle 
 
@@ -230,15 +244,10 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
             raise
 
     async def ActionSenderLoop(stopEvt: asyncio.Event) -> None:
-        """Flush coalesced or discrete actions to the websocket at tick rate."""
+        """Flush discrete (non-look/move) actions with a soft per-tick limit."""
         tickHz = cfg.runtime.get("policy", {}).get("tick_hz", 12)
         dt = max(1.0 / float(tickHz), 0.01)
-        latestLook: Optional[dict] = None
-        latestMove: Optional[dict] = None
         discrete: deque[dict] = deque()
-
-        def IsContinuous(kind: str) -> bool:
-            return coalCfg.get("enabled", True) and kind in set(coalCfg.get("kinds", ["look", "move"]))
 
         while not stopEvt.is_set():
             # Drain queue (non-blocking)
@@ -246,42 +255,16 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
                 while True:
                     item = actQueue.get_nowait()
                     payload = item.get("payload", {})
-                    kinds = [
-                        k for k in ("look","move","jump","sneak","attack","use","place","select_slot")
-                        if k in payload
-                    ]
-                    if not kinds:
-                        discrete.append(item)
-                        continue
-                    k = kinds[0]
-                    if IsContinuous(k):
-                        if k == "look":
-                            latestLook = item
-                        elif k == "move":
-                            latestMove = item
+                    if "look" in payload or "move" in payload:
+                        # Shouldn't happen anymore since PolicyLoop fast-paths them,
+                        # but keep a safety fast-path here just in case.
+                        SendImmediate(item)
                     else:
                         discrete.append(item)
             except asyncio.QueueEmpty:
                 pass
 
-            # Send one look and move per tick
-            if latestLook:
-                log.info("sending look action", extra={"payload": latestLook})
-                try:
-                    await SendAction(latestLook)
-                except Exception as e:
-                    log.warning("look send failed", extra={"error": str(e)})
-                latestLook = None
-
-            if latestMove:
-                log.info("sending move action", extra={"payload": latestMove})
-                try:
-                    await SendAction(latestMove)
-                except Exception as e:
-                    log.warning("move send failed", extra={"error": str(e)})
-                latestMove = None
-
-            # Send limited discrete actions
+            # Send limited discrete actions per tick
             maxPerTick = cfg.runtime.get("policy", {}).get("max_actions_per_tick", 2)
             sent = 0
             while discrete and sent < maxPerTick:
@@ -294,6 +277,7 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
                 sent += 1
 
             await asyncio.sleep(dt)
+
 
     # Register background loops
     tasks.append(asyncio.create_task(PolicyLoop()))
