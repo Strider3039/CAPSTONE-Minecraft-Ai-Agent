@@ -3,7 +3,7 @@ schema_version: 1
 policy:
   tick_hz: 20                # Slightly lower rate = smoother updates, less stutter
   budget_ms: 80
-  max_actions_per_tick: 2
+  max_actions_per_tick: 3
 
   success_radius: 1.5
   stuck_speed_thresh: 0.02
