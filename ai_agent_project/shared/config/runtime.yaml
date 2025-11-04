@@ -3,14 +3,14 @@ schema_version: 1
 policy:
   tick_hz: 20               
   budget_ms: 80
-  max_actions_per_tick: 2
+  max_actions_per_tick: 3
 
   success_radius: 1.5
   stuck_speed_thresh: 0.02
   stuck_ticks: 15
 
   heading:
-    max_look_deg: 25.0        # was 6.0 → allows faster, more decisive turns
+    max_look_deg: 20.0        # was 6.0 → allows faster, more decisive turns
     yaw_p_gain: 1.0           # was 0.6 → improves angular response
     stop_on_collision: true
 

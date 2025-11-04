@@ -177,6 +177,14 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
     # Added: action seq counter to prevent stale drops on client
     seqCounter = 0
 
+    # put this helper inside Handle(...) alongside SendAction
+    async def SendActionNoWait(actionMsg: dict) -> None:
+        """Validate and send without awaiting action_result (for continuous actions)."""
+        validate(instance=actionMsg, schema=ACT)
+        await ws.send(json.dumps(actionMsg))
+
+
+
     async def PolicyLoop():
         """Run the navigation policy: consume obsQueue, produce actions."""
         while not stopEvt.is_set():
@@ -229,10 +237,12 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
             pending.pop(actionId, None)
             raise
 
+    # drop-in replacement for ActionSenderLoop inside Handle(...)
     async def ActionSenderLoop(stopEvt: asyncio.Event) -> None:
-        """Flush coalesced or discrete actions to the websocket at tick rate."""
-        tickHz = cfg.runtime.get("policy", {}).get("tick_hz", 12)
+        """Ticked sender: coalesce continuous actions; non-blocking for look/move."""
+        tickHz = cfg.runtime.get("policy", {}).get("tick_hz", 20)
         dt = max(1.0 / float(tickHz), 0.01)
+
         latestLook: Optional[dict] = None
         latestMove: Optional[dict] = None
         discrete: deque[dict] = deque()
@@ -241,56 +251,54 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
             return coalCfg.get("enabled", True) and kind in set(coalCfg.get("kinds", ["look", "move"]))
 
         while not stopEvt.is_set():
-            # Drain queue (non-blocking)
+            # Drain queued actions (non-blocking)
             try:
                 while True:
                     item = actQueue.get_nowait()
                     payload = item.get("payload", {})
-                    kinds = [
-                        k for k in ("look","move","jump","sneak","attack","use","place","select_slot")
-                        if k in payload
-                    ]
+                    kinds = [k for k in ("look","move","jump","sneak","attack","use","place","select_slot") if k in payload]
+
                     if not kinds:
+                        # Unknown or multi-kind; treat as discrete to preserve order
                         discrete.append(item)
                         continue
+
                     k = kinds[0]
                     if IsContinuous(k):
                         if k == "look":
-                            latestLook = item
+                            latestLook = item            # coalesce to most recent
                         elif k == "move":
                             latestMove = item
                     else:
-                        discrete.append(item)
+                        discrete.append(item)           # preserve arrival order for discrete
             except asyncio.QueueEmpty:
                 pass
 
-            # Send one look and move per tick
-            if latestLook:
-                log.info("sending look action", extra={"payload": latestLook})
+            # Fire-and-forget continuous actions (keep tick cadence tight)
+            if latestLook is not None:
                 try:
-                    await SendAction(latestLook)
-                except Exception as e:
-                    log.warning("look send failed", extra={"error": str(e)})
+                    await SendActionNoWait(latestLook)
+                except Exception:
+                    pass
                 latestLook = None
 
-            if latestMove:
-                log.info("sending move action", extra={"payload": latestMove})
+            if latestMove is not None:
                 try:
-                    await SendAction(latestMove)
-                except Exception as e:
-                    log.warning("move send failed", extra={"error": str(e)})
+                    await SendActionNoWait(latestMove)
+                except Exception:
+                    pass
                 latestMove = None
 
-            # Send limited discrete actions
-            maxPerTick = cfg.runtime.get("policy", {}).get("max_actions_per_tick", 2)
+            # Flush a limited number of discrete actions per tick (await results)
+            maxPerTick = cfg.runtime.get("policy", {}).get("max_actions_per_tick", 3)
             sent = 0
             while discrete and sent < maxPerTick:
                 msg = discrete.popleft()
-                log.info("sending discrete action", extra={"payload": msg})
                 try:
-                    await SendAction(msg)
-                except Exception as e:
-                    log.warning("discrete send failed", extra={"error": str(e)})
+                    # shorter timeout keeps the loop snappy if client is slow
+                    await SendAction(msg, timeoutMs=200)
+                except Exception:
+                    pass
                 sent += 1
 
             await asyncio.sleep(dt)
