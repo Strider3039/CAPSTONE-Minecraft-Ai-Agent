@@ -165,16 +165,16 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
     # --- Policy setup ---
     policy = GoalNavPolicy(cfg)
 
-    # ✅ Added: helper so policy can issue /tp and similar commands
+    # Added: helper so policy can issue /tp and similar commands
     async def send_command(cmd: str):
         await SendCommand(ws, cmd)
 
     policy.send_command = send_command
 
-    # ✅ Added: automatically start evaluation loop when connected
+    # Added: automatically start evaluation loop when connected
     asyncio.create_task(policy.evaluate(bridge=policy))
 
-    # ✅ Added: action seq counter to prevent stale drops on client
+    # Added: action seq counter to prevent stale drops on client
     seqCounter = 0
 
     async def PolicyLoop():
@@ -206,7 +206,7 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
     async def SendAction(actionMsg: dict, timeoutMs: int = 300) -> dict:
         """Validate, send, and await action_result."""
         nonlocal seqCounter
-        # ✅ Added: monotonic sequence number so Java client accepts actions
+        # Added: monotonic sequence number so Java client accepts actions
         seqCounter += 1
         actionMsg["seq"] = seqCounter
         actionMsg.setdefault("proto", "1")

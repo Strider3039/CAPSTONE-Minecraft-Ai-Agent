@@ -1,7 +1,7 @@
 schema_version: 1
 
 policy:
-  tick_hz: 10                # Slightly lower rate = smoother updates, less stutter
+  tick_hz: 20               
   budget_ms: 80
   max_actions_per_tick: 2
 
@@ -15,8 +15,8 @@ policy:
     stop_on_collision: true
 
   action_rates:
-    look_hz: 10               # sync with tick_hz for steady pacing
-    move_hz: 10
+    look_hz: 20               # sync with tick_hz for steady pacing
+    move_hz: 20
     jump_min_ms: 200
     interact_cooldown_ms: 500
 
