@@ -1,7 +1,7 @@
 schema_version: 1
 
 policy:
-  tick_hz: 10                # Slightly lower rate = smoother updates, less stutter
+  tick_hz: 20                # Slightly lower rate = smoother updates, less stutter
   budget_ms: 80
   max_actions_per_tick: 2
 
@@ -10,13 +10,13 @@ policy:
   stuck_ticks: 15
 
   heading:
-    max_look_deg: 25.0        # was 6.0 → allows faster, more decisive turns
+    max_look_deg: 20.0        # was 6.0 → allows faster, more decisive turns
     yaw_p_gain: 1.0           # was 0.6 → improves angular response
     stop_on_collision: true
 
   action_rates:
-    look_hz: 10               # sync with tick_hz for steady pacing
-    move_hz: 10
+    look_hz: 20               # sync with tick_hz for steady pacing
+    move_hz: 20
     jump_min_ms: 200
     interact_cooldown_ms: 500
 
