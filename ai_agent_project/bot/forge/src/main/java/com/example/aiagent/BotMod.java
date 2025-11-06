@@ -29,6 +29,20 @@ import org.lwjgl.glfw.GLFW;
 @Mod(BotMod.MODID)
 public class BotMod {
 
+    // add this nested class anywhere inside BotMod (top-level is fine too)
+    @net.minecraftforge.fml.common.Mod.EventBusSubscriber(
+        modid = BotMod.MODID,
+        value = Dist.CLIENT,
+        bus = net.minecraftforge.fml.common.Mod.EventBusSubscriber.Bus.MOD
+    )
+    public static class ModBusClient {
+        @SubscribeEvent
+        public static void onRegisterKeyMappings(RegisterKeyMappingsEvent event) {
+            event.register(TOGGLE_KEY);
+        }
+    }
+
+
     public static final String MODID = "ai_agent_bot";
     private static BotMod INSTANCE;
     public static BotMod getInstance() { return INSTANCE; }
@@ -79,10 +93,14 @@ public class BotMod {
 
         // toggle enable/disable
         if (TOGGLE_KEY.consumeClick()) {
-            aiEnabled = !aiEnabled;
+            aiEnabled = !aiEnabled; // keep your obs gating if you want
+            com.example.aiagent.ForgeWebSocketClient.setAiEnabled(
+                !com.example.aiagent.ForgeWebSocketClient.isAiEnabled()
+            );
             mc.player.displayClientMessage(
                 Component.literal("[AI-BOT] AI " + (aiEnabled ? "ENABLED" : "DISABLED")), true);
         }
+
 
         if (aiEnabled && wsClient != null && wsClient.isOpen()) {
             long now = System.currentTimeMillis();
@@ -234,8 +252,4 @@ public class BotMod {
         );
     }
 
-    @SubscribeEvent
-    public static void onRegisterKeyMappings(RegisterKeyMappingsEvent event) {
-        event.register(TOGGLE_KEY);
-    }
 }

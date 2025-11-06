@@ -14,6 +14,23 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class ForgeWebSocketClient extends WebSocketClient {
+
+    // ───────────────────────────── AI toggle (public API) ─────────────────────────────
+    private static volatile boolean aiEnabled = true;
+    public static void setAiEnabled(boolean enabled) {
+        aiEnabled = enabled;
+        Minecraft mc = Minecraft.getInstance();
+        if (mc != null && mc.player != null) {
+            mc.execute(() -> mc.player.displayClientMessage(
+                net.minecraft.network.chat.Component.literal(enabled ? "§a[AI] Enabled" : "§c[AI] Disabled"),
+                true
+            ));
+        }
+        System.out.println("[WS] AI toggle -> " + (enabled ? "ENABLED" : "DISABLED"));
+    }
+    public static boolean isAiEnabled() { return aiEnabled; }
+
+
     private final Map<String, Long> nextAllowed = new HashMap<>();
     private final AtomicBoolean reconnecting = new AtomicBoolean(false);
     private final AtomicLong seqCounter = new AtomicLong(0);
@@ -121,6 +138,12 @@ public class ForgeWebSocketClient extends WebSocketClient {
                 JsonObject payload = json.getAsJsonObject("payload");
                 if (payload == null) return;
 
+                // Respect the AI toggle: do not apply AI actions when disabled
+                if (!isAiEnabled()) {
+                    emitActionResult(actionId, "ignored", "ai_disabled");
+                    return;
+                }
+
                 if (inflight.remainingCapacity() == 0) {
                     inflight.poll();
                     emitBridgeHealth("warn", "dropped_input");
@@ -164,6 +187,12 @@ public class ForgeWebSocketClient extends WebSocketClient {
 
     // ───────────────────────────── Action handler ─────────────────────────────
     private void handleStructuredAction(String actionId, JsonObject payload, Minecraft mc) {
+        if (!isAiEnabled()) {
+            emitActionResult(actionId, "ignored", "ai_disabled");
+            return;
+        }
+
+
         LocalPlayer p = mc.player;
         if (p == null) return;
 
