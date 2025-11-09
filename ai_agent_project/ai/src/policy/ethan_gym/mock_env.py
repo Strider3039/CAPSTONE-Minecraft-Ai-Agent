@@ -1,0 +1,1 @@
+# Entrypoint for Ethan Gym mock environment

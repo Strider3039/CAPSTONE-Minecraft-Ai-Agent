@@ -1,0 +1,1 @@
+# Entrypoint for Lemar Gym mock environment
