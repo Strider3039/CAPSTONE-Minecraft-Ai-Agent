@@ -3,6 +3,7 @@ Mock Minecraft Gymnasium Environment (v1)
 - Discrete(7) actions
 - 10D observation vector
 - Reward shaping and episode logic aligned with the design spec
+- CSV logging updated to use a safe, writable directory (cwd or user-provided)
 """
 
 from __future__ import annotations
@@ -11,6 +12,8 @@ import random
 from dataclasses import dataclass
 from typing import Dict, Optional, Any
 
+import os
+import csv
 import numpy as np
 
 # Optional dependency: Gymnasium. We provide a tiny fallback so this file can import without it.
@@ -81,6 +84,36 @@ class MockState:
     step_index: int = 0            # env steps * k sub-steps
     stuck_counter: int = 0
     last_progress: float = 0.0
+
+
+# -------------------------
+# CSV logging utilities
+# -------------------------
+
+def log_bot_metrics_to_csv(metrics: dict, filename: str = "bot_metrics.csv", log_dir: Optional[str] = None):
+    """
+    Append a row of metrics to a CSV in a safe, writable place.
+    - Defaults to current working directory unless log_dir is provided.
+    - Ensures directory exists.
+    - Uses a stable, sorted header so column order is consistent across writes.
+    """
+    # Choose a safe base directory
+    base_dir = os.getcwd() if log_dir is None else os.path.abspath(log_dir)
+    os.makedirs(base_dir, exist_ok=True)
+
+    file_path = os.path.join(base_dir, filename)
+    file_exists = os.path.isfile(file_path)
+
+    # Stable field order (sorted keys prevents header drift)
+    fieldnames = sorted(metrics.keys())
+
+    with open(file_path, mode="a", newline="", encoding="utf-8") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        if not file_exists:
+            writer.writeheader()
+        # Reorder metrics to match fieldnames and fill missing keys
+        row = {k: metrics.get(k, "") for k in fieldnames}
+        writer.writerow(row)
 
 
 class MockMinecraftEnv(getattr(gym, "Env", object)):
@@ -162,6 +195,11 @@ class MockMinecraftEnv(getattr(gym, "Env", object)):
         self.prev_dist: float = 0.0
         self.done: bool = False
 
+        # logging controls (user-configurable)
+        self.log_dir: Optional[str] = None           # None -> use cwd
+        self.log_filename: str = "bot_metrics.csv"
+        self.enable_csv_logging: bool = True
+
     # ---------------
     # Gym API
     # ---------------
@@ -235,12 +273,28 @@ class MockMinecraftEnv(getattr(gym, "Env", object)):
         }
         self.prev_dist = new_dist
 
+        # Log metrics to CSV at each step (non-fatal on errors)
+        self._log_step(info)
+
         # Gymnasium API: (obs, reward, terminated, truncated, info)
         return obs, float(reward), bool(self.done), False, info
 
     # ---------------
     # Helpers
     # ---------------
+    def _log_step(self, info: dict):
+        if not self.enable_csv_logging:
+            return
+        try:
+            log_bot_metrics_to_csv(
+                metrics=info,
+                filename=self.log_filename,
+                log_dir=self.log_dir  # None -> cwd
+            )
+        except Exception:
+            # Swallow logging errors to avoid crashing training
+            pass
+
     def _sample_goal(self):
         b = self.cfg["goal_bounds"]
         min_xy, max_xy, min_dist = float(b["min_xy"]), float(b["max_xy"]), float(b["min_dist"])
