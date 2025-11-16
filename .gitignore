@@ -1,4 +1,30 @@
-# --- Gradle ---
+# =====================================================
+# PYTHON
+# =====================================================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.python-version
+venv/
+env/
+.venv/
+.conda/
+pip-wheel-metadata/
+*.egg-info/
+.eggs/
+
+# PyTorch / ML
+*.pt
+*.pth
+runs/
+events.out.tfevents.*
+*.rb
+metrics.csv
+
+# =====================================================
+# JAVA / GRADLE / FORGE
+# =====================================================
 .gradle/*
 **/build/
 !src/**/build.gradle
@@ -6,40 +32,40 @@
 !build.gradle
 !settings.gradle
 !gradle.properties
-# Optional: ignore Gradle problem reports and logs explicitly
+
 build/reports/
 build/tmp/
-
-# Gradle local cache files
 **/gradle-app.setting
-**/gradle/wrapper/gradle-wrapper.properties
-**/gradle/wrapper/gradle-wrapper.jar
-
-# Forge run directories (local dev worlds, logs, etc.)
+**/gradle/wrapper/*
 **/run/
 **/run-data/
 
-# Cached files
-.cache/
-__pycache__/
-
-# Generated resources (datagen)
-src/generated/
-src/generated/**
-
-# Logs
-*.log
+# Forge/Minecraft generated
+saves/
+config/
+crash-reports/
+shaderpacks/
+resourcepacks/
+libraries/
+mods/*.jar
+mods/*.zip
 logs/
+debug.log
+latest.log
 
-# Java junk
-*.class
-*.jar
-*.war
-*.ear
-hs_err_pid*
-replay_pid*
+# Forge gradle checksum and hash cache
+**/checksums.lock
+**/fileHashes.lock
+**/sha1-checksums.bin
 
-# IDEs / Editors
+**/.gradle/
+**/gradle-cache/
+**/.bgradle/
+
+
+# =====================================================
+# IDEs / EDITORS
+# =====================================================
 # IntelliJ
 .idea/
 *.iml
@@ -52,13 +78,25 @@ out/
 
 # VS Code
 .vscode/
+!.vscode/settings.json
+!.vscode/extensions.json
 
-# OS files
+# =====================================================
+# OS FILES
+# =====================================================
 .DS_Store
 Thumbs.db
 desktop.ini
+ehthumbs.db
+$RECYCLE.BIN/
+*.lnk
 
-# Environment files
-.venv38
-.venv38.local
-.venv38.*.local
+# =====================================================
+# TEMP / MISC
+# =====================================================
+tmp/
+temp/
+*.tmp
+*.bak
+*.old
+.cache/
