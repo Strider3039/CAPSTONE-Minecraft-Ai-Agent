@@ -140,3 +140,9 @@ run-data/
 # Forge intermediate outputs
 *.cache/
 .cache/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
