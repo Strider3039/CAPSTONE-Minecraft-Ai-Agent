@@ -6,9 +6,9 @@ __pycache__/
 *.pyo
 *.pyd
 .python-version
-venv/
+venv38/
 env/
-.venv/
+.venv38/
 .conda/
 pip-wheel-metadata/
 *.egg-info/
