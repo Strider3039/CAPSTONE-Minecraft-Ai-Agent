@@ -19,13 +19,14 @@ pip-wheel-metadata/
 *.pth
 runs/
 events.out.tfevents.*
-*.rb
 metrics.csv
 
 # =====================================================
-# JAVA / GRADLE / FORGE
+# JAVA / GRADLE / FORGE (Minecraft modding)
 # =====================================================
-.gradle/*
+.gradle/
+**/.gradle/
+build/
 **/build/
 !src/**/build.gradle
 !src/**/settings.gradle
@@ -33,14 +34,17 @@ metrics.csv
 !settings.gradle
 !gradle.properties
 
+# Gradle temporary files
 build/reports/
 build/tmp/
 **/gradle-app.setting
+
+# Forge wrapper + caches
 **/gradle/wrapper/*
 **/run/
 **/run-data/
 
-# Forge/Minecraft generated
+# Minecraft-generated directories
 saves/
 config/
 crash-reports/
@@ -53,19 +57,26 @@ logs/
 debug.log
 latest.log
 
-# Forge gradle checksum and hash cache
+# Forge/Gradle checksum + hash files
 **/checksums.lock
-**/fileHashes.lock
 **/sha1-checksums.bin
-
-**/.gradle/
-**/gradle-cache/
-**/.bgradle/
-
+**/executionHistory.bin
+**/executionHistory.lock
+**/fileHashes.bin
+**/fileHashes.lock
+**/buildOutputCleanup.lock
+**/file-system.probe
+**/problems-report.html
 
 # =====================================================
 # IDEs / EDITORS
 # =====================================================
+
+# VS Code
+.vscode/
+!.vscode/settings.json
+!.vscode/extensions.json
+
 # IntelliJ
 .idea/
 *.iml
@@ -76,13 +87,8 @@ out/
 .classpath
 .settings/
 
-# VS Code
-.vscode/
-!.vscode/settings.json
-!.vscode/extensions.json
-
 # =====================================================
-# OS FILES
+# OS / SYSTEM FILES
 # =====================================================
 .DS_Store
 Thumbs.db
@@ -92,7 +98,7 @@ $RECYCLE.BIN/
 *.lnk
 
 # =====================================================
-# TEMP / MISC
+# TEMPORARY / MISC
 # =====================================================
 tmp/
 temp/
@@ -100,49 +106,3 @@ temp/
 *.bak
 *.old
 .cache/
-
-# ----------------------------------------
-# Python
-# ----------------------------------------
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-
-# ----------------------------------------
-# Minecraft Forge / Gradle
-# ----------------------------------------
-# Gradle generic cache
-.gradle/
-**/.gradle/
-build/
-**/build/
-
-# Forge run directories (worlds, logs, temp data)
-run/
-**/run/
-run-data/
-**/run-data/
-
-# Forge checksums, hashes, and build logs
-**/checksums.lock
-**/sha1-checksums.bin
-**/executionHistory.bin
-**/executionHistory.lock
-**/fileHashes.bin
-**/fileHashes.lock
-**/buildOutputCleanup.lock
-**/file-system.probe
-
-# Forge problem reports
-**/problems-report.html
-
-# Forge intermediate outputs
-*.cache/
-.cache/
-
-# Python cache
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
