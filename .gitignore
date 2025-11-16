@@ -100,3 +100,43 @@ temp/
 *.bak
 *.old
 .cache/
+
+# ----------------------------------------
+# Python
+# ----------------------------------------
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ----------------------------------------
+# Minecraft Forge / Gradle
+# ----------------------------------------
+# Gradle generic cache
+.gradle/
+**/.gradle/
+build/
+**/build/
+
+# Forge run directories (worlds, logs, temp data)
+run/
+**/run/
+run-data/
+**/run-data/
+
+# Forge checksums, hashes, and build logs
+**/checksums.lock
+**/sha1-checksums.bin
+**/executionHistory.bin
+**/executionHistory.lock
+**/fileHashes.bin
+**/fileHashes.lock
+**/buildOutputCleanup.lock
+**/file-system.probe
+
+# Forge problem reports
+**/problems-report.html
+
+# Forge intermediate outputs
+*.cache/
+.cache/
