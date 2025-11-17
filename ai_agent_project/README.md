@@ -65,12 +65,14 @@ This section lists the main dependencies and what they do.
 You can copy and paste the commands below directly into your terminal.
 
 #### 1. Clone the repository
+
 ```bash
 git clone https://github.com/<your-org>/<your-repo>.git
 cd <your-repo>
 ```
 
 #### 2. Set up Python bridge
+
 ```bash
 python -m venv venv
 .\venv\Scripts\Activate
@@ -79,12 +81,14 @@ pip install websockets PyYAML jsonschema loguru numpy
 ```
 
 #### 3. Build the forge mod
+
 ```bash
 cd mod/
 ./gradlew build
 ```
 
 ### 4. Install the mod for Minecraft
+
 1. Install the correct version of Forge (e.g., 1.20.1).
 
 2. Navigate to your .minecraft/mods/ folder.
@@ -107,7 +111,6 @@ As the steps above were followed, the AI agent should connect to your client the
 
 ## Additional Documentation
 
-https://github.com/Strider3039/CAPSTONE-Minecraft-Ai-Agent/tree/Sprint_2/ai_agent_project/docs
+<https://github.com/Strider3039/CAPSTONE-Minecraft-Ai-Agent/tree/Sprint_2/ai_agent_project/docs>
 
 ## License
-
