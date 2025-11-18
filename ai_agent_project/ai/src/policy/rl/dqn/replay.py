@@ -23,7 +23,7 @@ class ReplayBuffer:
     def __len__(self) -> int:
         return self.size
     
-    def add(
+    def Add(
         self,
         state: np.ndarray,
         action: int,
@@ -45,7 +45,7 @@ class ReplayBuffer:
         self.idx = (self.idx + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
 
-    def sample(self, batch_size: int) -> tuple[str, np.ndarray]:
+    def Sample(self, batch_size: int) -> tuple[str, np.ndarray]:
         if self.size == 0:
             raise ValueError("Cannot sample from an empty buffer.")
         

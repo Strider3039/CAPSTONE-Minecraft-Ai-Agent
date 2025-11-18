@@ -146,7 +146,7 @@ class DQNAgent:
 
         # max_a' Q_target(s', a'): target q values for next states
         with torch.no_grad():
-            qNext = self.qTargetNet(nextStateTensor) # (batch, num_actions)
+            qNext = self.targetNet(nextStateTensor) # (batch, num_actions)
             maxQNext, _ = torch.max(qNext, dim=1)   # (batch,)
 
         # Compute target: r + gamma * max_a' Q_target(s', a') * (1 - done)
@@ -159,6 +159,8 @@ class DQNAgent:
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+
+        return loss.item()
 
     def UpdateTargetNetwork(self) -> None:
         """
