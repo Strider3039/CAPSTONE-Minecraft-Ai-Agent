@@ -26,15 +26,21 @@ NUM_ACTIONS = len(ACTIONS)
 NameToIndex = {name: i for i, name in enumerate(ACTIONS)}
 
 def ActionIndex(name: str) -> int:
-    """Return index for an action name."""
+    """
+    Return index for an action name.
+    """
     return NameToIndex[name]
 
 def ActionName(idx: int) -> str:
-    """Return action name for an index."""
+    """
+    Return action name for an index.
+    """
     return ACTIONS[idx]
 
 def BuildAction(actionId: str, payload: Dict, seq: int) -> Dict:
-    """Build a Minecraft action message."""
+    """
+    Build a Minecraft action message.
+    """
     return {
         "proto": "1",
         "kind": "action",
@@ -48,7 +54,9 @@ LookStep = 10.0
 MoveSpeed = 1.0
 
 def ToMinecraftControls(idx: int, seq: int) -> Dict:
-    """Map discrete index -> Minecraft action payload."""
+    """
+    Map discrete index -> Minecraft action payload.
+    """
     name = ActionName(idx)
 
     if name == "noop":
