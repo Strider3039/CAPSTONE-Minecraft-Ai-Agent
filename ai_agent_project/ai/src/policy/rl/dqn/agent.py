@@ -212,6 +212,8 @@ class DQNPolicy(Policy):
     - Encodes them into vectors.
     - Runs the Q-network.
     - Returns a Minecraft Action payload dict.
+
+    (No Training)
     """
 
     def __init__(
