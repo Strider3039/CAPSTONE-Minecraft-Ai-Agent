@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from ai.src.policy import Policy
+from ai.src.policy.base import Policy
 from ai.src.policy.rl.dqn.model import QNetwork
 from ai.src.policy.action_space import NUM_ACTIONS, ToMinecraftControls
 from ai.src.policy.obs_encoding import OBS_DIM, EncodeObservation
