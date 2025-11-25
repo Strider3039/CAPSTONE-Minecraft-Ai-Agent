@@ -5,12 +5,10 @@ import os
 import csv
 import time
 import random
-
 import numpy as np
 import torch
 
 from ai.src.policy.rl.dqn.agent import DQNAgent
-
 
 def _set_seed(seed: int) -> None:
     random.seed(seed)
@@ -18,7 +16,6 @@ def _set_seed(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-
 
 def train_agent(env: Any, config: Dict[str, Any]) -> None:
     """
