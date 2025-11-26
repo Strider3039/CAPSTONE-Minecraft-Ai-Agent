@@ -84,7 +84,7 @@ class DQNAgent:
         self.optimizer = optim.Adam(self.qNet.parameters(), lr=lr)
         
         # Replay Buffer
-        self.replayBuffer = ReplayBuffer(bufferCapacity, OBS_DIM)
+        self.replayBuffer = ReplayBuffer(bufferCapacity)
 
     
     def CurrentEpsilon(self) -> float:

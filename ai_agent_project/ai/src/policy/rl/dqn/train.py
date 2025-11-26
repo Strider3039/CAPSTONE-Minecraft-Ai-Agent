@@ -87,16 +87,17 @@ def train_agent(env: Any, config: Dict[str, Any]) -> None:
     agent = DQNAgent(
         gamma=gamma,
         lr=lr,
-        buffer_capacity=buffer_capacity,
-        batch_size=batch_size,
+        bufferCapacity=buffer_capacity,
+        batchSize=batch_size,
         device=device,
-        min_replay_size=min_replay_size,
-        target_update_interval=target_update_interval,
-        epsilon_start=epsilon_start,
-        epsilon_end=epsilon_end,
-        epsilon_decay_steps=epsilon_decay_steps,
-        hidden_sizes=tuple(hidden_sizes),
+        minReplaySize=min_replay_size,
+        targetUpdateFreq=target_update_interval,
+        epsilonStart=epsilon_start,
+        epsilonEnd=epsilon_end,
+        epsilonDecay=epsilon_decay_steps,
+        hiddenDims=hidden_sizes,
     )
+
 
     if checkpoint_dir is not None:
         os.makedirs(checkpoint_dir, exist_ok=True)
@@ -135,22 +136,22 @@ def train_agent(env: Any, config: Dict[str, Any]) -> None:
 
         while not done and ep_length < max_steps_per_episode:
             # Epsilon-greedy action from current obs
-            action_idx = agent.select_action(obs)
+            action_idx = agent.SelectAction(obs)
 
             # Env step
             next_obs, reward, done, info = env.step(action_idx)
 
             # Store transition
-            agent.store_transition(
+            agent.StoreTransition(
                 state=obs,
                 action=action_idx,
                 reward=reward,
-                next_state=next_obs,
+                nextState=next_obs,
                 done=done,
             )
 
             # One training step (if replay is warm enough)
-            loss = agent.train_step()
+            loss = agent.TrainStep()
             if loss is not None:
                 last_loss = loss
 
@@ -160,13 +161,13 @@ def train_agent(env: Any, config: Dict[str, Any]) -> None:
             obs = next_obs
 
             # Step & maybe update target net
-            agent.increment_step(steps=1)
-            agent.maybe_update_target()
+            agent.IncrementStep()
+            agent.UpdateTargetNetwork()
 
         # ------------- episode end -------------
 
-        env_steps_total = agent.total_steps
-        epsilon = agent.current_epsilon()
+        env_steps_total = agent.totalSteps
+        epsilon = agent.CurrentEpsilon()
         wall_time_s = time.time() - start_time
 
         # Logging to console
@@ -202,7 +203,7 @@ def train_agent(env: Any, config: Dict[str, Any]) -> None:
                 f"{checkpoint_prefix}_ep{episode:05d}.pt",
             )
             print(f"Saving checkpoint to: {ckpt_path}")
-            agent.save(ckpt_path)
+            agent.Save(ckpt_path)
 
     # Cleanup
     if csv_file is not None:

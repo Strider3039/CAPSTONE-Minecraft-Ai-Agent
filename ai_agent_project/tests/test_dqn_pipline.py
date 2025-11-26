@@ -6,7 +6,7 @@ import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ai.src.policy.mock_envs.ethan_gym. import EthanMockEnv
+from ai.src.policy.mock_envs.dqn_mock import EthanMockEnv
 from ai.src.policy.rl.dqn.train import train_agent
 from ai.src.policy.rl.dqn.agent import DQNAgent
 
@@ -44,10 +44,10 @@ class TestDQNPipeline(unittest.TestCase):
         agent = DQNAgent()
         # Just make sure select_action returns a valid integer
         obs = env.reset()
-        action_idx = agent.select_action(obs)
+        action_idx = agent.SelectAction(obs)
 
         self.assertTrue(isinstance(action_idx, int))
-        self.assertTrue(0 <= action_idx < agent.q_online.net[-1].out_features)
+        self.assertTrue(0 <= action_idx < agent.qNet.net[-1].out_features)
 
 
 if __name__ == "__main__":
