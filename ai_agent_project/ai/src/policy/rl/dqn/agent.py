@@ -206,59 +206,60 @@ class DQNAgent:
 
 class DQNPolicy(Policy):
     """
-    Inference-time policy for use in the live bridge.
-
-    - Takes raw Observation messages.
-    - Encodes them into vectors.
-    - Runs the Q-network.
-    - Returns a Minecraft Action payload dict.
-
-    (No Training)
+    Inference-time policy for live AI control.
+    Loads a trained Q-network and outputs Minecraft actions.
     """
 
     def __init__(
-        self, 
+        self,
         model: QNetwork,
-        maxRayDistance: float,
+        max_ray_dist: float,
         device: str = "cpu",
     ) -> None:
         self.model = model.to(device)
         self.model.eval()
-        self.maxRayDistance = maxRayDistance
+        self.max_ray_dist = max_ray_dist
         self.device = device
+
+        # NEW: add action sequencing
+        self.seq = 0
 
     @classmethod
     def FromCheckpoint(
         cls,
-        checkpointPath: str,
-        maxRayDistance: float,
+        checkpoint_path: str,
+        max_ray_dist: float,
         device: str = "cpu",
-        hiddenDims=(128, 128),
-    ) -> DQNPolicy:
-        """
-        Convenience constructor: build QNetwork, load weights, wrap in DQNPolicy.
-        """
+        hidden_sizes=(128, 128),
+    ) -> "DQNPolicy":
 
-        model = QNetwork(OBS_DIM, NUM_ACTIONS, hiddenDims)
-        checkpoint = torch.load(checkpointPath, map_location=device)
-        model.load_state_dict(checkpoint["qNet"])
+        model = QNetwork(OBS_DIM, NUM_ACTIONS, hidden_sizes)
 
-        return cls(model, maxRayDistance, device)
-    
+        ckpt = torch.load(checkpoint_path, map_location=device)
+        if isinstance(ckpt, dict) and "qNet" in ckpt:
+            model.load_state_dict(ckpt["qNet"])
+        else:
+            model.load_state_dict(ckpt)
+
+        return cls(model, max_ray_dist, device)
+
     def act(self, obsMsg: dict) -> dict:
         """
-        Compute and return an action given a Minecraft observation.
-        Must return a dictionary matching action.schema.json.
+        Convert observation → encoded vector → Q-network → action payload.
         """
 
-        # Encode observation to vector
-        obsVec = EncodeObservation(obsMsg, self.maxRayDistance)
+        # Encode obs
+        obsVec = EncodeObservation(obsMsg, self.max_ray_dist)
         obsTensor = torch.from_numpy(obsVec).unsqueeze(0).to(self.device)
 
-        # Compute Q-values
+        # Choose best action
         with torch.no_grad():
             qValues = self.model(obsTensor)
             actionIdx = int(torch.argmax(qValues, dim=1).item())
 
-        # Convert action index to Minecraft action payload
-        return ToMinecraftControls(actionIdx)
+        # NEW: increment sequence counter
+        self.seq += 1
+
+        # Send with sequence ID (required by Forge bridge)
+        return ToMinecraftControls(actionIdx, self.seq)
+

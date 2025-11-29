@@ -5,12 +5,23 @@
   "required": ["proto", "kind", "payload"],
   "properties": {
     "proto": { "type": "string", "const": "1" },
-    "kind": { "type": "string", "enum": ["action_result", "bridge_health"] },
+
+    "kind": {
+      "type": "string",
+      "enum": ["action_result", "bridge_health", "episode_start", "episode_end"]
+    },
+
     "seq": { "type": "integer", "minimum": 0 },
     "timestamp": { "type": "number" },
+
     "payload": {
       "type": "object",
-      "oneOf": [{ "required": ["action_result"] }, { "required": ["bridge_health"] }],
+      "oneOf": [
+        { "required": ["action_result"] },
+        { "required": ["bridge_health"] },
+        { "required": ["episode_start"] },
+        { "required": ["episode_end"] }
+      ],
       "properties": {
         "action_result": {
           "type": "object",
@@ -28,12 +39,29 @@
           },
           "additionalProperties": false
         },
+
         "bridge_health": {
           "type": "object",
           "required": ["level"],
           "properties": {
             "level": { "type": "string", "enum": ["info", "warn", "error"] },
             "detail": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+
+        "episode_start": {
+          "type": "object",
+          "properties": {
+            "reason": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+
+        "episode_end": {
+          "type": "object",
+          "properties": {
+            "reason": { "type": "string" }
           },
           "additionalProperties": false
         }

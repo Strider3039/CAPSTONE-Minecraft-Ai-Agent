@@ -7,6 +7,8 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 
 import com.google.gson.JsonObject;
+import com.google.gson.JsonElement;
+
 import java.net.URI;
 import java.util.*;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -15,7 +17,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 public class ForgeWebSocketClient extends WebSocketClient {
 
-    // ───────────────────────────── AI toggle (public API) ─────────────────────────────
+    // ───────────────────────────── AI toggle ─────────────────────────────
     private static volatile boolean aiEnabled = true;
     public static void setAiEnabled(boolean enabled) {
         aiEnabled = enabled;
@@ -64,7 +66,7 @@ public class ForgeWebSocketClient extends WebSocketClient {
         bridgeReady.set(true);
         emitBridgeHealth("info", "connected");
 
-        // Let the server know the client is ready for action messages again
+        // Inform Python that client is ready
         sendBridgeReady();
     }
 
@@ -73,7 +75,6 @@ public class ForgeWebSocketClient extends WebSocketClient {
         System.out.println("[WS] Connection closed: " + reason);
         bridgeReady.set(false);
 
-        // Prevent overlapping reconnects
         if (reconnecting.getAndSet(true)) return;
 
         new Thread(() -> {
@@ -86,7 +87,6 @@ public class ForgeWebSocketClient extends WebSocketClient {
                     inflight.clear();
                     bridgeReady.set(true);
 
-                    // Send bridge health and ready signals
                     emitBridgeHealth("info", "reconnected");
                     sendBridgeReady();
 
@@ -94,6 +94,7 @@ public class ForgeWebSocketClient extends WebSocketClient {
 
                     reconnecting.set(false);
                     break;
+
                 } catch (Exception e) {
                     System.err.println("[WS] Reconnect failed: " + e.getMessage());
                     try { Thread.sleep(5000); } catch (InterruptedException ignored) {}
@@ -107,7 +108,8 @@ public class ForgeWebSocketClient extends WebSocketClient {
         System.err.println("[WS ERROR] " + ex.getMessage());
     }
 
-    // ───────────────────────────── Incoming messages ─────────────────────────────
+
+    // ───────────────────────────── Incoming Messages ─────────────────────────────
     @Override
     public void onMessage(String message) {
         Minecraft mc = Minecraft.getInstance();
@@ -119,8 +121,37 @@ public class ForgeWebSocketClient extends WebSocketClient {
 
             String kind = json.has("kind") ? json.get("kind").getAsString() : "";
 
-            // Handle action messages
+            // --------------------------------------------------
+            // NEW EVENTS: bridge_health
+            // --------------------------------------------------
+            if ("bridge_health".equals(kind)) {
+                System.out.println("[WS] bridge_health event: " + json.get("payload"));
+                return;
+            }
+
+            // --------------------------------------------------
+            // NEW EVENTS: episode_start
+            // --------------------------------------------------
+            if ("episode_start".equals(kind)) {
+                JsonObject payload = json.getAsJsonObject("payload");
+                System.out.println("[WS] Episode START: " + payload);
+                return;
+            }
+
+            // --------------------------------------------------
+            // NEW EVENTS: episode_end
+            // --------------------------------------------------
+            if ("episode_end".equals(kind)) {
+                JsonObject payload = json.getAsJsonObject("payload");
+                System.out.println("[WS] Episode END: " + payload);
+                return;
+            }
+
+            // --------------------------------------------------
+            // ACTION MESSAGES
+            // --------------------------------------------------
             if ("action".equals(kind)) {
+
                 if (!bridgeReady.get()) {
                     System.out.println("[WS] Ignoring action: bridge not ready yet");
                     return;
@@ -138,7 +169,6 @@ public class ForgeWebSocketClient extends WebSocketClient {
                 JsonObject payload = json.getAsJsonObject("payload");
                 if (payload == null) return;
 
-                // Respect the AI toggle: do not apply AI actions when disabled
                 if (!isAiEnabled()) {
                     emitActionResult(actionId, "ignored", "ai_disabled");
                     return;
@@ -148,18 +178,20 @@ public class ForgeWebSocketClient extends WebSocketClient {
                     inflight.poll();
                     emitBridgeHealth("warn", "dropped_input");
                 }
+
                 inflight.offer(payload);
 
-                System.out.println("[WS] Action received: " + payload.toString());
+                System.out.println("[WS] Action received: " + payload);
 
-                // Record send timestamp for latency calculation
                 actionTimestamps.put(actionId, System.currentTimeMillis());
-
                 mc.execute(() -> handleStructuredAction(actionId, payload, mc));
+
                 return;
             }
 
-            // Handle command messages
+            // --------------------------------------------------
+            // COMMAND MESSAGES
+            // --------------------------------------------------
             if ("command".equals(kind)) {
                 JsonObject payload = json.getAsJsonObject("payload");
                 if (payload != null && payload.has("cmd")) {
@@ -180,18 +212,26 @@ public class ForgeWebSocketClient extends WebSocketClient {
                 return;
             }
 
+
+            // --------------------------------------------------
+            // FALLBACK: unknown message kinds
+            // --------------------------------------------------
+            System.out.println("[WS] Unknown message kind: " + kind);
+            return;
+
+
         } catch (Exception e) {
             System.err.println("[WS] Parse error: " + e.getMessage());
         }
     }
 
-    // ───────────────────────────── Action handler ─────────────────────────────
+
+    // ───────────────────────────── Action Handler ─────────────────────────────
     private void handleStructuredAction(String actionId, JsonObject payload, Minecraft mc) {
         if (!isAiEnabled()) {
             emitActionResult(actionId, "ignored", "ai_disabled");
             return;
         }
-
 
         LocalPlayer p = mc.player;
         if (p == null) return;
@@ -226,12 +266,11 @@ public class ForgeWebSocketClient extends WebSocketClient {
             }
         }
 
-        // Emit result
-        String reason = String.join(",", reasons);
-        emitActionResult(actionId, overallStatus, reason);
+        emitActionResult(actionId, overallStatus, String.join(",", reasons));
     }
 
-    // ───────────────────────────── Feedback emitters ─────────────────────────────
+
+    // ───────────────────────────── Feedback Emitters ─────────────────────────────
     private void emitActionResult(String actionId, String status, String reason) {
         long now = System.currentTimeMillis();
         long latency = 0L;
@@ -265,7 +304,7 @@ public class ForgeWebSocketClient extends WebSocketClient {
 
         send(evt.toString());
 
-        // Display latency feedback
+        // Show latency in-game
         Minecraft mc = Minecraft.getInstance();
         if (mc.player != null) {
             latencyWindow.addLast(latency);
@@ -313,5 +352,39 @@ public class ForgeWebSocketClient extends WebSocketClient {
 
         send(evt.toString());
         System.out.println("[WS] Bridge ready for AI actions.");
+    }
+
+
+    // ───────────────────────────── Episode Events ─────────────────────────────
+    public void emitEpisodeEnd(String reason) {
+        JsonObject payload = new JsonObject();
+        JsonObject body = new JsonObject();
+        body.addProperty("reason", reason);
+        payload.add("episode_end", body);
+
+        JsonObject evt = new JsonObject();
+        evt.addProperty("proto", "1");
+        evt.addProperty("kind", "episode_end");
+        evt.addProperty("seq", seqCounter.incrementAndGet());
+        evt.addProperty("timestamp", System.currentTimeMillis() / 1000.0);
+        evt.add("payload", payload);
+
+        send(evt.toString());
+    }
+
+    public void emitEpisodeStart() {
+        JsonObject payload = new JsonObject();
+        JsonObject body = new JsonObject();
+        body.addProperty("reason", "start");
+        payload.add("episode_start", body);
+
+        JsonObject evt = new JsonObject();
+        evt.addProperty("proto", "1");
+        evt.addProperty("kind", "episode_start");
+        evt.addProperty("seq", seqCounter.incrementAndGet());
+        evt.addProperty("timestamp", System.currentTimeMillis() / 1000.0);
+        evt.add("payload", payload);
+
+        send(evt.toString());
     }
 }

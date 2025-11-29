@@ -45,7 +45,7 @@ class ReplayBuffer:
         self.idx = (self.idx + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
 
-    def Sample(self, batch_size: int) -> tuple[str, np.ndarray]:
+    def Sample(self, batch_size: int) -> tuple[np.ndarray, ...]:
         if self.size == 0:
             raise ValueError("Cannot sample from an empty buffer.")
         
@@ -59,3 +59,15 @@ class ReplayBuffer:
             self.next_states[idxs],
             self.dones[idxs],
         )
+
+    # -------------------------------------------------------
+    # TEST COMPATIBILITY METHODS
+    # -------------------------------------------------------
+
+    def add(self, *args, **kwargs):
+        """Lowercase alias used by unit tests."""
+        return self.Add(*args, **kwargs)
+
+    def sample(self, batch_size: int):
+        """Lowercase alias used by unit tests."""
+        return self.Sample(batch_size)

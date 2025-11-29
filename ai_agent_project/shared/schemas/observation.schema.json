@@ -1,16 +1,17 @@
 {
-  "$schema": "https://json-schema.org/draft-07/schema",
-  "title": "AI Agent Observation v1",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Minecraft Observation v1",
   "type": "object",
-  "required": ["proto", "kind", "seq", "payload"],
+  "required": ["proto", "kind", "seq", "timestamp", "payload"],
   "properties": {
-    "proto": { "type": "string", "const": "1" },
-    "kind": { "type": "string", "const": "observation" },
-    "seq": { "type": "integer", "minimum": 0 },
+    "proto": { "type": "string", "enum": ["1"] },
+    "kind": { "type": "string", "enum": ["observation"] },
+    "seq": { "type": "number" },
     "timestamp": { "type": "number" },
+
     "payload": {
       "type": "object",
-      "required": ["pose", "rays", "entities", "world", "inventory", "collision"],
+      "required": ["pose", "rays", "front_clear", "world", "inventory", "collision"],
       "properties": {
         "pose": {
           "type": "object",
@@ -21,73 +22,67 @@
             "z": { "type": "number" },
             "yaw": { "type": "number" },
             "pitch": { "type": "number" }
-          },
-          "additionalProperties": false
-        },
-        "rays": {
-          "type": "array",
-          "maxItems": 16,
-          "items": {
-            "type": "object",
-            "required": ["hit", "dist"],
-            "properties": {
-              "hit": { "type": "boolean" },
-              "dist": { "type": "number", "minimum": 0 },
-              "angle_deg": { "type": "number", "minimum": 0, "maximum": 360 }
-            },
-            "additionalProperties": false
           }
         },
+
+        "rays": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["hit", "dist", "angle_deg"],
+            "properties": {
+              "hit": { "type": "boolean" },
+              "dist": { "type": "number" },
+              "angle_deg": { "type": "number" }
+            }
+          }
+        },
+
         "front_clear": { "type": "boolean" },
 
         "entities": {
           "type": "array",
-          "maxItems": 8,
           "items": {
             "type": "object",
-            "required": ["id", "type", "dist"],
+            "required": ["id", "type", "dist", "los"],
             "properties": {
-              "id": { "type": "integer" },
+              "id": { "type": "number" },
               "type": { "type": "string" },
-              "dist": { "type": "number", "minimum": 0 },
-              "los": { "type": "boolean" },
-              "tags": { "type": "array", "items": { "type": "string" } }
-            },
-            "additionalProperties": false
+              "dist": { "type": "number" },
+              "los": { "type": "boolean" }
+            }
           }
         },
+
         "world": {
           "type": "object",
           "required": ["time_of_day", "weather", "biome"],
           "properties": {
-            "time_of_day": { "type": "integer" },
-            "weather": { "type": "string", "enum": ["clear", "rain", "thunder"] },
+            "time_of_day": { "type": "number" },
+            "weather": { "type": "string" },
             "biome": { "type": "string" }
-          },
-          "additionalProperties": false
+          }
         },
+
         "inventory": {
           "type": "object",
           "required": ["selected_slot", "hotbar"],
           "properties": {
-            "selected_slot": { "type": "integer", "minimum": 0, "maximum": 8 },
+            "selected_slot": { "type": "number" },
             "hotbar": {
               "type": "array",
-              "minItems": 9,
-              "maxItems": 9,
               "items": {
                 "type": "object",
                 "required": ["id", "count"],
                 "properties": {
                   "id": { "type": "string" },
-                  "count": { "type": "integer", "minimum": 0 }
-                },
-                "additionalProperties": false
+                  "count": { "type": "number" }
+                }
               }
             }
-          },
-          "additionalProperties": false
+          }
         },
+
         "collision": {
           "type": "object",
           "required": ["is_grounded", "is_colliding", "no_progress"],
@@ -95,12 +90,9 @@
             "is_grounded": { "type": "boolean" },
             "is_colliding": { "type": "boolean" },
             "no_progress": { "type": "boolean" }
-          },
-          "additionalProperties": false
+          }
         }
-      },
-      "additionalProperties": false
+      }
     }
-  },
-  "additionalProperties": false
+  }
 }

@@ -26,6 +26,11 @@ import com.google.gson.GsonBuilder;
 import com.mojang.blaze3d.platform.InputConstants;
 import org.lwjgl.glfw.GLFW;
 
+// NEW imports for episode logic
+import net.minecraftforge.event.entity.living.LivingDeathEvent;
+import net.minecraft.core.BlockPos;
+import net.minecraft.server.level.ServerLevel;
+
 @Mod(BotMod.MODID)
 public class BotMod {
 
@@ -42,13 +47,12 @@ public class BotMod {
         }
     }
 
-
     public static final String MODID = "ai_agent_bot";
     private static BotMod INSTANCE;
     public static BotMod getInstance() { return INSTANCE; }
 
     public static final Gson GSON = new GsonBuilder().create();
-    private ForgeWebSocketClient wsClient;
+    ForgeWebSocketClient wsClient;
     private boolean triedConnect = false;
 
     private final ConcurrentHashMap<Long, Long> latencyMap = new ConcurrentHashMap<>();
@@ -61,6 +65,11 @@ public class BotMod {
     private static final long MIN_SEND_INTERVAL_MS = 70; // ~14 Hz
     private long reconnectCount = 0;
     private long droppedCount = 0;
+
+    // Episode tracking
+    private boolean episodeActive = false;
+    private long episodeStartTick = -1L;
+    private static final long EPISODE_TICKS = 24000L; // one Minecraft day
 
     public BotMod() {
         MinecraftForge.EVENT_BUS.register(this);
@@ -82,7 +91,7 @@ public class BotMod {
                 wsClient.setOnReconnect(() -> {
                     reconnectCount++;
                     System.out.println("[AI-BOT] Reconnected (" + reconnectCount + ")");
-                    sendObservation(mc);
+                    // optional: sendObservation(mc);
                 });
                 System.out.println("[AI-BOT] Connecting to AI bridge…");
             } catch (Exception e) {
@@ -91,9 +100,21 @@ public class BotMod {
             }
         }
 
+        // Episode timeout logic (one full Minecraft day per episode)
+        if (episodeActive && mc.level != null) {
+            long now = mc.level.getGameTime();
+            if (episodeStartTick >= 0 && now - episodeStartTick >= EPISODE_TICKS) {
+                System.out.println("[AI-BOT] Episode timeout reached (full Minecraft day).");
+                if (wsClient != null && wsClient.isOpen()) {
+                    wsClient.emitEpisodeEnd("timeout");
+                }
+                episodeActive = false;
+            }
+        }
+
         // toggle enable/disable
         if (TOGGLE_KEY.consumeClick()) {
-            aiEnabled = !aiEnabled; // keep your obs gating if you want
+            aiEnabled = !aiEnabled;
             com.example.aiagent.ForgeWebSocketClient.setAiEnabled(
                 !com.example.aiagent.ForgeWebSocketClient.isAiEnabled()
             );
@@ -101,13 +122,81 @@ public class BotMod {
                 Component.literal("[AI-BOT] AI " + (aiEnabled ? "ENABLED" : "DISABLED")), true);
         }
 
-
         if (aiEnabled && wsClient != null && wsClient.isOpen()) {
             long now = System.currentTimeMillis();
             if (now - lastSendMs >= 100) { // 10 Hz
                 sendObservation(mc);
                 lastSendMs = now;
             }
+        }
+    }
+
+    // Player death → end episode(reason="death"), no auto-teleport here.
+    @SubscribeEvent
+    public void onPlayerDeath(LivingDeathEvent event) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc == null || mc.player == null) return;
+        if (event.getEntity() != mc.player) return;
+
+        System.out.println("[AI-BOT] Player died, ending episode.");
+        if (wsClient != null && wsClient.isOpen()) {
+            wsClient.emitEpisodeEnd("death");
+        }
+        episodeActive = false;
+    }
+
+    // Start a new episode: teleport, reset health/hunger, clear inventory, time & weather, emit EPISODE_START
+    private void startNewEpisode(Minecraft mc) {
+        var p = mc.player;
+        var level = mc.level;
+        if (p == null || level == null) return;
+
+        // If the player is on death screen, try to respawn
+        if (!p.isAlive()) {
+            try {
+                p.respawn(); // method name valid on modern LocalPlayer; adjust if needed
+            } catch (Exception e) {
+                System.err.println("[AI-BOT] Failed to auto-respawn: " + e.getMessage());
+            }
+        }
+
+        // Teleport to world spawn (default world spawn, not bed)
+        BlockPos spawn = level.getSharedSpawnPos();
+        double sx = spawn.getX() + 0.5;
+        double sy = spawn.getY();
+        double sz = spawn.getZ() + 0.5;
+        p.teleportTo(sx, sy, sz);
+
+        // Reset health & hunger
+        p.setHealth(p.getMaxHealth());
+        p.getFoodData().setFoodLevel(20);
+        p.getFoodData().setSaturation(5.0f);
+
+        // Clear inventory (Option A)
+        p.getInventory().clearContent();
+
+        // Reset time & weather on server if in singleplayer
+        try {
+            var server = mc.getSingleplayerServer();
+            if (server != null) {
+                ServerLevel overworld = server.overworld();
+                // set day time to 0 (start of day)
+                overworld.setDayTime(0);
+                // clear weather
+                overworld.setWeatherParameters(6000, 0, false, false);
+            }
+        } catch (Exception e) {
+            System.err.println("[AI-BOT] Failed to reset time/weather: " + e.getMessage());
+        }
+
+        // Mark episode start tick
+        episodeStartTick = level.getGameTime();
+        episodeActive = true;
+
+        // Emit EPISODE_START to Python
+        if (wsClient != null && wsClient.isOpen()) {
+            wsClient.emitEpisodeStart();
+            System.out.println("[AI-BOT] Episode started at world spawn.");
         }
     }
 
@@ -125,9 +214,9 @@ public class BotMod {
         pose.addProperty("pitch", p.getXRot());
 
         // --- 360° raycast coverage ---
-        JsonArray rays = new JsonArray();  // ✅ <-- You need this line
-        int rayCount = 16;                 // more rays = smoother spatial awareness
-        double fov = 360.0;                // full circle around player
+        JsonArray rays = new JsonArray();
+        int rayCount = 16;
+        double fov = 360.0;
         double maxDist = 5.0;
 
         for (int i = 0; i < rayCount; i++) {
@@ -247,6 +336,21 @@ public class BotMod {
             Commands.literal("aibot")
                 .executes(ctx -> {
                     ctx.getSource().sendSystemMessage(Component.literal("AI bot is alive!"));
+                    return 1;
+                })
+        );
+
+        // /reset_episode → full reset and EPISODE_START
+        event.getDispatcher().register(
+            Commands.literal("reset_episode")
+                .executes(ctx -> {
+                    Minecraft mc = Minecraft.getInstance();
+                    if (mc != null && mc.player != null && mc.level != null) {
+                        startNewEpisode(mc);
+                        ctx.getSource().sendSystemMessage(
+                            Component.literal("[AI-BOT] Episode reset at world spawn.")
+                        );
+                    }
                     return 1;
                 })
         );
