@@ -1,6 +1,7 @@
 schema_version: 1
 
 policy:
+  type: "online_dqn"        # <—— THIS ENABLES ONLINE LEARNING
   tick_hz: 20
   budget_ms: 80
   max_actions_per_tick: 3

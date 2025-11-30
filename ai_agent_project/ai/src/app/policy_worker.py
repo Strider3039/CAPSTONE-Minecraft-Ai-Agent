@@ -4,6 +4,8 @@ import pathlib as _pathlib
 from typing import Any, Dict, Optional
 from jsonschema import validate, ValidationError
 from collections import deque
+from ai.src.policy.rl.dqn.reward_engine import RewardEngine
+
 
 SRC = _pathlib.Path(__file__).resolve().parents[1]  # ai/src
 if str(SRC) not in sys.path:
@@ -53,6 +55,8 @@ async def PolicyWorker(
     latestObs: Optional[dict] = None
     latSamplesMs = deque(maxlen=200)
     lastStatsTs = time.time()
+    reward_engine = RewardEngine()
+
 
     async def DrainLatest() -> bool:
         nonlocal latestObs
@@ -79,6 +83,12 @@ async def PolicyWorker(
             continue
 
         obsTs = float(latestObs.get("timestamp", time.time()))
+        # ---- NEW: extract Minecraft observation ----
+        obs = latestObs["payload"]["observation"]
+
+        # ---- NEW: compute reward using RewardEngine ----
+        reward = reward_engine.compute(obs)
+
 
         # ---------------------------------------
         # NEW: Direct DQN inference call
@@ -88,7 +98,8 @@ async def PolicyWorker(
                 raise RuntimeError("policy_step was not provided to PolicyWorker")
 
             # DQNPolicy.act returns ONE action message dict
-            action_msg = policy_step(latestObs)
+            action_msg = policy_step(latestObs, reward)
+
 
         except Exception as e:
             log.warning("policy_step failed", extra={"error": str(e)})

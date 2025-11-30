@@ -1,88 +1,43 @@
-from typing import Any, Dict
+# ai/src/policy/registry.py
 
-# Base Policy interface
+from __future__ import annotations
+import os
+
 from ai.src.policy.base import Policy
+from ai.src.policy.rl.dqn.agent import DQNPolicy, OnlineDQNPolicy
+from ai.src.policy.obs_encoding import OBS_DIM
+from ai.src.policy.action_space import NUM_ACTIONS
 
-# DQN policy implementation
-from ai.src.policy.rl.dqn.agent import DQNPolicy
 
+# ---------------------------------------------------------------------
+# ENTRY POINT
+# ---------------------------------------------------------------------
 
-# -------------------------------------------------------------
-# Helpers
-# -------------------------------------------------------------
-def _get_policy_type(runtime_cfg: Dict[str, Any]) -> str:
+def build_policy_from_config(cfg: dict) -> Policy:
     """
-    Return policy type from runtime.yaml (default: 'dqn').
+    Builds whichever policy the YAML runtime config requests.
+    Currently loads ONLINE DQN.
     """
-    return runtime_cfg.get("policy", {}).get("type", "dqn")
+    policy_cfg = cfg.get("policy", {})
+    dqn_cfg = policy_cfg.get("dqn", {})
 
+    checkpoint_path = dqn_cfg.get("checkpoint_path", None)
 
-def _get_device(runtime_cfg: Dict[str, Any]) -> str:
-    """
-    Return device string ('cpu' or 'cuda').
-    """
-    return runtime_cfg.get("policy", {}).get("device", "cpu")
+    # Convert "../" relative paths to absolute project path
+    if checkpoint_path and checkpoint_path.startswith("../"):
+        # ai/src/policy/registry.py -> go up 3 dirs to project/
+        base = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        abs_path = os.path.normpath(os.path.join(base, checkpoint_path))
+    else:
+        abs_path = checkpoint_path
 
+    print(f"[registry] Using OnlineDQNPolicy with checkpoint: {abs_path}")
 
-def _get_max_ray_dist(runtime_cfg: Dict[str, Any]) -> float:
-    """
-    Return max ray distance for observation encoding.
-    """
-    return float(runtime_cfg.get("raycasts", {}).get("max_dist", 10.0))
+    max_ray_dist = cfg.get("raycasts", {}).get("max_dist", 6.0)
 
-
-# -------------------------------------------------------------
-# Build DQN Policy
-# -------------------------------------------------------------
-def _build_dqn_policy(runtime_cfg: Dict[str, Any]) -> Policy:
-    """
-    Build and return a DQNPolicy using runtime.yaml settings.
-
-    Requires:
-      policy.dqn.checkpoint_path
-    """
-    dqn_cfg = runtime_cfg.get("policy", {}).get("dqn", {})
-    checkpoint_path = dqn_cfg.get("checkpoint_path")
-
-    if not checkpoint_path:
-        raise ValueError("Missing 'policy.dqn.checkpoint_path' in runtime.yaml")
-
-    hidden_sizes = dqn_cfg.get("hidden_sizes", [128, 128])
-    device = _get_device(runtime_cfg)
-    max_ray_dist = _get_max_ray_dist(runtime_cfg)
-
-    # IMPORTANT: Correct constructor (capital F + C)
-    return DQNPolicy.FromCheckpoint(
-        checkpoint_path=checkpoint_path,
+    return OnlineDQNPolicy.FromCheckpoint(
+        checkpoint_path=abs_path,
         max_ray_dist=max_ray_dist,
-        device=device,
-        hidden_sizes=hidden_sizes,
+        device="cpu",
+        hidden_sizes=(128, 128),
     )
-
-
-# -------------------------------------------------------------
-# (Placeholder) Goal Nav Policy
-# -------------------------------------------------------------
-def _build_goal_nav_policy(runtime_cfg: Dict[str, Any]) -> Policy:
-    """
-    Placeholder for legacy scripted navigation policy.
-    """
-    raise NotImplementedError("GoalNavPolicy not wired into registry yet.")
-
-
-# -------------------------------------------------------------
-# Public Entry Point
-# -------------------------------------------------------------
-def build_policy_from_config(runtime_cfg: Dict[str, Any]) -> Policy:
-    """
-    Build the correct Policy object based on runtime.yaml.
-    """
-    policy_type = _get_policy_type(runtime_cfg)
-
-    if policy_type == "dqn":
-        return _build_dqn_policy(runtime_cfg)
-
-    if policy_type == "goal_nav":
-        return _build_goal_nav_policy(runtime_cfg)
-
-    raise ValueError(f"Unknown policy.type: {policy_type!r}")

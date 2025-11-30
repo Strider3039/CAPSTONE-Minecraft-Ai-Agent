@@ -263,3 +263,132 @@ class DQNPolicy(Policy):
         # Send with sequence ID (required by Forge bridge)
         return ToMinecraftControls(actionIdx, self.seq)
 
+class OnlineDQNPolicy(Policy):
+    """
+    Online RL policy that *learns in Minecraft* using DQNAgent.
+
+    - Keeps a DQNAgent instance (with replay buffer, target net, etc.).
+    - On each obs: trains from previous transition (if any), then picks next action.
+    """
+
+    def __init__(
+        self,
+        agent: DQNAgent,
+        max_ray_dist: float,
+        device: str = "cpu",
+    ) -> None:
+        self.agent = agent
+        self.max_ray_dist = max_ray_dist
+        self.device = device
+
+        # for sequencing (Forge likes to see a monotonic ID)
+        self.seq = 0
+
+        # last transition pieces
+        self._last_obs_vec: np.ndarray | None = None
+        self._last_action_idx: int | None = None
+        self._last_done: bool = False
+
+    @classmethod
+    def FromCheckpoint(
+        cls,
+        checkpoint_path: str | None,
+        max_ray_dist: float,
+        device: str = "cpu",
+        hidden_sizes=(128, 128),
+    ) -> "OnlineDQNPolicy":
+        # Build DQNAgent (training-capable)
+        agent = DQNAgent(
+            device=device,
+            hiddenDims=hidden_sizes,
+        )
+
+        # If we have a checkpoint, warm-start from it (optional)
+        if checkpoint_path:
+            try:
+                agent.Load(checkpoint_path, mapLocation=device)
+            except FileNotFoundError:
+                # Start from scratch if file missing
+                print(f"[OnlineDQNPolicy] checkpoint not found: {checkpoint_path}, training from scratch")
+
+        return cls(agent, max_ray_dist, device)
+
+    # ----- reward shaping utility -----
+
+    def _compute_reward(
+        self,
+        prev_obs: dict | None,
+        curr_obs: dict,
+    ) -> tuple[float, bool]:
+        """
+        VERY SIMPLE placeholder reward + done.
+
+        You MUST customize this for your environment.
+        Right now:
+          - reward = 0.0 every step
+          - done = False
+
+        Suggested improvements:
+          - use distance moved toward some goal from pose.x/z
+          - negative reward on falling/death from episode_end or health
+        """
+        reward = 0.0
+        done = False
+
+        # Example (you will need to match actual obs schema):
+        # try:
+        #     prev_pose = prev_obs["payload"]["observation"]["pose"]
+        #     curr_pose = curr_obs["payload"]["observation"]["pose"]
+        #     dz = curr_pose["z"] - prev_pose["z"]
+        #     reward = dz   # reward forward progress
+        # except Exception:
+        #     reward = 0.0
+
+        return reward, done
+
+    def act(self, obsMsg: dict) -> dict:
+        """
+        Main hook called by PolicyWorker.
+
+        1. Encode obs → vector
+        2. Compute reward from prev_obs→curr_obs
+        3. Store transition & train DQN
+        4. Select new action
+        5. Return Minecraft controls
+        """
+        # 1) encode observation
+        obs_vec = EncodeObservation(obsMsg, self.max_ray_dist)
+
+        # 2) if we have a previous state/action, do a training step
+        if self._last_obs_vec is not None and self._last_action_idx is not None:
+            reward, done = self._compute_reward(
+                prev_obs=None,   # you can store full dict if you like
+                curr_obs=obsMsg,
+            )
+
+            # store transition
+            self.agent.StoreTransition(
+                state=self._last_obs_vec,
+                action=self._last_action_idx,
+                reward=reward,
+                nextState=obs_vec,
+                done=done,
+            )
+
+            # one training step
+            loss = self.agent.TrainStep()
+            if loss is not None:
+                # periodically update target net
+                self.agent.UpdateTargetNetwork()
+
+        # 3) select current action
+        action_idx = self.agent.SelectAction(obs_vec)
+        self.agent.IncrementStep()
+
+        # 4) remember this for next step
+        self._last_obs_vec = obs_vec
+        self._last_action_idx = action_idx
+
+        # 5) wrap into MC controls (with seq)
+        self.seq += 1
+        return ToMinecraftControls(action_idx, self.seq)
