@@ -1,43 +1,41 @@
-# ai/src/policy/registry.py
-
 from __future__ import annotations
-import os
+import pathlib
+from typing import Any, Dict
 
-from ai.src.policy.base import Policy
 from ai.src.policy.rl.dqn.agent import DQNPolicy, OnlineDQNPolicy
-from ai.src.policy.obs_encoding import OBS_DIM
-from ai.src.policy.action_space import NUM_ACTIONS
 
+def _project_root() -> pathlib.Path:
+    return pathlib.Path(__file__).resolve().parents[3]
 
-# ---------------------------------------------------------------------
-# ENTRY POINT
-# ---------------------------------------------------------------------
+def _resolve_checkpoint_path(raw: str | None) -> str | None:
+    if not raw: return None
+    p = pathlib.Path(raw)
+    return str(p) if p.is_absolute() else str((_project_root() / raw).resolve())
 
-def build_policy_from_config(cfg: dict) -> Policy:
-    """
-    Builds whichever policy the YAML runtime config requests.
-    Currently loads ONLINE DQN.
-    """
-    policy_cfg = cfg.get("policy", {})
-    dqn_cfg = policy_cfg.get("dqn", {})
+def build_policy_from_config(runtime_cfg: Dict[str, Any]):
+    pol_cfg = runtime_cfg.get("policy", {})
+    ptype = pol_cfg.get("type", "dqn")
 
-    checkpoint_path = dqn_cfg.get("checkpoint_path", None)
+    dqn_cfg = pol_cfg.get("dqn", {})
+    ckpt = _resolve_checkpoint_path(dqn_cfg.get("checkpoint_path"))
 
-    # Convert "../" relative paths to absolute project path
-    if checkpoint_path and checkpoint_path.startswith("../"):
-        # ai/src/policy/registry.py -> go up 3 dirs to project/
-        base = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        abs_path = os.path.normpath(os.path.join(base, checkpoint_path))
-    else:
-        abs_path = checkpoint_path
+    ray_cfg = runtime_cfg.get("raycasts", {})
+    max_ray = ray_cfg.get("max_dist", pol_cfg.get("max_ray_dist", 20.0))
 
-    print(f"[registry] Using OnlineDQNPolicy with checkpoint: {abs_path}")
+    device = pol_cfg.get("device", "cpu")
 
-    max_ray_dist = cfg.get("raycasts", {}).get("max_dist", 6.0)
+    if ptype == "online_dqn":
+        return OnlineDQNPolicy.FromCheckpoint(
+            ckpt,
+            max_ray_dist=max_ray,
+            device=device
+        )
 
-    return OnlineDQNPolicy.FromCheckpoint(
-        checkpoint_path=abs_path,
-        max_ray_dist=max_ray_dist,
-        device="cpu",
-        hidden_sizes=(128, 128),
-    )
+    if ptype == "dqn":
+        return DQNPolicy.FromCheckpoint(
+            ckpt,
+            max_ray_dist=max_ray,
+            device=device
+        )
+
+    raise ValueError(f"Unknown policy type: {ptype}")

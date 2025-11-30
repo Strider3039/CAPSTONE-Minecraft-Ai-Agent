@@ -1,12 +1,11 @@
 from __future__ import annotations
-import asyncio, time, statistics, sys, uuid
+import asyncio, time, statistics, sys
 import pathlib as _pathlib
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 from jsonschema import validate, ValidationError
 from collections import deque
-from ai.src.policy.rl.dqn.reward_engine import RewardEngine
 
-
+# Make sure ai/src is on path if needed
 SRC = _pathlib.Path(__file__).resolve().parents[1]  # ai/src
 if str(SRC) not in sys.path:
     sys.path.append(str(SRC))
@@ -23,11 +22,6 @@ def Percentile(sortedVals, p: float) -> float:
     k = max(0, min(len(sortedVals) - 1, int(round(p * (len(sortedVals) - 1)))))
     return float(sortedVals[k])
 
-
-# ============================================================
-# NEW: Cleaned PolicyWorker for DQNPolicy
-# ============================================================
-
 async def PolicyWorker(
     obs_q: asyncio.Queue,
     act_q: asyncio.Queue,
@@ -36,16 +30,16 @@ async def PolicyWorker(
     on_drop,                 # unused
     log,
     emit_event=None,         # async callable(kind, payload)
-    policy_step=None,        # <-- DQNPolicy.act
+    policy_step=None,        # e.g., DQNPolicy.act or OnlineDQNPolicy.act
 ):
     """
     Main RL loop:
 
-    - Pull most recent observation
-    - Pass through DQNPolicy.act(obs)
+    - Pull most recent observation message from obs_q
+    - Call policy_step(obsMsg) → action message dict
     - Validate action JSON (matches action.schema.json)
-    - Enqueue for server pipeline
-    - Emit latency stats every 2 seconds
+    - Enqueue for server → Minecraft
+    - Emit latency stats every ~2 seconds
     """
 
     tick_hz = 20.0
@@ -55,8 +49,6 @@ async def PolicyWorker(
     latestObs: Optional[dict] = None
     latSamplesMs = deque(maxlen=200)
     lastStatsTs = time.time()
-    reward_engine = RewardEngine()
-
 
     async def DrainLatest() -> bool:
         nonlocal latestObs
@@ -83,48 +75,31 @@ async def PolicyWorker(
             continue
 
         obsTs = float(latestObs.get("timestamp", time.time()))
-        # ---- NEW: extract Minecraft observation ----
-        obs = latestObs["payload"]["observation"]
 
-        # ---- NEW: compute reward using RewardEngine ----
-        reward = reward_engine.compute(obs)
-
-
-        # ---------------------------------------
-        # NEW: Direct DQN inference call
-        # ---------------------------------------
         try:
             if policy_step is None:
                 raise RuntimeError("policy_step was not provided to PolicyWorker")
 
-            # DQNPolicy.act returns ONE action message dict
-            action_msg = policy_step(latestObs, reward)
-
+            # policy_step expects the full observation message
+            action_msg = policy_step(latestObs)
 
         except Exception as e:
             log.warning("policy_step failed", extra={"error": str(e)})
             if emit_event:
-                await emit_event("bridge_health",
-                                 {"level": "warn", "detail": f"policy_step_error:{e}"})
+                await emit_event(
+                    "bridge_health",
+                    {"level": "warn", "detail": f"policy_step_error:{e}"},
+                )
             continue
 
-        # ---------------------------------------
-        # Validate action message against schema
-        # ---------------------------------------
         try:
             validate(instance=action_msg, schema=act_schema)
         except ValidationError as ve:
             log.warning("DQN action failed schema", extra={"error": str(ve)})
             continue
 
-        # ---------------------------------------
-        # Enqueue action for sending to Minecraft
-        # ---------------------------------------
         await QueueAdd(act_q, action_msg)
 
-        # ---------------------------------------
-        # Latency stats (monitor bridge health)
-        # ---------------------------------------
         latMs = max(0.0, (time.time() - obsTs) * 1000.0)
         latSamplesMs.append(latMs)
 

@@ -1,11 +1,11 @@
 schema_version: 1
 
 policy:
-  type: "online_dqn"        # <—— THIS ENABLES ONLINE LEARNING
+  type: "online_dqn"        # OnlineDQNPolicy (learns in Minecraft)
   tick_hz: 20
   budget_ms: 80
   max_actions_per_tick: 3
-
+  max_ray_dist: 20          # used by obs encoding / ray distance
   success_radius: 1.5
   stuck_speed_thresh: 0.02
   stuck_ticks: 15
@@ -22,7 +22,8 @@ policy:
     interact_cooldown_ms: 500
 
   dqn:
-    checkpoint_path: "../policy/runs/checkpoints/dqn_initial.pt"
+    # Path is interpreted relative to project root by registry.py
+    checkpoint_path: "policy/runs/checkpoints/dqn_initial.pt"
 
 obs:
   rate_hz: 12

@@ -1,10 +1,10 @@
 # server.py  (Sprint-2 complete through Step 3, updated for DQN + seq + simplified action sending)
 # Added:
-#   - Auto respawn
 #   - Episode start/end events
 #   - Episode persistence (resume episode count across restarts)
 #   - Episode timeout (full Minecraft day = 20 minutes)
 #   - FIXED shared directory path to be robust with your real file tree
+#   - Removed all command sending (no /respawn, no /gamerule)
 
 import asyncio
 import json
@@ -33,11 +33,7 @@ from ai.src.utils.logging import SetupLogging, WriteMetric
 from ai.src.policy.registry import build_policy_from_config
 from ai.src.app.policy_worker import PolicyWorker
 
-
-# ============================================================
-#  FAST JSON
-# ============================================================
-
+# Fast JSON
 try:
     import orjson as _fastjson
 
@@ -45,7 +41,9 @@ try:
         return _fastjson.dumps(obj)
 
     def _loads(s):
-        return _fastjson.loads(s if isinstance(s, (bytes, bytearray)) else s.encode("utf-8"))
+        return _fastjson.loads(
+            s if isinstance(s, (bytes, bytearray)) else s.encode("utf-8")
+        )
 
     _SEND_TEXT = False
 except Exception:
@@ -59,14 +57,8 @@ except Exception:
 
     _SEND_TEXT = True
 
+# Paths / Schemas
 
-# ============================================================
-#  FIXED FILE TREE PATHS (correct for your exact structure)
-# ============================================================
-
-# server.py is located at:
-#   ai_agent_project/ai/src/app/server.py
-# project_root = parents[3] = ai_agent_project/
 server_root = pathlib.Path(__file__).resolve()
 project_root = server_root.parents[3]  # ai_agent_project directory
 
@@ -77,56 +69,54 @@ OBS = json.loads((schemasDir / "observation.schema.json").read_text("utf-8"))
 ACT = json.loads((schemasDir / "action.schema.json").read_text("utf-8"))
 EVT = json.loads((schemasDir / "event.schema.json").read_text("utf-8"))
 
-
-# ============================================================
-#  EPISODE PERSISTENCE + AUTO RESPAWN SUPPORT
-# ============================================================
+# Episode state
 
 EPISODE_SAVE_PATH = sharedDir / "episode_state.json"
 episode = 0
-episode_start_time = None
+episode_start_time: Optional[float] = None
 MC_DAY_SECONDS = 1200  # 20 min
 
 
-def LoadEpisodeNumber():
+def LoadEpisodeNumber() -> None:
     global episode
+    log = stdlog.getLogger("bridge.server")
     try:
         if EPISODE_SAVE_PATH.exists():
             data = json.loads(EPISODE_SAVE_PATH.read_text())
             episode = int(data.get("episode", 0))
-            stdlog.getLogger("bridge.server").info(f"Loaded episode {episode} from previous run")
+            log.info("Loaded episode", extra={"episode": episode})
     except Exception as e:
-        stdlog.getLogger("bridge.server").warning(
-            "Failed to load episode persistence", extra={"error": str(e)}
-        )
+        log.warning("Failed to load episode persistence", extra={"error": str(e)})
 
 
-def SaveEpisodeNumber():
+def SaveEpisodeNumber() -> None:
+    log = stdlog.getLogger("bridge.server")
     try:
         EPISODE_SAVE_PATH.write_text(json.dumps({"episode": episode}))
     except Exception as e:
-        stdlog.getLogger("bridge.server").warning(
-            "Failed to save episode number", extra={"error": str(e)}
-        )
+        log.warning("Failed to save episode number", extra={"error": str(e)})
 
 
-async def start_new_episode(ws):
+async def start_new_episode(ws: WebSocketServerProtocol) -> None:
+    """
+    Increment episode counter, reset timer, and emit episode_start.
+
+    NOTE: event.schema.json only allows a 'reason' string for episode_start,
+    so we encode the episode number inside the reason.
+    """
     global episode, episode_start_time
     episode += 1
     episode_start_time = time.time()
     SaveEpisodeNumber()
 
-    stdlog.getLogger("bridge.server").info(f"=== Starting Episode {episode} ===")
+    log = stdlog.getLogger("bridge.server")
+    log.info("=== Starting Episode ===", extra={"episode": episode})
 
-    await SendCommand(ws, "respawn")
-    await asyncio.sleep(1.0)
-
-    await SendEvents(ws, "episode_start", {"episode": episode})
+    # Schema-safe payload: only "reason" is allowed
+    await SendEvents(ws, "episode_start", {"reason": f"episode_{episode}_start"})
 
 
-# ============================================================
-#  UTILITIES
-# ============================================================
+# Utilities
 
 async def SendEvents(ws: WebSocketServerProtocol, kind: str, payload: dict) -> None:
     log = stdlog.getLogger("bridge.server.SendEvents")
@@ -144,19 +134,7 @@ async def SendEvents(ws: WebSocketServerProtocol, kind: str, payload: dict) -> N
     await ws.send(_dumps(msg))
 
 
-async def SendCommand(ws: WebSocketServerProtocol, cmd: str) -> None:
-    msg = {
-        "proto": "1",
-        "kind": "command",
-        "seq": int(time.time() * 1000),
-        "timestamp": time.time(),
-        "payload": {"cmd": cmd},
-    }
-    await ws.send(_dumps(msg))
-    stdlog.getLogger("bridge.server").info("sent command", extra={"cmd": cmd})
-
-
-async def EnqueueObservation(q, item, state):
+async def EnqueueObservation(q: asyncio.Queue, item: dict, state: dict) -> None:
     try:
         q.put_nowait(item)
     except asyncio.QueueFull:
@@ -169,7 +147,14 @@ async def EnqueueObservation(q, item, state):
     state["obsHighWatermark"] = max(state.get("obsHighWatermark", 0), q.qsize())
 
 
-async def MetricsLoop(stopEvt, cfg, obsState, obsQ, actState, actQ):
+async def MetricsLoop(
+    stopEvt: asyncio.Event,
+    cfg: Dict[str, Any],
+    obsState: dict,
+    obsQ: asyncio.Queue,
+    actState: dict,
+    actQ: asyncio.Queue,
+) -> None:
     log = stdlog.getLogger("bridge.server.MetricsLoop")
     metricsCfg = cfg.get("bridge", {}).get("metrics", {})
     if not metricsCfg.get("enabled", True):
@@ -198,19 +183,21 @@ async def MetricsLoop(stopEvt, cfg, obsState, obsQ, actState, actQ):
         await asyncio.sleep(interval)
 
 
-async def HeartBeatLoop(ws, stopEvt):
+async def HeartBeatLoop(ws: WebSocketServerProtocol, stopEvt: asyncio.Event) -> None:
     try:
         await SendEvents(ws, "bridge_health", {"level": "info", "detail": "connected"})
         while not stopEvt.is_set():
             await asyncio.sleep(2.0)
             await SendEvents(ws, "bridge_health", {"level": "info", "detail": "alive"})
-    except:
+    except (asyncio.CancelledError, ConnectionClosed, ConnectionClosedOK, ConnectionClosedError):
         pass
+    except Exception as e:
+        stdlog.getLogger("bridge.server.Heartbeat").warning(
+            "heartbeat loop error", extra={"error": str(e)}
+        )
 
 
-# ============================================================
-#  MAIN CONNECTION HANDLER
-# ============================================================
+# Main connection handler
 
 async def Handle(ws: WebSocketServerProtocol) -> None:
     log = stdlog.getLogger("bridge.server")
@@ -219,26 +206,28 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
     SetupLogging(cfg.bridge.get("logging", {}))
 
     queuesCfg = cfg.bridge.get("queues", {})
-    obsQueue = asyncio.Queue(maxsize=queuesCfg.get("obs_max", 128))
+    obsQueue: asyncio.Queue[dict] = asyncio.Queue(maxsize=queuesCfg.get("obs_max", 128))
     obsState = {"obsDropped": 0, "obsHighWatermark": 0}
 
-    actQueue = asyncio.Queue(maxsize=queuesCfg.get("act_max", 64))
+    actQueue: asyncio.Queue[dict] = asyncio.Queue(maxsize=queuesCfg.get("act_max", 64))
     actState = {"actHighWatermark": 0, "actionTimeouts": 0}
-    pending = {}
+    pending: dict[str, asyncio.Future] = {}
 
     stopEvt = asyncio.Event()
-    tasks = []
+    tasks: list[asyncio.Task] = []
 
-    # Load policy (DQN)
-    runtime_cfg = getattr(cfg, "runtime", {})
+    # Load policy (DQN / OnlineDQN)
+    runtime_cfg: Dict[str, Any] = getattr(cfg, "runtime", {})
     policy = build_policy_from_config(runtime_cfg)
 
-    async def emit_event(kind, payload):
+    async def emit_event(kind: str, payload: dict) -> None:
         await SendEvents(ws, kind, payload)
 
     seqCounter = 0
 
-    async def SendAction(actionMsg, timeoutMs=300, wait_for_result=True):
+    async def SendAction(
+        actionMsg: dict, timeoutMs: int = 300, wait_for_result: bool = True
+    ) -> Optional[dict]:
         nonlocal seqCounter
         seqCounter += 1
 
@@ -248,6 +237,7 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
         actionMsg.setdefault("timestamp", time.time())
 
         if not wait_for_result:
+            # Send as text JSON for maximum compatibility
             await ws.send(json.dumps(actionMsg))
             return None
 
@@ -257,20 +247,19 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
         if not actionId:
             raise ValueError("action_id missing")
 
-        fut = asyncio.get_running_loop().create_future()
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
         pending[actionId] = fut
 
         await ws.send(json.dumps(actionMsg))
 
         try:
-            return await asyncio.wait_for(fut, timeoutMs / 1000)
+            return await asyncio.wait_for(fut, timeout=timeoutMs / 1000)
         except asyncio.TimeoutError:
             actState["actionTimeouts"] += 1
             pending.pop(actionId, None)
             raise
 
-    # Scheduler
-    def _exact_scheduler(hz):
+    def _exact_scheduler(hz: int):
         dt = 1.0 / float(max(1, hz))
         next_deadline = time.perf_counter()
 
@@ -278,14 +267,14 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
             nonlocal next_deadline
             next_deadline += dt
             delay = next_deadline - time.perf_counter()
-            if delay > 0:
+            if (delay) > 0:
                 await asyncio.sleep(delay)
             else:
                 next_deadline = time.perf_counter()
 
         return sleep_exact
 
-    async def ActionSenderLoop(stopEvt):
+    async def ActionSenderLoop(stopEvt: asyncio.Event) -> None:
         hz = max(20, int(cfg.runtime.get("policy", {}).get("tick_hz", 20)))
         sleep_exact = _exact_scheduler(hz)
 
@@ -313,7 +302,7 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
     tasks.append(asyncio.create_task(HeartBeatLoop(ws, stopEvt)))
     tasks.append(asyncio.create_task(ActionSenderLoop(stopEvt)))
 
-    # RL Worker
+    # RL worker
     tasks.append(
         asyncio.create_task(
             PolicyWorker(
@@ -332,15 +321,13 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
     # Start first episode
     await start_new_episode(ws)
 
-    # ============================================================
-    #  RECEIVE LOOP
-    # ============================================================
+    # Receive loop
 
     try:
         async for raw in ws:
             try:
                 msg = json.loads(raw)
-            except:
+            except Exception:
                 await SendEvents(ws, "bridge_health", {"level": "warn", "detail": "invalid_json"})
                 continue
 
@@ -349,22 +336,32 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
 
             kind = msg.get("kind")
 
-            # -------- Observation --------
             if kind == "observation":
                 try:
                     validate(instance=msg, schema=OBS)
-                except ValidationError:
+                except ValidationError as ve:
+                    log.warning("obs failed schema", extra={"error": str(ve)})
                     continue
+
+                # OLD (bad):
+                # payload = msg.get("payload") or {}
+                # observation = payload.get("observation")
+
+                # NEW (correct for your schema)
+                payload = msg.get("payload") or {}
+                observation = payload
 
                 await EnqueueObservation(obsQueue, msg, obsState)
 
-                observation = msg["payload"]["observation"]
+                # EPISODE LOGIC
 
-                # ============== EPISODE LOGIC ==============
-
-                # 1. Death → end + start new
+                # 1. Death
                 if observation.get("dead", False):
-                    await SendEvents(ws, "episode_end", {"episode": episode, "reason": "death"})
+                    await SendEvents(
+                        ws,
+                        "episode_end",
+                        {"reason": "death"},
+                    )
                     await start_new_episode(ws)
                     continue
 
@@ -372,15 +369,19 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
                 if episode_start_time is not None:
                     elapsed = time.time() - episode_start_time
                     if elapsed >= MC_DAY_SECONDS:
-                        await SendEvents(ws, "episode_end", {"episode": episode, "reason": "day_complete"})
+                        await SendEvents(
+                            ws,
+                            "episode_end",
+                            {"reason": "day_complete"},
+                        )
                         await start_new_episode(ws)
                         continue
 
-            # -------- Action results --------
             elif kind == "action_result":
                 try:
                     validate(instance=msg, schema=EVT)
-                except ValidationError:
+                except ValidationError as ve:
+                    log.warning("event failed schema", extra={"error": str(ve)})
                     continue
 
                 res = msg["payload"]["action_result"]
@@ -390,16 +391,22 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
                 if fut and not fut.done():
                     fut.set_result(res)
 
-            # -------- Health --------
             elif kind == "bridge_health":
                 try:
                     validate(instance=msg, schema=EVT)
-                except ValidationError:
+                except ValidationError as ve:
+                    log.warning("event failed schema", extra={"error": str(ve)})
                     continue
 
-            # -------- Episode events (ignored) --------
             elif kind in ("episode_start", "episode_end"):
-                continue
+                try:
+                    validate(instance=msg, schema=EVT)
+                except ValidationError as ve:
+                    log.warning("event failed schema", extra={"error": str(ve), "kind": kind})
+                    continue
+
+            else:
+                log.warning("unknown kind", extra={"kind": kind})
 
     except (ConnectionClosed, ConnectionClosedOK, ConnectionClosedError):
         log.info("client disconnected")
@@ -412,11 +419,9 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
             await asyncio.gather(*tasks, return_exceptions=True)
 
 
-# ============================================================
-#  ENTRYPOINT
-# ============================================================
+# Entrypoint
 
-async def Main():
+async def Main() -> None:
     LoadEpisodeNumber()
 
     cfg = LoadConfig(env=os.getenv("APP_ENV", "dev"))
