@@ -1,10 +1,4 @@
-# server.py  (Sprint-2 complete through Step 3, updated for DQN + seq + simplified action sending)
-# Added:
-#   - Episode start/end events
-#   - Episode persistence (resume episode count across restarts)
-#   - Episode timeout (full Minecraft day = 20 minutes)
-#   - FIXED shared directory path to be robust with your real file tree
-#   - Removed all command sending (no /respawn, no /gamerule)
+# server.py  (Sprint-2 complete through Step 3, updated for Data/ layout)
 
 import asyncio
 import json
@@ -29,11 +23,10 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parents[3]))
 from ai.src.utils.config import LoadConfig
 from ai.src.utils.logging import SetupLogging, WriteMetric
 
-# DQN policy registry
 from ai.src.policy.registry import build_policy_from_config
 from ai.src.app.policy_worker import PolicyWorker
 
-# Fast JSON
+# ---------- Fast JSON ----------
 try:
     import orjson as _fastjson
 
@@ -57,21 +50,23 @@ except Exception:
 
     _SEND_TEXT = True
 
-# Paths / Schemas
 
+# ---------- Paths ----------
 server_root = pathlib.Path(__file__).resolve()
-project_root = server_root.parents[3]  # ai_agent_project directory
+project_root = server_root.parents[3]  # ai_agent_project
 
 sharedDir = project_root / "shared"
 schemasDir = sharedDir / "schemas"
+
+dataDir = sharedDir / "Data"
+dataDir.mkdir(parents=True, exist_ok=True)
 
 OBS = json.loads((schemasDir / "observation.schema.json").read_text("utf-8"))
 ACT = json.loads((schemasDir / "action.schema.json").read_text("utf-8"))
 EVT = json.loads((schemasDir / "event.schema.json").read_text("utf-8"))
 
-# Episode state
-
-EPISODE_SAVE_PATH = sharedDir / "episode_state.json"
+# ---------- Episode persistence ----------
+EPISODE_SAVE_PATH = dataDir / "episode_state.json"
 episode = 0
 episode_start_time: Optional[float] = None
 MC_DAY_SECONDS = 1200  # 20 min
@@ -95,28 +90,6 @@ def SaveEpisodeNumber() -> None:
         EPISODE_SAVE_PATH.write_text(json.dumps({"episode": episode}))
     except Exception as e:
         log.warning("Failed to save episode number", extra={"error": str(e)})
-
-
-async def start_new_episode(ws: WebSocketServerProtocol) -> None:
-    """
-    Increment episode counter, reset timer, and emit episode_start.
-
-    NOTE: event.schema.json only allows a 'reason' string for episode_start,
-    so we encode the episode number inside the reason.
-    """
-    global episode, episode_start_time
-    episode += 1
-    episode_start_time = time.time()
-    SaveEpisodeNumber()
-
-    log = stdlog.getLogger("bridge.server")
-    log.info("=== Starting Episode ===", extra={"episode": episode})
-
-    # Schema-safe payload: only "reason" is allowed
-    await SendEvents(ws, "episode_start", {"reason": f"episode_{episode}_start"})
-
-
-# Utilities
 
 async def SendEvents(ws: WebSocketServerProtocol, kind: str, payload: dict) -> None:
     log = stdlog.getLogger("bridge.server.SendEvents")
@@ -145,6 +118,50 @@ async def EnqueueObservation(q: asyncio.Queue, item: dict, state: dict) -> None:
         except Exception:
             state["obsDropped"] = state.get("obsDropped", 0) + 1
     state["obsHighWatermark"] = max(state.get("obsHighWatermark", 0), q.qsize())
+
+
+async def start_new_episode(
+    ws: WebSocketServerProtocol,
+    obs_q: Optional[asyncio.Queue] = None,
+    obs_state: Optional[dict] = None,
+) -> None:
+    """
+    Increment episode counter, reset timer, and emit episode_start.
+
+    NOTE: event.schema.json only allows a 'reason' string for episode_start,
+    so we encode the episode number inside the reason string.
+    The client will perform the actual world reset when it receives episode_start.
+
+    NEW: also enqueue a synthetic episode_start event into obs_q so the
+    PolicyWorker / DQN can see episode boundaries and update histories.
+    """
+    global episode, episode_start_time
+    episode += 1
+    episode_start_time = time.time()
+    SaveEpisodeNumber()
+
+    log = stdlog.getLogger("bridge.server")
+    log.info("=== Starting Episode ===", extra={"episode": episode})
+
+    reason_str = f"episode_{episode}_start"
+
+    # Schema-safe payload for the client
+    await SendEvents(ws, "episode_start", {"reason": reason_str})
+
+    # Also notify the policy side if queues were provided
+    if obs_q is not None and obs_state is not None:
+        synthetic_evt = {
+            "proto": "1",
+            "kind": "episode_start",
+            "seq": 0,
+            "timestamp": episode_start_time,
+            "payload": {
+                "episode_start": {
+                    "reason": reason_str
+                }
+            },
+        }
+        await EnqueueObservation(obs_q, synthetic_evt, obs_state)
 
 
 async def MetricsLoop(
@@ -267,7 +284,7 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
             nonlocal next_deadline
             next_deadline += dt
             delay = next_deadline - time.perf_counter()
-            if (delay) > 0:
+            if delay > 0:
                 await asyncio.sleep(delay)
             else:
                 next_deadline = time.perf_counter()
@@ -318,8 +335,8 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
         )
     )
 
-    # Start first episode
-    await start_new_episode(ws)
+    # Start first episode when connection opens
+    await start_new_episode(ws, obsQueue, obsState)
 
     # Receive loop
 
@@ -343,39 +360,9 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
                     log.warning("obs failed schema", extra={"error": str(ve)})
                     continue
 
-                # OLD (bad):
-                # payload = msg.get("payload") or {}
-                # observation = payload.get("observation")
-
-                # NEW (correct for your schema)
-                payload = msg.get("payload") or {}
-                observation = payload
-
+                # Old schema: payload already *is* the observation body (pose, rays, world, etc.)
+                # We just enqueue the entire message for the policy.
                 await EnqueueObservation(obsQueue, msg, obsState)
-
-                # EPISODE LOGIC
-
-                # 1. Death
-                if observation.get("dead", False):
-                    await SendEvents(
-                        ws,
-                        "episode_end",
-                        {"reason": "death"},
-                    )
-                    await start_new_episode(ws)
-                    continue
-
-                # 2. Minecraft day timer
-                if episode_start_time is not None:
-                    elapsed = time.time() - episode_start_time
-                    if elapsed >= MC_DAY_SECONDS:
-                        await SendEvents(
-                            ws,
-                            "episode_end",
-                            {"reason": "day_complete"},
-                        )
-                        await start_new_episode(ws)
-                        continue
 
             elif kind == "action_result":
                 try:
@@ -398,12 +385,41 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
                     log.warning("event failed schema", extra={"error": str(ve)})
                     continue
 
-            elif kind in ("episode_start", "episode_end"):
+            elif kind == "episode_end":
+                # Client (Java) tells us an episode ended (death, timeout, manual reset).
                 try:
                     validate(instance=msg, schema=EVT)
                 except ValidationError as ve:
                     log.warning("event failed schema", extra={"error": str(ve), "kind": kind})
                     continue
+
+                payload = msg.get("payload") or {}
+                body = payload.get("episode_end", {})
+                reason = body.get("reason", "unknown")
+
+                log.info(
+                    "episode_end received from client",
+                    extra={"reason": reason, "episode": episode},
+                )
+
+                # ALSO notify the policy side about this episode_end so DQN can mark done
+                await EnqueueObservation(obsQueue, msg, obsState)
+
+                # Start a fresh episode: increments episode counter, saves, and
+                # sends an episode_start event back down to the client and into obsQueue.
+                await start_new_episode(ws, obsQueue, obsState)
+
+            elif kind == "episode_start":
+                # In the new design, the client SHOULD NOT send episode_start.
+                # If it does, we just log and ignore (Python is the episode authority).
+                try:
+                    validate(instance=msg, schema=EVT)
+                except ValidationError as ve:
+                    log.warning("event failed schema", extra={"error": str(ve), "kind": kind})
+                    continue
+
+                log.info("episode_start event from client ignored")
+                continue
 
             else:
                 log.warning("unknown kind", extra={"kind": kind})

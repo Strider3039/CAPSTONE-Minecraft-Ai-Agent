@@ -1,4 +1,8 @@
 from __future__ import annotations
+import json
+import time
+import pathlib as _pathlib
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -42,7 +46,7 @@ class DQNAgent:
 
     def __init__(
         self,
-        gamma: float = .99,
+        gamma: float = 0.99,
         lr: float = 1e-3,
         bufferCapacity: int = 100_000,
         batchSize: int = 64,
@@ -101,7 +105,9 @@ class DQNAgent:
         if len(self.replayBuffer) < self.minReplaySize:
             return None
 
-        states, actions, rewards, nextStates, dones = self.replayBuffer.Sample(self.batchSize)
+        states, actions, rewards, nextStates, dones = self.replayBuffer.Sample(
+            self.batchSize
+        )
 
         statesTensor = torch.from_numpy(states).to(self.device)
         actionTensor = torch.from_numpy(actions).long().to(self.device)
@@ -202,11 +208,15 @@ class DQNPolicy(Policy):
 
 class OnlineDQNPolicy(Policy):
     """
-    Online RL policy that learns in Minecraft using DQNAgent and a multi-phase RewardEngine.
+    Online RL policy that learns in Minecraft using DQNAgent and a RewardEngine.
 
     - Computes reward from consecutive observations via RewardEngine.
-    - Logs episodic return + current curriculum phase when an episode ends.
+    - Logs episodic return + current phase when an episode ends.
     - Stores transitions into replay buffer and trains the DQN.
+    - Logs:
+        * episode_state.json       (latest step snapshot)
+        * episode_history.json     (per-episode summary list)
+        * step_history.jsonl       (per-transition log, one JSON line per step)
     """
 
     def __init__(
@@ -227,11 +237,20 @@ class OnlineDQNPolicy(Policy):
         self._last_action_idx: int | None = None
         self._last_obs_msg: dict | None = None
 
-        # Multi-phase curriculum reward engine
+        # Reward engine
         self.reward_engine = RewardEngine()
 
-        # Episode tracking
+        # Episode tracking (Python-side)
         self.episode_idx = 0
+        self.episode_step = 0  # step index within current episode
+
+        # Resolve shared paths (shared/episode_state.json, etc.)
+        (
+            self._shared_dir,
+            self._episode_state_path,
+            self._episode_history_path,
+            self._step_history_path,
+        ) = self._resolve_paths()
 
     @classmethod
     def FromCheckpoint(
@@ -263,6 +282,182 @@ class OnlineDQNPolicy(Policy):
 
         return cls(agent, max_ray_dist, device)
 
+    # ----- filesystem helpers for logs -----
+
+    def _resolve_paths(
+        self,
+    ) -> tuple[_pathlib.Path, _pathlib.Path, _pathlib.Path, _pathlib.Path]:
+        """
+        Resolve shared/Data paths consistently with server.py.
+        """
+        here = _pathlib.Path(__file__).resolve()
+        shared_dir: _pathlib.Path | None = None
+
+        for parent in here.parents:
+            candidate = parent / "shared"
+            if candidate.exists() and candidate.is_dir():
+                shared_dir = candidate
+                break
+
+        if shared_dir is None:
+            shared_dir = _pathlib.Path.cwd() / "shared"
+
+        data_dir = shared_dir / "Data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+
+        episode_state_path = data_dir / "episode_state.json"
+        episode_history_path = data_dir / "episode_history.json"
+        step_history_path = data_dir / "step_history.jsonl"
+
+        return shared_dir, episode_state_path, episode_history_path, step_history_path
+
+
+    def _write_episode_state(self, reward: float, done: bool, obsMsg: dict) -> None:
+        """
+        Debug/monitoring only: write the latest RL state to episode_state.json.
+
+        This does NOT affect learning; it just makes it visible to you.
+        """
+        body = obsMsg.get("payload", {})
+        pose = body.get("pose", {})
+        world = body.get("world", {})
+        collision = body.get("collision", {})
+
+        doc = {
+            "python_episode_idx": int(self.episode_idx),
+            "episode_step": int(self.episode_step),
+            "total_steps": int(self.agent.totalSteps),
+            "last_reward": float(reward),
+            "episode_return": float(getattr(self.reward_engine, "episode_return", 0.0)),
+            "done": bool(done),
+
+            "pose": {
+                "x": pose.get("x"),
+                "y": pose.get("y"),
+                "z": pose.get("z"),
+                "yaw": pose.get("yaw"),
+                "pitch": pose.get("pitch"),
+            },
+
+            "world": {
+                "time_of_day": world.get("time_of_day"),
+                "weather": world.get("weather"),
+                "biome": world.get("biome"),
+            },
+
+            "collision": {
+                "is_grounded": collision.get("is_grounded"),
+                "is_colliding": collision.get("is_colliding"),
+                "no_progress": collision.get("no_progress"),
+            },
+
+            "obs_timestamp": float(obsMsg.get("timestamp", 0.0)),
+            "logged_at_unix": float(time.time()),
+        }
+
+        try:
+            self._episode_state_path.write_text(json.dumps(doc, indent=2))
+        except Exception as e:
+            print(f"[OnlineDQN] failed to write episode_state.json: {e}")
+
+    def _append_step_history(
+        self,
+        reward: float,
+        done: bool,
+        action_idx: int,
+        obsMsg: dict,
+    ) -> None:
+        """
+        Append one line to step_history.jsonl describing the transition.
+        """
+        body = obsMsg.get("payload", {})
+        pose = body.get("pose", {})
+        world = body.get("world", {})
+        collision = body.get("collision", {})
+
+        row = {
+            "episode": int(self.episode_idx),
+            "step": int(self.episode_step),
+            "action": int(action_idx),
+            "reward": float(reward),
+            "done": bool(done),
+
+            "pose": {
+                "x": pose.get("x"),
+                "y": pose.get("y"),
+                "z": pose.get("z"),
+            },
+
+            "world": {
+                "time_of_day": world.get("time_of_day"),
+                "weather": world.get("weather"),
+            },
+
+            "collision": {
+                "is_grounded": collision.get("is_grounded"),
+                "is_colliding": collision.get("is_colliding"),
+                "no_progress": collision.get("no_progress"),
+            },
+        }
+
+        try:
+            with self._step_history_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(row) + "\n")
+        except Exception as e:
+            print(f"[OnlineDQN] failed to append step_history.jsonl: {e}")
+
+    def _append_episode_history(self, last_obs: dict, done_reason: str = "done_true") -> None:
+        """
+        Append a summary entry for the just-finished episode.
+        Stores:
+          - episode index
+          - steps in episode
+          - total return
+          - avg reward
+          - final pose/world snapshot
+        """
+        body = last_obs.get("payload", {})
+        pose = body.get("pose", {})
+        world = body.get("world", {})
+
+        ep_return = float(getattr(self.reward_engine, "episode_return", 0.0))
+        steps = int(self.episode_step) if self.episode_step > 0 else 0
+        avg_reward = ep_return / steps if steps > 0 else 0.0
+
+        entry = {
+            "episode": int(self.episode_idx),
+            "steps": steps,
+            "return": ep_return,
+            "avg_reward": float(avg_reward),
+            "end_pose": {
+                "x": pose.get("x"),
+                "y": pose.get("y"),
+                "z": pose.get("z"),
+            },
+            "end_time_of_day": body.get("world", {}).get("time_of_day")
+            if isinstance(body.get("world", {}), dict)
+            else None,
+            "reason": done_reason,
+            "logged_at_unix": float(time.time()),
+        }
+
+        try:
+            # Load existing history list if present
+            if self._episode_history_path.exists():
+                try:
+                    existing = json.loads(self._episode_history_path.read_text("utf-8"))
+                    if not isinstance(existing, list):
+                        existing = []
+                except Exception:
+                    existing = []
+            else:
+                existing = []
+
+            existing.append(entry)
+            self._episode_history_path.write_text(json.dumps(existing, indent=2))
+        except Exception as e:
+            print(f"[OnlineDQN] failed to append episode_history.json: {e}")
+
     # ----- reward shaping utility -----
 
     def _compute_reward(
@@ -271,7 +466,7 @@ class OnlineDQNPolicy(Policy):
         curr_obs: dict,
     ) -> tuple[float, bool]:
         """
-        Delegate reward computation to RewardEngine (multi-phase curriculum).
+        Delegate reward computation to RewardEngine.
         """
         return self.reward_engine.compute(prev_obs, curr_obs)
 
@@ -283,7 +478,7 @@ class OnlineDQNPolicy(Policy):
           1. Encode current observation → obs_vec.
           2. If we have a previous (s, a), compute reward and store transition.
           3. Train DQNAgent from replay (if enough samples).
-          4. If episode ended (done=True), log return + phase and reset episode-level state.
+          4. If episode ended (done=True), log episode summary and reset.
           5. Select next action via epsilon-greedy.
           6. Return Minecraft controls dict (with seq id).
         """
@@ -296,6 +491,15 @@ class OnlineDQNPolicy(Policy):
                 prev_obs=self._last_obs_msg,
                 curr_obs=obsMsg,
             )
+
+            # Log latest state (overwritten each step)
+            self._write_episode_state(reward, done, obsMsg)
+
+            # Log this transition as a step in step_history.jsonl
+            self._append_step_history(reward, done, self._last_action_idx, obsMsg)
+
+            # This step counts toward episode_step
+            self.episode_step += 1
 
             # Store transition in replay
             self.agent.StoreTransition(
@@ -323,8 +527,15 @@ class OnlineDQNPolicy(Policy):
                     msg += f" phase={phase}"
                 print(msg)
 
+                # Append summary entry to episode_history.json
+                try:
+                    self._append_episode_history(last_obs=obsMsg, done_reason="done_true")
+                except Exception as e:
+                    print(f"[OnlineDQN] failed to log episode_history: {e}")
+
                 # Prepare for next episode
                 self.episode_idx += 1
+                self.episode_step = 0
                 self.reward_engine.reset_episode()
 
                 # Clear transition memory so next call starts fresh

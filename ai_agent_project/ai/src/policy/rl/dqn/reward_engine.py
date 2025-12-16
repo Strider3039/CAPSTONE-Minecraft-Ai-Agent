@@ -1,78 +1,217 @@
 from __future__ import annotations
-from typing import Optional, Dict, Any, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional
 import math
 
+
+@dataclass
 class RewardEngine:
     """
-    Reward system matching your observation schema.
-    Provides:
-      - survival reward
-      - movement reward (XZ)
-      - no_progress penalty
-      - front_clear bonus
-      - item pickup reward
+    Reward engine matching your observation schema.
+
+    Observation payload:
+      - pose: x, y, z, yaw, pitch
+      - rays: [{hit, dist, angle_deg}, ...]
+      - front_clear: bool
+      - world: {time_of_day, weather, biome}
+      - inventory: {selected_slot, hotbar: [{id, count}, ...]}
+      - collision: {is_grounded, is_colliding, no_progress}
+
+    Rewards:
+      - Small survival reward every step
+      - Reward for movement in XZ (exploration)
+      - Penalty when 'no_progress' is true (stuck)
+      - Small bonus when 'front_clear' is true (open space)
+      - Reward for increases in hotbar counts (item pickup)
+      - Episode termination based on max steps per episode
     """
 
-    def __init__(self):
+    # Tunable weights
+    survival_reward: float = 0.01
+    move_scale: float = 1.0
+    max_move_reward: float = 0.1
+    no_progress_penalty: float = -0.02
+    front_clear_bonus: float = 0.005
+    item_pickup_reward: float = 0.05
+
+    # Episode bookkeeping
+    episode_return: float = 0.0
+    steps: int = 0
+    max_steps_per_episode: int = 2000  # ~100 seconds at 20 Hz
+
+    # Internal state
+    _last_pos: Optional[Dict[str, float]] = field(default=None, init=False)
+    _last_hotbar: Optional[list] = field(default=None, init=False)
+
+    # Optional "phase" if you later add curriculum learning
+    phase: Optional[str] = None
+
+    # ---------- Public API ----------
+
+    def reset_episode(self) -> None:
+        """Called when an episode ends (from OnlineDQNPolicy)."""
         self.episode_return = 0.0
-        self._prev_hotbar = {}
+        self.steps = 0
+        self._last_pos = None
+        self._last_hotbar = None
 
-    def compute(self, prev_obs: Optional[Dict[str, Any]], curr_obs: Dict[str, Any]) -> Tuple[float, bool]:
-        try:
-            curr = curr_obs["payload"]
-        except Exception:
-            return 0.0, False
+    def compute(
+        self,
+        prev_obs: Optional[dict],
+        curr_obs: dict,
+    ) -> tuple[float, bool]:
+        """
+        Core reward function.
 
-        prev = None
-        if prev_obs:
-            try: prev = prev_obs["payload"]
-            except: prev = None
-
+        Returns:
+            (reward, done)
+        """
         reward = 0.0
         done = False
 
-        # 1. Survival reward
-        reward += 0.01
+        body_prev = self._extract_body(prev_obs) if prev_obs is not None else None
+        body_curr = self._extract_body(curr_obs)
 
-        # 2. Movement reward (in XZ)
-        if prev is not None:
-            ppos = prev.get("pose", {})
-            cpos = curr.get("pose", {})
-            px, pz = ppos.get("x"), ppos.get("z")
-            x, z = cpos.get("x"), cpos.get("z")
-            if None not in (px, pz, x, z):
-                dist = math.sqrt((x-px)**2 + (z-pz)**2)
-                reward += min(dist, 0.1)
+        # 1) Survival reward
+        reward += self.survival_reward
 
-        # 3. no_progress penalty
-        if curr.get("collision", {}).get("no_progress", False):
-            reward -= 0.02
+        # 2) Movement reward in XZ
+        reward += self._movement_reward(body_prev, body_curr)
 
-        # 4. front_clear bonus
-        if curr.get("front_clear", False):
-            reward += 0.005
+        # 3) Collision / progress-based signals
+        reward += self._collision_reward(body_curr)
 
-        # 5. Item pickup reward
-        inv = curr.get("inventory", {})
-        hotbar = inv.get("hotbar", [])
+        # 4) Item pickup reward (hotbar)
+        reward += self._inventory_reward(body_prev, body_curr)
 
-        curr_map = {}
-        for slot in hotbar:
-            item = slot.get("id")
-            count = slot.get("count", 0)
-            if item:
-                curr_map[item] = curr_map.get(item, 0) + int(count)
-
-        if prev is not None:
-            for item, cnt in curr_map.items():
-                prev_cnt = self._prev_hotbar.get(item, 0)
-                if cnt > prev_cnt:
-                    reward += 0.05
-
-        self._prev_hotbar = curr_map
+        # Bookkeeping
         self.episode_return += reward
-        return reward, done
+        self.steps += 1
 
-    def reset_episode(self):
-        self.episode_return = 0.0
-        self._prev_hotbar = {}
+        # 5) Episode termination by step limit
+        if self.steps >= self.max_steps_per_episode:
+            done = True
+
+        return float(reward), bool(done)
+
+    # ---------- Helpers ----------
+
+    def _extract_body(self, obs: dict | None) -> Dict[str, Any]:
+        """
+        For your schema, the "body" of the observation is obs["payload"].
+        """
+        if not obs or not isinstance(obs, dict):
+            return {}
+        payload = obs.get("payload")
+        if isinstance(payload, dict):
+            return payload
+        return {}
+
+    def _movement_reward(
+        self,
+        body_prev: Optional[Dict[str, Any]],
+        body_curr: Dict[str, Any],
+    ) -> float:
+        """
+        Reward forward movement / exploration in the XZ plane.
+        Uses payload.pose.x/z.
+        """
+        pos_curr = self._extract_pos(body_curr)
+        pos_prev = self._extract_pos(body_prev) if body_prev else self._last_pos
+
+        if pos_curr is None:
+            return 0.0
+
+        move_reward = 0.0
+
+        if pos_prev is not None:
+            dx = pos_curr["x"] - pos_prev["x"]
+            dz = pos_curr["z"] - pos_prev["z"]
+            dist = math.sqrt(dx * dx + dz * dz)
+            move_reward = min(dist * self.move_scale, self.max_move_reward)
+
+        # Update stored position
+        self._last_pos = pos_curr
+        return move_reward
+
+    def _extract_pos(self, body: Optional[Dict[str, Any]]) -> Optional[Dict[str, float]]:
+        if not body or not isinstance(body, dict):
+            return None
+
+        pose = body.get("pose")
+        if not isinstance(pose, dict):
+            return None
+
+        try:
+            return {
+                "x": float(pose.get("x", 0.0)),
+                "y": float(pose.get("y", 0.0)),
+                "z": float(pose.get("z", 0.0)),
+            }
+        except Exception:
+            return None
+
+    def _collision_reward(self, body_curr: Dict[str, Any]) -> float:
+        """
+        Use boolean flags from payload.collision and front_clear.
+        """
+        reward = 0.0
+
+        collision = body_curr.get("collision", {})
+        if not isinstance(collision, dict):
+            collision = {}
+
+        # Penalty for 'no_progress' – likely stuck against a wall
+        if collision.get("no_progress", False):
+            reward += self.no_progress_penalty
+
+        # Bonus if front is clear (encourages moving into open space)
+        if body_curr.get("front_clear", False):
+            reward += self.front_clear_bonus
+
+        return reward
+
+    def _inventory_reward(
+        self,
+        body_prev: Optional[Dict[str, Any]],
+        body_curr: Dict[str, Any],
+    ) -> float:
+        """
+        Reward increases in hotbar item counts (pickup / crafting etc.).
+        Uses payload.inventory.hotbar entries with {id, count}.
+        """
+        inv_curr = self._extract_hotbar(body_curr)
+        inv_prev = self._extract_hotbar(body_prev) if body_prev else self._last_hotbar
+
+        if inv_curr is None:
+            return 0.0
+
+        reward = 0.0
+
+        if inv_prev is not None and len(inv_curr) == len(inv_prev):
+            for prev_slot, curr_slot in zip(inv_prev, inv_curr):
+                try:
+                    prev_count = int(prev_slot.get("count", 0))
+                    curr_count = int(curr_slot.get("count", 0))
+                except Exception:
+                    continue
+
+                if curr_count > prev_count:
+                    reward += self.item_pickup_reward
+
+        # Update stored inventory
+        self._last_hotbar = inv_curr
+        return reward
+
+    def _extract_hotbar(self, body: Optional[Dict[str, Any]]) -> Optional[list]:
+        if not body or not isinstance(body, dict):
+            return None
+
+        inv = body.get("inventory", {})
+        if not isinstance(inv, dict):
+            return None
+
+        hotbar = inv.get("hotbar")
+        if isinstance(hotbar, list):
+            return hotbar
+        return None
