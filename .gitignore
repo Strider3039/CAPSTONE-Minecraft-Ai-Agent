@@ -111,8 +111,5 @@ temp/
 # RUNTIME DATA (RL / EPISODES / LOGS)
 # =====================================================
 
-# Ignore everything inside shared/Data
-shared/Data/*
-
-# But keep the directory itself via its .gitignore
-!shared/Data/.gitignore
+ai_agent_project/shared/Data/*
+!ai_agent_project/shared/Data/.gitignore
