@@ -106,3 +106,13 @@ temp/
 *.bak
 *.old
 .cache/
+
+# =====================================================
+# RUNTIME DATA (RL / EPISODES / LOGS)
+# =====================================================
+
+# Ignore everything inside shared/Data
+shared/Data/*
+
+# But keep the directory itself via its .gitignore
+!shared/Data/.gitignore
