@@ -1,5 +1,5 @@
 modLoader="javafml"
-loaderVersion="[52,)"  # Forge 52.x is for MC 1.21.1
+loaderVersion="[47,)"  # Forge 47.x is for MC 1.20.1
 license="MIT"
 
 [[mods]]
@@ -12,15 +12,15 @@ AI Agent Bot Forge mod that connects Minecraft to the AI bridge.
 '''
 
 [[dependencies.ai_agent_bot]]
-    modId="forge"
-    mandatory=true
-    versionRange="[52,)"
-    ordering="NONE"
-    side="BOTH"
+modId="forge"
+mandatory=true
+versionRange="[47,)"
+ordering="NONE"
+side="BOTH"
 
 [[dependencies.ai_agent_bot]]
-    modId="minecraft"
-    mandatory=true
-    versionRange="[1.21.1,)"
-    ordering="NONE"
-    side="BOTH"
+modId="minecraft"
+mandatory=true
+versionRange="[1.20.1,1.21)"
+ordering="NONE"
+side="BOTH"
