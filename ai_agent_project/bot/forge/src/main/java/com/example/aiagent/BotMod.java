@@ -5,7 +5,7 @@ import net.minecraftforge.client.event.RegisterClientCommandsEvent;
 import net.minecraftforge.client.event.RegisterKeyMappingsEvent;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.TickEvent;
-import net.minecraftforge.eventbus.api.listener.SubscribeEvent;
+import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 
 import java.net.URI;
@@ -321,7 +321,7 @@ public class BotMod {
         ItemStack held = p.getMainHandItem();
         for (int i = 0; i < 9; i++) {
             ItemStack s = inv.getItem(i);
-            if (ItemStack.isSameItemSameComponents(held, s)) {
+            if (ItemStack.isSameItemSameTags(held, s)) {
                 selectedIdx = i;
                 break;
             }
