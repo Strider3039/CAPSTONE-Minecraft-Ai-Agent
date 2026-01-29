@@ -126,7 +126,8 @@ public class ForgeWebSocketClient extends WebSocketClient {
 
     @Override
     public void onError(Exception ex) {
-        System.err.println("[WS ERROR] " + ex.getMessage());
+        System.err.println("[WS ERROR] " + ex);
+        ex.printStackTrace();
     }
 
     // ───────────────────────────────────────────────
