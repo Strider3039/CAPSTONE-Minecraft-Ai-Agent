@@ -8,6 +8,7 @@ import net.minecraftforge.event.level.LevelEvent;
 import net.minecraftforge.event.server.ServerStoppingEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.server.ServerLifecycleHooks;
+import com.example.aiagent.server.tests.BotTestSuite;
 
 /**
  * ServerBotHooks (SERVER SIDE)
@@ -74,6 +75,9 @@ public class ServerBotHooks {
 
         ServerLevel level = server.overworld();
         if (level == null) return;
+
+        // Run tests once (server-only, opt-in)
+        BotTestSuite.runOnce(level, BOTS);
 
         // Pull WS actions (from python) and enqueue into FakeBotManager
         ws.drainActionsAndApply(level, BOTS);
