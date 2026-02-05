@@ -14,6 +14,8 @@ import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.phys.*;
 import net.minecraftforge.common.util.FakePlayerFactory;
 import net.minecraftforge.network.PacketDistributor;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.item.ItemStack;
 
 import java.util.List;
 import java.util.UUID;
@@ -62,10 +64,6 @@ public class FakeBotManager {
     }
 
 
-    private final ConcurrentLinkedQueue<StepRequest> pendingSteps = new ConcurrentLinkedQueue<>();
-    private long nextStepId = 1;
-
-
     public ServerPlayer getDefaultPlayerOrNull() {
         FakeBot b = getDefaultBot();
         return (b != null) ? b.player : null;
@@ -86,6 +84,7 @@ public class FakeBotManager {
         public boolean attack = false;
         public boolean use = false;
         public int selectSlot = -1;
+        public double stepStartX = 0, stepStartY = 0, stepStartZ = 0;
 
         // --- Step execution state ---
         public boolean stepActive = false;
@@ -117,7 +116,18 @@ public class FakeBotManager {
     private final List<FakeBot> bots = new CopyOnWriteArrayList<>();
     private final ConcurrentLinkedQueue<String> pendingActionJson = new ConcurrentLinkedQueue<>();
 
+    private final ConcurrentLinkedQueue<StepRequest> pendingSteps = new ConcurrentLinkedQueue<>();
+    private long nextStepId = 1;
+
+    private final java.util.concurrent.ConcurrentLinkedQueue<com.google.gson.JsonObject> completedStepResults =
+    new java.util.concurrent.ConcurrentLinkedQueue<>();
+
     private int tickCounter = 0;
+
+    public java.util.concurrent.ConcurrentLinkedQueue<com.google.gson.JsonObject> getCompletedStepResultsQueue() {
+        return completedStepResults;
+    }
+
 
     public List<FakeBot> getAllBots() { return bots; }
 
@@ -209,6 +219,9 @@ public class FakeBotManager {
                     bot.stepSeq = req.seq;
                     bot.stepActionId = req.actionId;
 
+                    bot.stepStartX = bot.player.getX();
+                    bot.stepStartY = bot.player.getY();
+                    bot.stepStartZ = bot.player.getZ();
 
                     clearControls(bot);
                 }
@@ -232,6 +245,16 @@ public class FakeBotManager {
                     ServerPlayer p = bot.player;
 
                     // TODO next: enqueue observation + action_result using finishedSeq/finishedActionId
+                    JsonObject obsMsg = new JsonObject();
+                    obsMsg.addProperty("proto", "1");
+                    obsMsg.addProperty("kind", "observation");
+                    obsMsg.addProperty("seq", bot.stepSeq);
+                    obsMsg.addProperty("timestamp", System.currentTimeMillis() / 1000.0);
+                    obsMsg.add("payload", buildObservationPayload(level, bot.player, bot));
+
+                    // enqueue for ServerBotHooks to send via ws.sendJson(obsMsg)
+                    completedStepResults.offer(obsMsg);
+
 
                     clearControls(bot);
                     bot.stepActive = false;
@@ -245,7 +268,6 @@ public class FakeBotManager {
             }
         }
     }
-
 
 
     private void drainActions() {
@@ -513,30 +535,89 @@ public class FakeBotManager {
         pendingActionJson.clear();
     }
 
-    private JsonObject buildObservation(ServerPlayer p) {
-        JsonObject o = new JsonObject();
+    private JsonObject buildObservationPayload(ServerLevel level, ServerPlayer p, FakeBot bot) {
+        JsonObject payload = new JsonObject();
 
-        JsonObject pos = new JsonObject();
-        pos.addProperty("x", p.getX());
-        pos.addProperty("y", p.getY());
-        pos.addProperty("z", p.getZ());
-        o.add("pos", pos);
+        // ---- pose (required)
+        JsonObject pose = new JsonObject();
+        pose.addProperty("x", p.getX());
+        pose.addProperty("y", p.getY());
+        pose.addProperty("z", p.getZ());
+        pose.addProperty("yaw", p.getYRot());
+        pose.addProperty("pitch", p.getXRot());
+        payload.add("pose", pose);
 
-        o.addProperty("yaw", p.getYRot());
-        o.addProperty("pitch", p.getXRot());
-        o.addProperty("onGround", p.onGround());
+        // ---- rays (required) : minimal valid = empty array
+        payload.add("rays", new com.google.gson.JsonArray());
 
-        Vec3 v = p.getDeltaMovement();
-        JsonObject vel = new JsonObject();
-        vel.addProperty("x", v.x);
-        vel.addProperty("y", v.y);
-        vel.addProperty("z", v.z);
-        o.add("vel", vel);
+        // ---- front_clear (required) : simple 1-block ray in front
+        payload.addProperty("front_clear", isFrontClear(level, p));
 
-        o.addProperty("health", p.getHealth());
-        o.addProperty("food", p.getFoodData().getFoodLevel());
+        // ---- world (required)
+        JsonObject world = new JsonObject();
+        world.addProperty("time_of_day", (double) (level.getDayTime() % 24000L));
 
-        return o;
+        String weather = level.isThundering() ? "thunder" : (level.isRaining() ? "rain" : "clear");
+        world.addProperty("weather", weather);
+
+        String biome = level.getBiome(p.blockPosition())
+                .unwrapKey()
+                .map(k -> k.location().toString())
+                .orElse("unknown");
+        world.addProperty("biome", biome);
+
+        payload.add("world", world);
+
+        // ---- inventory (required)
+        JsonObject inv = new JsonObject();
+        inv.addProperty("selected_slot", p.getInventory().selected);
+
+        com.google.gson.JsonArray hotbar = new com.google.gson.JsonArray();
+        for (int i = 0; i < 9; i++) {
+            ItemStack stack = p.getInventory().getItem(i);
+            String id = stack.isEmpty()
+                    ? "minecraft:air"
+                    : BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+
+            JsonObject slot = new JsonObject();
+            slot.addProperty("id", id);
+            slot.addProperty("count", stack.isEmpty() ? 0 : stack.getCount());
+            hotbar.add(slot);
+        }
+        inv.add("hotbar", hotbar);
+        payload.add("inventory", inv);
+
+        // ---- collision (required)
+        JsonObject collision = new JsonObject();
+        collision.addProperty("is_grounded", p.onGround());
+
+        // If these fields are accessible in your mappings, use them. If not, fallback false.
+        boolean isColliding = false;
+        try {
+            isColliding = p.horizontalCollision || p.verticalCollision;
+        } catch (Throwable ignored) {}
+
+        collision.addProperty("is_colliding", isColliding);
+
+        // no_progress: moved less than ~1cm during the step
+        double dx = p.getX() - bot.stepStartX;
+        double dy = p.getY() - bot.stepStartY;
+        double dz = p.getZ() - bot.stepStartZ;
+        boolean noProgress = (dx * dx + dy * dy + dz * dz) < 1.0e-4;
+        collision.addProperty("no_progress", noProgress);
+
+        payload.add("collision", collision);
+
+        return payload;
     }
+
+    private boolean isFrontClear(ServerLevel level, ServerPlayer p) {
+        Vec3 from = p.getEyePosition();
+        Vec3 to = from.add(p.getLookAngle().scale(1.0)); // 1 block ahead
+        ClipContext ctx = new ClipContext(from, to, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, p);
+        BlockHitResult hit = level.clip(ctx);
+        return hit.getType() == HitResult.Type.MISS;
+    }
+
 
 }
