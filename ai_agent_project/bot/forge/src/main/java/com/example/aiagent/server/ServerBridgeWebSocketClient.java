@@ -49,13 +49,33 @@ public class ServerBridgeWebSocketClient {
                         if (json == null) return;
 
                         String kind = json.has("kind") ? json.get("kind").getAsString() : "";
-                        if (!"action".equals(kind)) return;
-
                         JsonObject payload = json.getAsJsonObject("payload");
                         if (payload == null) return;
 
-                        // payload is the action fields (look/move/jump/etc)
-                        actionQueue.offer(payload);
+                        if ("action".equals(kind)) {
+                            // Back-compat: treat action as a 1-tick step later
+                            actionQueue.offer(payload);
+                            return;
+                        }
+
+                        if ("step".equals(kind)) {
+                            // Expect payload like: { "ticks": 40, "action": { ... } }
+                            // We'll wrap it into the exact format FakeBotManager expects.
+                            JsonObject step = new JsonObject();
+                            step.addProperty("cmd", "step");
+
+                            int ticks = payload.has("ticks") ? payload.get("ticks").getAsInt() : 1;
+                            if (ticks <= 0) ticks = 1;
+                            step.addProperty("ticks", ticks);
+
+                            JsonObject act = payload.getAsJsonObject("action");
+                            if (act == null) act = new JsonObject();
+                            step.add("action", act);
+
+                            actionQueue.offer(step);
+                            return;
+                        }
+
 
                     } catch (Exception e) {
                         System.err.println("[AI-BOT][SERVER-WS] Parse error: " + e.getMessage());

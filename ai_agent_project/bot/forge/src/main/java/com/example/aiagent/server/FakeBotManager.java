@@ -112,9 +112,6 @@ public class FakeBotManager {
     private final ConcurrentLinkedQueue<String> pendingActionJson = new ConcurrentLinkedQueue<>();
 
     private int tickCounter = 0;
-    private long movementTestStartTick = -1;
-    private boolean movementTestEnabled = true; // set false when done
-
 
     public List<FakeBot> getAllBots() { return bots; }
 
@@ -162,27 +159,6 @@ public class FakeBotManager {
         FakeBot bot = new FakeBot(fp);
         bots.add(bot);
 
-        // TEST: one step (move forward for 40 ticks)
-        JsonObject action = new JsonObject();
-        JsonObject move = new JsonObject();
-        move.addProperty("forward", 1.0);
-        move.addProperty("strafe", 0.0);
-        action.add("move", move);
-
-        JsonObject step = new JsonObject();
-        step.addProperty("cmd", "step");
-        step.addProperty("ticks", 40);
-        step.add("action", action);
-
-        enqueueActionJson(step.toString());
-
-        System.out.println("[AI-BOT] Enqueued TEST step: forward for 40 ticks");
-
-
-        // ✅ Start movement test relative to spawn
-        movementTestStartTick = tickCounter;
-        movementTestEnabled = true;
-
         System.out.println("[AI-BOT] Default FakeBot spawned: " + DEFAULT_BOT_NAME + " at " + spawn
                 + " in " + level.dimension().location());
 
@@ -211,12 +187,6 @@ public class FakeBotManager {
             if ((tickCounter % 20) == 0) {
                 ensureAddedToWorld(level, bot.player);
             }
-
-            if (tickCounter % 10 == 0) {
-                System.out.printf("[AI-BOT] tick=%d pos=(%.2f, %.2f, %.2f)%n",
-                        tickCounter, bot.player.getX(), bot.player.getY(), bot.player.getZ());
-            }
-
 
             // -----------------------------
             // STEP STATE MACHINE
