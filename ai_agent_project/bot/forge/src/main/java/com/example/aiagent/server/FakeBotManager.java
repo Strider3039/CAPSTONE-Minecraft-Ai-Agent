@@ -36,16 +36,19 @@ public class FakeBotManager {
 
     // --- Step state machine (FIFO queue) ---
     private static final class StepRequest {
-        final JsonObject action; // the action payload
-        final int ticks;         // how long to hold it
-        final long id;           // optional debug id
+        final JsonObject action;   // action payload (look/move/jump/etc)
+        final int ticks;           // duration
+        final int seq;             // from Action v1
+        final String actionId;     // from Action v1
 
-        StepRequest(JsonObject action, int ticks, long id) {
+        StepRequest(JsonObject action, int ticks, int seq, String actionId) {
             this.action = action;
             this.ticks = ticks;
-            this.id = id;
+            this.seq = seq;
+            this.actionId = actionId;
         }
     }
+
 
     private void clearControls(FakeBot bot) {
         bot.forward = 0.0;
@@ -88,7 +91,10 @@ public class FakeBotManager {
         public boolean stepActive = false;
         public int stepTicksRemaining = 0;
         public JsonObject stepAction = null;
-        public long stepId = -1;
+
+        // Correlation (from Action v1)
+        public int stepSeq = -1;
+        public String stepActionId = null;
 
 
         // edge detection for click-like actions
@@ -199,7 +205,10 @@ public class FakeBotManager {
                     bot.stepActive = true;
                     bot.stepTicksRemaining = Math.max(1, req.ticks);
                     bot.stepAction = req.action;
-                    bot.stepId = req.id;
+
+                    bot.stepSeq = req.seq;
+                    bot.stepActionId = req.actionId;
+
 
                     clearControls(bot);
                 }
@@ -216,12 +225,22 @@ public class FakeBotManager {
                 bot.stepTicksRemaining--;
 
                 if (bot.stepTicksRemaining <= 0) {
+                    // Capture correlation BEFORE reset
+                    int finishedSeq = bot.stepSeq;
+                    String finishedActionId = bot.stepActionId;
+
+                    ServerPlayer p = bot.player;
+
+                    // TODO next: enqueue observation + action_result using finishedSeq/finishedActionId
+
                     clearControls(bot);
                     bot.stepActive = false;
+                    bot.stepTicksRemaining = 0;
                     bot.stepAction = null;
 
-                    System.out.println("[AI-BOT] Step finished id=" + bot.stepId);
-                    bot.stepId = -1;
+                    bot.stepSeq = -1;
+                    bot.stepActionId = null;
+
                 }
             }
         }
@@ -233,30 +252,36 @@ public class FakeBotManager {
         String s;
         while ((s = pendingActionJson.poll()) != null) {
             try {
-                JsonObject payload = BotMod.GSON.fromJson(s, JsonObject.class);
-                if (payload == null) continue;
+                JsonObject msg = BotMod.GSON.fromJson(s, JsonObject.class);
+                if (msg == null) continue;
 
-                // Preferred step format:
-                // { "cmd":"step", "ticks": 5, "action": { ... } }
-                if (payload.has("cmd") && "step".equals(payload.get("cmd").getAsString())
-                        && payload.has("ticks") && payload.has("action")) {
+                // Internal step format (created by ServerBridgeWebSocketClient):
+                // { "cmd":"step", "ticks":N, "seq":INT, "action_id":"...", "action":{...} }
+                if (msg.has("cmd") && "step".equals(msg.get("cmd").getAsString())
+                        && msg.has("ticks") && msg.has("action")
+                        && msg.has("seq") && msg.has("action_id")) {
 
-                    int ticks = payload.get("ticks").getAsInt();
+                    int ticks = msg.get("ticks").getAsInt();
                     if (ticks <= 0) ticks = 1;
 
-                    JsonObject action = payload.getAsJsonObject("action");
+                    int seq = msg.get("seq").getAsInt();
+                    String actionId = msg.get("action_id").getAsString();
+                    if (actionId == null || actionId.isBlank()) continue;
+
+                    JsonObject action = msg.getAsJsonObject("action");
                     if (action == null) continue;
 
-                    pendingSteps.offer(new StepRequest(action, ticks, nextStepId++));
+                    pendingSteps.offer(new StepRequest(action, ticks, seq, actionId));
                     continue;
                 }
 
-                // Back-compat: if they just send an action object, treat it as a 1-tick step
-                pendingSteps.offer(new StepRequest(payload, 1, nextStepId++));
+                // Back-compat: if someone enqueues raw payload, treat as 1-tick anonymous step
+                pendingSteps.offer(new StepRequest(msg, 1, -1, "anon-" + (nextStepId++)));
 
             } catch (Exception ignored) {}
         }
     }
+
 
     private FakeBot getDefaultBot() {
         for (FakeBot b : bots) {

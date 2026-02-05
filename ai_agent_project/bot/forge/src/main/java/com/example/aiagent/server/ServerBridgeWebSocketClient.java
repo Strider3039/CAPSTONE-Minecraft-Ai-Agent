@@ -48,39 +48,44 @@ public class ServerBridgeWebSocketClient {
                         JsonObject json = BotMod.GSON.fromJson(message, JsonObject.class);
                         if (json == null) return;
 
-                        String kind = json.has("kind") ? json.get("kind").getAsString() : "";
-                        JsonObject payload = json.getAsJsonObject("payload");
-                        if (payload == null) return;
+                        // ---- Schema-aligned: expect Action v1 only
+                        String proto = json.has("proto") ? json.get("proto").getAsString() : "";
+                        String kind  = json.has("kind")  ? json.get("kind").getAsString()  : "";
+                        if (!"1".equals(proto)) return;
+                        if (!"action".equals(kind)) return;
 
-                        if ("action".equals(kind)) {
-                            // Back-compat: treat action as a 1-tick step later
-                            actionQueue.offer(payload);
-                            return;
-                        }
+                        if (!json.has("payload")) return;
+                        JsonObject actionPayload = json.getAsJsonObject("payload");
+                        if (actionPayload == null) return;
 
-                        if ("step".equals(kind)) {
-                            // Expect payload like: { "ticks": 40, "action": { ... } }
-                            // We'll wrap it into the exact format FakeBotManager expects.
-                            JsonObject step = new JsonObject();
-                            step.addProperty("cmd", "step");
+                        // Required by your schema
+                        int seq = json.has("seq") ? json.get("seq").getAsInt() : -1;
+                        String actionId = json.has("action_id") ? json.get("action_id").getAsString() : null;
+                        if (seq < 0 || actionId == null || actionId.isBlank()) return;
 
-                            int ticks = payload.has("ticks") ? payload.get("ticks").getAsInt() : 1;
-                            if (ticks <= 0) ticks = 1;
-                            step.addProperty("ticks", ticks);
+                        // Optional "deadline_ms" controls how long to hold this action
+                        int deadlineMs = json.has("deadline_ms") ? json.get("deadline_ms").getAsInt() : 50;
+                        if (deadlineMs <= 0) deadlineMs = 50;
 
-                            JsonObject act = payload.getAsJsonObject("action");
-                            if (act == null) act = new JsonObject();
-                            step.add("action", act);
+                        // Convert ms -> ticks (20 TPS => 50ms per tick)
+                        int ticks = Math.max(1, (int) Math.round(deadlineMs / 50.0));
 
-                            actionQueue.offer(step);
-                            return;
-                        }
+                        // ---- Wrap into INTERNAL step request for FakeBotManager
+                        // This is not a wire schema; it's internal.
+                        JsonObject step = new JsonObject();
+                        step.addProperty("cmd", "step");           // internal
+                        step.addProperty("ticks", ticks);          // internal
+                        step.addProperty("seq", seq);              // internal (for correlation)
+                        step.addProperty("action_id", actionId);   // internal (for correlation)
+                        step.add("action", actionPayload);         // internal
 
+                        actionQueue.offer(step);
 
                     } catch (Exception e) {
                         System.err.println("[AI-BOT][SERVER-WS] Parse error: " + e.getMessage());
                     }
                 }
+
 
                 @Override
                 public void onClose(int code, String reason, boolean remote) {
