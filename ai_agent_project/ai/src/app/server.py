@@ -8,7 +8,9 @@ import time
 import pathlib
 import logging as stdlog
 import contextlib
+import traceback
 from typing import Any, Dict, Optional
+import uuid
 
 from websockets.server import serve, WebSocketServerProtocol
 from websockets.exceptions import (
@@ -50,6 +52,10 @@ except Exception:
 
     _SEND_TEXT = True
 
+import orjson
+
+def _dumps(obj) -> str:
+    return orjson.dumps(obj).decode("utf-8")  # IMPORTANT: decode => TEXT
 
 # ---------- Paths ----------
 server_root = pathlib.Path(__file__).resolve()
@@ -242,32 +248,41 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
 
     seqCounter = 0
 
-    async def SendAction(
-        actionMsg: dict, timeoutMs: int = 300, wait_for_result: bool = True
-    ) -> Optional[dict]:
+    async def SendAction(actionMsg: dict, timeoutMs: int = 300, wait_for_result: bool = True):
         nonlocal seqCounter
         seqCounter += 1
 
+        # ---- normalize envelope
         actionMsg["seq"] = seqCounter
         actionMsg.setdefault("proto", "1")
         actionMsg.setdefault("kind", "action")
         actionMsg.setdefault("timestamp", time.time())
 
-        if not wait_for_result:
-            # Send as text JSON for maximum compatibility
-            await ws.send(json.dumps(actionMsg))
-            return None
+        # ---- REQUIRED by schema + Java: action_id must be TOP-LEVEL
+        if not actionMsg.get("action_id"):
+            actionMsg["action_id"] = f"a{seqCounter}_{uuid.uuid4().hex[:8]}"
 
+        # ---- deadline_ms is top-level in your schema
+        if "deadline_ms" not in actionMsg:
+            actionMsg["deadline_ms"] = 50
+
+        # ---- ensure payload exists
+        if "payload" not in actionMsg or not isinstance(actionMsg["payload"], dict):
+            actionMsg["payload"] = {}
+
+        # validate AFTER normalization
         validate(instance=actionMsg, schema=ACT)
 
-        actionId = actionMsg.get("action_id") or actionMsg.get("payload", {}).get("action_id")
-        if not actionId:
-            raise ValueError("action_id missing")
+        actionId = actionMsg["action_id"]
 
-        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        if not wait_for_result:
+            await ws.send(json.dumps(actionMsg))  # TEXT
+            return None
+
+        fut = asyncio.get_running_loop().create_future()
         pending[actionId] = fut
 
-        await ws.send(json.dumps(actionMsg))
+        await ws.send(json.dumps(actionMsg))  # TEXT
 
         try:
             return await asyncio.wait_for(fut, timeout=timeoutMs / 1000)
@@ -308,7 +323,8 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
                 try:
                     await SendAction(item)
                 except Exception as e:
-                    log.warning("action send failed", extra={"error": str(e)})
+                    log.warning("action send failed", extra={"error": repr(e), "trace": traceback.format_exc()},)
+
 
                 sent += 1
 

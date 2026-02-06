@@ -7,6 +7,8 @@ import org.java_websocket.client.WebSocketClient;
 import org.java_websocket.handshake.ServerHandshake;
 
 import java.net.URI;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -86,6 +88,16 @@ public class ServerBridgeWebSocketClient {
                     }
                 }
 
+                @Override
+                public void onMessage(ByteBuffer bytes) {
+                    try {
+                        byte[] arr = new byte[bytes.remaining()];
+                        bytes.get(arr);
+                        onMessage(new String(arr, StandardCharsets.UTF_8)); // reuse text path
+                    } catch (Exception e) {
+                        System.err.println("[AI-BOT][SERVER-WS] Binary parse error: " + e.getMessage());
+                    }
+                }
 
                 @Override
                 public void onClose(int code, String reason, boolean remote) {
@@ -130,6 +142,25 @@ public class ServerBridgeWebSocketClient {
             bots.enqueueActionJson(BotMod.GSON.toJson(payload));
         }
     }
+
+    public void drainCompletedResultsAndSend(FakeBotManager bots) {
+        JsonObject msg;
+        while ((msg = bots.pollCompletedResult()) != null) {
+            sendJson(msg); // MUST send observation + action_result
+        }
+    }
+
+    public void sendJson(JsonObject msg) {
+        WebSocketClient c = this.client;
+        if (c == null || !c.isOpen()) return;
+        c.send(msg.toString());
+
+        String kind = msg.has("kind") ? msg.get("kind").getAsString() : "<no-kind>";
+        System.out.println("[WS OUT] " + kind);
+
+    }
+
+
 
     // Optional compatibility overload (if you still call old signature somewhere)
     public void drainActionsAndApply(ServerLevel level) {

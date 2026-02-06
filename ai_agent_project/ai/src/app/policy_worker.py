@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio, time, statistics, sys
 import pathlib as _pathlib
 from typing import Any, Optional
+import uuid
 from jsonschema import validate, ValidationError
 from collections import deque
 
@@ -21,6 +22,27 @@ def Percentile(sortedVals, p: float) -> float:
         return 0.0
     k = max(0, min(len(sortedVals) - 1, int(round(p * (len(sortedVals) - 1)))))
     return float(sortedVals[k])
+
+def normalize_action(action_msg: dict, seq_hint: int | None = None) -> dict:
+    action_msg = dict(action_msg)  # shallow copy
+
+    action_msg.setdefault("proto", "1")
+    action_msg.setdefault("kind", "action")
+    action_msg.setdefault("timestamp", time.time())
+
+    # Ensure payload exists
+    if "payload" not in action_msg or not isinstance(action_msg["payload"], dict):
+        action_msg["payload"] = {}
+
+    # Force top-level action_id (Java requires top-level)
+    if not action_msg.get("action_id"):
+        action_msg["action_id"] = f"p_{uuid.uuid4().hex[:10]}"
+
+    # Ensure deadline_ms is top-level (schema + Java expects it there)
+    if "deadline_ms" not in action_msg:
+        action_msg["deadline_ms"] = 50
+
+    return action_msg
 
 async def PolicyWorker(
     obs_q: asyncio.Queue,
@@ -83,6 +105,11 @@ async def PolicyWorker(
             # policy_step expects the full observation message
             action_msg = policy_step(latestObs)
 
+            action_msg = normalize_action(action_msg)
+            validate(instance=action_msg, schema=act_schema)
+            await QueueAdd(act_q, action_msg)
+
+
         except Exception as e:
             log.warning("policy_step failed", extra={"error": str(e)})
             if emit_event:
@@ -91,14 +118,6 @@ async def PolicyWorker(
                     {"level": "warn", "detail": f"policy_step_error:{e}"},
                 )
             continue
-
-        try:
-            validate(instance=action_msg, schema=act_schema)
-        except ValidationError as ve:
-            log.warning("DQN action failed schema", extra={"error": str(ve)})
-            continue
-
-        await QueueAdd(act_q, action_msg)
 
         latMs = max(0.0, (time.time() - obsTs) * 1000.0)
         latSamplesMs.append(latMs)

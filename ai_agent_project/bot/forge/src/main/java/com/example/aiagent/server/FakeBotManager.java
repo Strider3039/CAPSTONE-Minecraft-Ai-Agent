@@ -131,6 +131,11 @@ public class FakeBotManager {
 
     public List<FakeBot> getAllBots() { return bots; }
 
+    public JsonObject pollCompletedResult() {
+        return completedStepResults.poll();
+    }
+
+
     public void enqueueActionJson(String json) {
         if (json == null || json.isEmpty()) return;
         pendingActionJson.offer(json);
@@ -246,14 +251,27 @@ public class FakeBotManager {
 
                     // TODO next: enqueue observation + action_result using finishedSeq/finishedActionId
                     JsonObject obsMsg = new JsonObject();
-                    obsMsg.addProperty("proto", "1");
-                    obsMsg.addProperty("kind", "observation");
-                    obsMsg.addProperty("seq", bot.stepSeq);
-                    obsMsg.addProperty("timestamp", System.currentTimeMillis() / 1000.0);
-                    obsMsg.add("payload", buildObservationPayload(level, bot.player, bot));
+                    JsonObject arMsg = new JsonObject();
+                    JsonObject payload = new JsonObject();
+                    JsonObject ar = new JsonObject();
 
-                    // enqueue for ServerBotHooks to send via ws.sendJson(obsMsg)
+                    arMsg.addProperty("proto", "1");
+                    arMsg.addProperty("kind", "action_result");
+                    arMsg.addProperty("seq", bot.stepSeq);
+                    arMsg.addProperty("timestamp", System.currentTimeMillis() / 1000.0);
+
+                    // REQUIRED: must match the incoming action_id
+                    ar.addProperty("action_id", bot.stepActionId);
+                    ar.addProperty("status", "success"); // REQUIRED
+
+
+                    payload.add("action_result", ar);
+                    arMsg.add("payload", payload);
+
+                    // enqueue alongside observation
                     completedStepResults.offer(obsMsg);
+                    completedStepResults.offer(arMsg);
+
 
 
                     clearControls(bot);
@@ -316,45 +334,6 @@ public class FakeBotManager {
 
     private void applyPayloadToBot(JsonObject payload, FakeBot bot) {
         if (payload == null || bot == null) return;
-
-        // LOOK (deltas)
-        if (payload.has("look")) {
-            JsonObject look = payload.getAsJsonObject("look");
-            float dYaw = look.has("dYaw") ? look.get("dYaw").getAsFloat() : 0f;
-            float dPitch = look.has("dPitch") ? look.get("dPitch").getAsFloat() : 0f;
-
-            bot.yaw += dYaw;
-            bot.pitch += dPitch;
-
-            if (bot.pitch > 89f) bot.pitch = 89f;
-            if (bot.pitch < -89f) bot.pitch = -89f;
-        }
-
-        // MOVE
-        if (payload.has("move")) {
-            JsonObject move = payload.getAsJsonObject("move");
-            bot.forward = move.has("forward") ? move.get("forward").getAsDouble() : 0.0;
-            bot.strafe  = move.has("strafe")  ? move.get("strafe").getAsDouble()  : 0.0;
-        } else {
-            bot.forward = 0.0;
-            bot.strafe = 0.0;
-        }
-
-        bot.jump   = payload.has("jump")   && payload.get("jump").getAsBoolean();
-        bot.sprint = payload.has("sprint") && payload.get("sprint").getAsBoolean();
-        bot.sneak  = payload.has("sneak")  && payload.get("sneak").getAsBoolean();
-
-        if (payload.has("select_slot")) {
-            bot.selectSlot = payload.get("select_slot").getAsInt();
-        }
-
-        bot.attack = payload.has("attack") && payload.get("attack").getAsBoolean();
-        bot.use    = payload.has("use")    && payload.get("use").getAsBoolean();
-    }
-
-    private void applyPayloadToDefaultBot(JsonObject payload) {
-        FakeBot bot = getDefaultBot();
-        if (bot == null) return;
 
         // LOOK (deltas)
         if (payload.has("look")) {

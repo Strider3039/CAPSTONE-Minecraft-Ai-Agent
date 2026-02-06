@@ -84,5 +84,8 @@ public class ServerBotHooks {
 
         // Apply queued actions
         BOTS.tick();
+        ws.drainCompletedResultsAndSend(BOTS);
+
     }
+
 }
