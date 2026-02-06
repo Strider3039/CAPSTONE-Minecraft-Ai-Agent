@@ -20,6 +20,10 @@ from websockets.exceptions import (
 )
 from jsonschema import validate, ValidationError
 
+# stdlog.getLogger("websockets.server").setLevel(logging.WARNING)
+# stdlog.getLogger("websockets.client").setLevel(logging.WARNING)
+
+
 # from ai/src/app to ai
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[3]))
 from ai.src.utils.config import LoadConfig
@@ -224,7 +228,7 @@ async def HeartBeatLoop(ws: WebSocketServerProtocol, stopEvt: asyncio.Event) -> 
 
 async def Handle(ws: WebSocketServerProtocol) -> None:
     log = stdlog.getLogger("bridge.server")
-    cfg = LoadConfig(env=os.getenv("APP_ENV", "dev"))
+    cfg = LoadConfig(env=os.getenv("APP_ENV", "prod"))
 
     SetupLogging(cfg.bridge.get("logging", {}))
 

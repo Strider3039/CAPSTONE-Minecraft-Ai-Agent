@@ -77,6 +77,7 @@ public class ServerBotHooks {
         if (level == null) return;
 
         // Run tests once (server-only, opt-in)
+        BotTestSuite.enable();
         BotTestSuite.runOnce(level, BOTS);
 
         // Pull WS actions (from python) and enqueue into FakeBotManager

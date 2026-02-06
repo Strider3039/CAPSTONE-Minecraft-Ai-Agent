@@ -155,9 +155,6 @@ public class ServerBridgeWebSocketClient {
         if (c == null || !c.isOpen()) return;
         c.send(msg.toString());
 
-        String kind = msg.has("kind") ? msg.get("kind").getAsString() : "<no-kind>";
-        System.out.println("[WS OUT] " + kind);
-
     }
 
 
