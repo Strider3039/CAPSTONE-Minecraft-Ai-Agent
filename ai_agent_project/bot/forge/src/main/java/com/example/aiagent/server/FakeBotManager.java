@@ -1,6 +1,8 @@
 package com.example.aiagent.server;
 
 import com.example.aiagent.BotMod;
+import com.example.aiagent.net.BotNet;
+import com.example.aiagent.net.S2CBotStatePacket;
 import com.google.gson.JsonObject;
 import com.mojang.authlib.GameProfile;
 import net.minecraft.core.BlockPos;
@@ -111,7 +113,7 @@ public class FakeBotManager {
     private static final String DEFAULT_BOT_NAME = "Agent_Dig";
 
     // How often to send AgentState (in ticks). 2 = 10 updates/sec, 5 = 4 updates/sec.
-    private static final int STATE_SYNC_PERIOD_TICKS = 2;
+    private static final int STATE_SYNC_PERIOD_TICKS = 1;
 
     private final List<FakeBot> bots = new CopyOnWriteArrayList<>();
     private final ConcurrentLinkedQueue<String> pendingActionJson = new ConcurrentLinkedQueue<>();
@@ -208,6 +210,18 @@ public class FakeBotManager {
             if ((tickCounter % 20) == 0) {
                 ensureAddedToWorld(level, bot.player);
             }
+
+            // --- State sync to clients for ghost rendering ---
+            if ((tickCounter % STATE_SYNC_PERIOD_TICKS) == 0) {
+                S2CBotStatePacket msg = new S2CBotStatePacket(
+                        "agent0",
+                        bot.player.getX(), bot.player.getY(), bot.player.getZ(),
+                        bot.player.getYRot(), bot.player.getXRot(),
+                        bot.player.onGround()
+                );
+                BotNet.CHANNEL.send(PacketDistributor.DIMENSION.with(() -> level.dimension()), msg);
+            }
+
 
             // -----------------------------
             // STEP STATE MACHINE
