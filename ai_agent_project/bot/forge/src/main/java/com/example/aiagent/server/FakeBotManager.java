@@ -160,7 +160,6 @@ public class FakeBotManager {
 
         FakeBot existing = getDefaultBot();
         if (existing != null && existing.player != null && existing.player.isAlive()) {
-            // Ensure it is still actually in the world (after dimension reloads etc)
             ensureAddedToWorld(level, existing.player);
             return;
         }
@@ -168,15 +167,25 @@ public class FakeBotManager {
         GameProfile profile = new GameProfile(DEFAULT_BOT_UUID, DEFAULT_BOT_NAME);
         ServerPlayer fp = FakePlayerFactory.get(level, profile);
 
-        // Ensure physics is enabled
+        // Physics
         fp.setNoGravity(false);
         fp.noPhysics = false;
+
+        // Player-like behavior
+        fp.setInvulnerable(false);
+
+        fp.getAbilities().invulnerable = false;
+        fp.getAbilities().mayfly = false;
+        fp.getAbilities().flying = false;
+        fp.getAbilities().setWalkingSpeed(0.1f);
+        fp.onUpdateAbilities();
+
+        fp.setGameMode(net.minecraft.world.level.GameType.SURVIVAL);
 
         // Place at spawn (one-time)
         BlockPos spawn = level.getSharedSpawnPos();
         fp.moveTo(spawn.getX() + 0.5, spawn.getY(), spawn.getZ() + 0.5, 0f, 0f);
 
-        // Ensure it is actually in the world entity list
         ensureAddedToWorld(level, fp);
 
         FakeBot bot = new FakeBot(fp);
@@ -184,7 +193,6 @@ public class FakeBotManager {
 
         System.out.println("[AI-BOT] Default FakeBot spawned: " + DEFAULT_BOT_NAME + " at " + spawn
                 + " in " + level.dimension().location());
-
     }
 
     /**
@@ -207,10 +215,6 @@ public class FakeBotManager {
             bot.player.setNoGravity(false);
             bot.player.noPhysics = false;
 
-            if ((tickCounter % 20) == 0) {
-                ensureAddedToWorld(level, bot.player);
-            }
-
             // --- State sync to clients for ghost rendering ---
             if ((tickCounter % STATE_SYNC_PERIOD_TICKS) == 0) {
                 S2CBotStatePacket msg = new S2CBotStatePacket(
@@ -221,7 +225,6 @@ public class FakeBotManager {
                 );
                 BotNet.CHANNEL.send(PacketDistributor.DIMENSION.with(() -> level.dimension()), msg);
             }
-
 
             // -----------------------------
             // STEP STATE MACHINE
@@ -247,6 +250,22 @@ public class FakeBotManager {
             }
 
             if (bot.stepActive) {
+                // Invariant: stepActive must always have valid correlation fields
+                if (bot.stepSeq < 0 || bot.stepActionId == null || bot.stepActionId.isBlank()) {
+                    System.out.println("[AI-BOT] WARNING: stepActive but missing seq/action_id; forcing reset. "
+                            + "name=" + bot.player.getGameProfile().getName()
+                            + " stepSeq=" + bot.stepSeq
+                            + " actionId=" + bot.stepActionId);
+
+                    clearControls(bot);
+                    bot.stepActive = false;
+                    bot.stepTicksRemaining = 0;
+                    bot.stepAction = null;
+                    bot.stepSeq = -1;
+                    bot.stepActionId = null;
+                    continue;
+                }
+
                 // Apply the step action each tick
                 applyPayloadToBot(bot.stepAction, bot);
 
@@ -261,33 +280,111 @@ public class FakeBotManager {
                     int finishedSeq = bot.stepSeq;
                     String finishedActionId = bot.stepActionId;
 
-                    ServerPlayer p = bot.player;
+                    // Guard (should never fail now, but keep it anyway)
+                    if (finishedSeq < 0 || finishedActionId == null || finishedActionId.isBlank()) {
+                        System.out.println("[AI-BOT] ERROR: invalid finishedSeq/actionId at finish; skipping emit. "
+                                + "name=" + bot.player.getGameProfile().getName()
+                                + " finishedSeq=" + finishedSeq
+                                + " actionId=" + finishedActionId);
+                    } else {
+                        ServerPlayer p = bot.player;
 
-                    // TODO next: enqueue observation + action_result using finishedSeq/finishedActionId
-                    JsonObject obsMsg = new JsonObject();
-                    JsonObject arMsg = new JsonObject();
-                    JsonObject payload = new JsonObject();
-                    JsonObject ar = new JsonObject();
+                        // -----------------------------
+                        // Build OBSERVATION (schema-valid minimal)
+                        // -----------------------------
+                        JsonObject obsMsg = new JsonObject();
+                        obsMsg.addProperty("proto", "1");
+                        obsMsg.addProperty("kind", "observation");
+                        obsMsg.addProperty("seq", finishedSeq);
+                        obsMsg.addProperty("timestamp", System.currentTimeMillis() / 1000.0);
 
-                    arMsg.addProperty("proto", "1");
-                    arMsg.addProperty("kind", "action_result");
-                    arMsg.addProperty("seq", bot.stepSeq);
-                    arMsg.addProperty("timestamp", System.currentTimeMillis() / 1000.0);
+                        JsonObject obsPayload = new JsonObject();
 
-                    // REQUIRED: must match the incoming action_id
-                    ar.addProperty("action_id", bot.stepActionId);
-                    ar.addProperty("status", "success"); // REQUIRED
+                        // pose
+                        JsonObject pose = new JsonObject();
+                        pose.addProperty("x", p.getX());
+                        pose.addProperty("y", p.getY());
+                        pose.addProperty("z", p.getZ());
+                        pose.addProperty("yaw", p.getYRot());
+                        pose.addProperty("pitch", p.getXRot());
+                        obsPayload.add("pose", pose);
 
+                        // rays (send empty if you aren't attaching them here)
+                        obsPayload.add("rays", new com.google.gson.JsonArray());
 
-                    payload.add("action_result", ar);
-                    arMsg.add("payload", payload);
+                        // REQUIRED: front_clear (placeholder is OK for now)
+                        obsPayload.addProperty("front_clear", true);
 
-                    // enqueue alongside observation
-                    completedStepResults.offer(obsMsg);
-                    completedStepResults.offer(arMsg);
+                        // REQUIRED: world
+                        JsonObject world = new JsonObject();
+                        world.addProperty("time_of_day", (double) (level.getDayTime() % 24000L));
+                        world.addProperty("weather", level.isRaining() ? "rain" : "clear");
+                        world.addProperty(
+                                "biome",
+                                level.getBiome(p.blockPosition()).unwrapKey()
+                                        .map(k -> k.location().toString())
+                                        .orElse("unknown")
+                        );
+                        obsPayload.add("world", world);
 
+                        // REQUIRED: inventory (selected_slot + hotbar)
+                        JsonObject inv = new JsonObject();
+                        inv.addProperty("selected_slot", p.getInventory().selected);
 
+                        com.google.gson.JsonArray hotbar = new com.google.gson.JsonArray();
+                        for (int i = 0; i < 9; i++) {
+                            JsonObject item = new JsonObject();
+                            var stack = p.getInventory().getItem(i);
+                            item.addProperty("id", stack.isEmpty() ? "air" : stack.getItem().toString());
+                            item.addProperty("count", stack.isEmpty() ? 0 : stack.getCount());
+                            hotbar.add(item);
+                        }
+                        inv.add("hotbar", hotbar);
+                        obsPayload.add("inventory", inv);
 
+                        // REQUIRED: collision (is_grounded, is_colliding, no_progress)
+                        boolean grounded = p.onGround();
+                        boolean colliding = p.horizontalCollision || p.verticalCollision;
+
+                        double dx = p.getX() - bot.stepStartX;
+                        double dy = p.getY() - bot.stepStartY;
+                        double dz = p.getZ() - bot.stepStartZ;
+                        double dist2 = dx * dx + dy * dy + dz * dz;
+                        boolean noProgress = dist2 < 1e-4;
+
+                        JsonObject collision = new JsonObject();
+                        collision.addProperty("is_grounded", grounded);
+                        collision.addProperty("is_colliding", colliding);
+                        collision.addProperty("no_progress", noProgress);
+                        obsPayload.add("collision", collision);
+
+                        obsMsg.add("payload", obsPayload);
+
+                        // -----------------------------
+                        // Build ACTION_RESULT
+                        // -----------------------------
+                        JsonObject arMsg = new JsonObject();
+                        arMsg.addProperty("proto", "1");
+                        arMsg.addProperty("kind", "action_result");
+                        arMsg.addProperty("seq", finishedSeq);
+                        arMsg.addProperty("timestamp", System.currentTimeMillis() / 1000.0);
+
+                        JsonObject arPayload = new JsonObject();
+                        JsonObject ar = new JsonObject();
+                        ar.addProperty("action_id", finishedActionId);
+                        ar.addProperty("status", "success");
+                        arPayload.add("action_result", ar);
+                        arMsg.add("payload", arPayload);
+
+                        System.out.println("[AI-BOT] FINISH step seq=" + finishedSeq
+                                + " action_id=" + finishedActionId
+                                + " name=" + bot.player.getGameProfile().getName());
+
+                        completedStepResults.offer(obsMsg);
+                        completedStepResults.offer(arMsg);
+                    }
+
+                    // Reset bot state
                     clearControls(bot);
                     bot.stepActive = false;
                     bot.stepTicksRemaining = 0;
@@ -295,11 +392,11 @@ public class FakeBotManager {
 
                     bot.stepSeq = -1;
                     bot.stepActionId = null;
-
                 }
             }
         }
     }
+
 
 
     private void drainActions() {
@@ -420,7 +517,7 @@ public class FakeBotManager {
         p.setShiftKeyDown(bot.sneak);
 
         // -----------------------------
-        // 4) MOVE (vanilla travel - best for ServerPlayer/FakePlayer)
+        // 4) MOVE (set lateral velocity, preserve gravity)
         // -----------------------------
         double f = bot.forward;
         double s = bot.strafe;
@@ -432,14 +529,35 @@ public class FakeBotManager {
         f = Math.max(-1.0, Math.min(1.0, f));
         s = Math.max(-1.0, Math.min(1.0, s));
 
-        // Jump input (vanilla uses this)
         p.setJumping(bot.jump);
 
-        // Feed relative input: (strafe, vertical, forward)
-        // NOTE: travel applies yaw internally for players/living entities.
-        p.travel(new Vec3(s, 0.0, f));
+        // Convert strafe/forward into world-space using yaw
+        float yawRad = (float) Math.toRadians(p.getYRot());
+        double sin = Math.sin(yawRad);
+        double cos = Math.cos(yawRad);
 
-        Vec3 vel = p.getDeltaMovement();
+        // Minecraft forward is -Z in local space; using (forward=f, strafe=s):
+        double dx = (f * -sin) + (s * cos);
+        double dz = (f *  cos) + (s * sin);
+
+        // Normalize so diagonal isn’t faster
+        double mag = Math.sqrt(dx*dx + dz*dz);
+        if (mag > 1e-6) {
+            dx /= mag;
+            dz /= mag;
+        }
+
+        // Speed: tune these
+        double baseSpeed = bot.sprint ? 0.15 : 0.10; // blocks/tick-ish
+        dx *= baseSpeed;
+        dz *= baseSpeed;
+
+        // Preserve current Y velocity so gravity works normally
+        Vec3 v = p.getDeltaMovement();
+        p.setDeltaMovement(dx, v.y, dz);
+
+        // Optional: helps when you manually set delta movement
+        p.hurtMarked = true;
 
         // -----------------------------
         // 5) ATTACK (edge-trigger)
@@ -497,18 +615,11 @@ public class FakeBotManager {
         if (level == null || fp == null) return;
         if (fp.isRemoved()) return;
 
-        // Players are tracked separately from normal entities.
-        boolean inPlayersList = level.players().contains(fp);
-        ServerPlayer byUuid = level.getServer().getPlayerList().getPlayer(fp.getUUID());
-
-        if (!inPlayersList && byUuid == null) {
-            try {
-                level.addFreshEntity(fp);
-            } catch (Throwable t) {
-                System.out.println("[AI-BOT] Failed to add FakePlayer to world: " + t.getMessage());
-            }
+        if (level.getEntity(fp.getId()) == null) {
+            level.addFreshEntity(fp);
         }
     }
+
 
 
     public void despawnAll() {

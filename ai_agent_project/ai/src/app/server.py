@@ -11,7 +11,6 @@ import contextlib
 import traceback
 from typing import Any, Dict, Optional
 import uuid
-
 from websockets.server import serve, WebSocketServerProtocol
 from websockets.exceptions import (
     ConnectionClosed,
@@ -238,7 +237,7 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
 
     actQueue: asyncio.Queue[dict] = asyncio.Queue(maxsize=queuesCfg.get("act_max", 64))
     actState = {"actHighWatermark": 0, "actionTimeouts": 0}
-    pending: dict[str, asyncio.Future] = {}
+    pending: dict[int, asyncio.Future] = {}
 
     stopEvt = asyncio.Event()
     tasks: list[asyncio.Task] = []
@@ -277,23 +276,24 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
         # validate AFTER normalization
         validate(instance=actionMsg, schema=ACT)
 
-        actionId = actionMsg["action_id"]
+        seq = actionMsg["seq"]  # <-- int correlation key (matches Java replies)
 
         if not wait_for_result:
-            await ws.send(json.dumps(actionMsg))  # TEXT
+            await ws.send(_dumps(actionMsg))  # TEXT
             return None
 
         fut = asyncio.get_running_loop().create_future()
-        pending[actionId] = fut
+        pending[seq] = fut
 
-        await ws.send(json.dumps(actionMsg))  # TEXT
+        await ws.send(_dumps(actionMsg))  # TEXT
 
         try:
             return await asyncio.wait_for(fut, timeout=timeoutMs / 1000)
         except asyncio.TimeoutError:
             actState["actionTimeouts"] += 1
-            pending.pop(actionId, None)
+            pending.pop(seq, None)
             raise
+
 
     def _exact_scheduler(hz: int):
         dt = 1.0 / float(max(1, hz))
@@ -386,17 +386,23 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
 
             elif kind == "action_result":
                 try:
-                    validate(instance=msg, schema=EVT)
+                    validate(instance=msg, schema=EVT)  # or ACTION_RESULT_SCHEMA, see Fix 2
                 except ValidationError as ve:
-                    log.warning("event failed schema", extra={"error": str(ve)})
+                    log.warning("event failed schema", extra={"error": str(ve), "kind": kind})
                     continue
 
-                res = msg["payload"]["action_result"]
-                actionId = res["action_id"]
+                seq = msg["seq"]
+                payload = msg.get("payload") or {}
+                res = payload.get("action_result")
 
-                fut = pending.pop(actionId, None)
+                if res is None:
+                    log.warning("action_result missing payload.action_result", extra={"seq": seq})
+                    continue
+
+                fut = pending.pop(seq, None)
                 if fut and not fut.done():
                     fut.set_result(res)
+
 
             elif kind == "bridge_health":
                 try:
