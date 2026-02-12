@@ -28,22 +28,27 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * FakeBotManager (SERVER SIDE)
  *
  * Ghost Architecture version:
- *  - Server spawns & controls FakePlayer (authoritative)
- *  - Server periodically sends AgentState packets for CLIENT-ONLY "ghost render"
+ * - Server spawns & controls FakePlayer (authoritative)
+ * - Server periodically sends AgentState packets for CLIENT-ONLY "ghost render"
  *
  * Key changes vs your file:
- *  - No forced bot.player.tick() (avoid double-ticking)
- *  - Strong "ensure added to world" logic
- *  - Adds spawn/state/despawn packet hooks
+ * - No forced bot.player.tick() (avoid double-ticking)
+ * - Strong "ensure added to world" logic
+ * - Adds spawn/state/despawn packet hooks
  */
 public class FakeBotManager {
 
+    // Debug switches
+    private static final boolean DEBUG_WS = false;
+    private static final boolean DEBUG_MOVE = false;
+    private static final boolean DEBUG_DEEP_MOVE = false;
+
     // --- Step state machine (FIFO queue) ---
     private static final class StepRequest {
-        final JsonObject action;   // action payload (look/move/jump/etc)
-        final int ticks;           // duration
-        final int seq;             // from Action v1
-        final String actionId;     // from Action v1
+        final JsonObject action; // action payload (look/move/jump/etc)
+        final int ticks; // duration
+        final int seq; // from Action v1
+        final String actionId; // from Action v1
 
         StepRequest(JsonObject action, int ticks, int seq, String actionId) {
             this.action = action;
@@ -52,7 +57,6 @@ public class FakeBotManager {
             this.actionId = actionId;
         }
     }
-
 
     private void clearControls(FakeBot bot) {
         bot.forward = 0.0;
@@ -65,12 +69,10 @@ public class FakeBotManager {
         bot.selectSlot = -1;
     }
 
-
     public ServerPlayer getDefaultPlayerOrNull() {
         FakeBot b = getDefaultBot();
         return (b != null) ? b.player : null;
     }
-
 
     public static class FakeBot {
         public final ServerPlayer player;
@@ -97,7 +99,6 @@ public class FakeBotManager {
         public int stepSeq = -1;
         public String stepActionId = null;
 
-
         // edge detection for click-like actions
         public boolean lastAttack = false;
         public boolean lastUse = false;
@@ -108,11 +109,11 @@ public class FakeBotManager {
     }
 
     // Fixed identity (important for ghost tracking)
-    private static final UUID DEFAULT_BOT_UUID =
-            UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+    private static final UUID DEFAULT_BOT_UUID = UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
     private static final String DEFAULT_BOT_NAME = "Agent_Dig";
 
-    // How often to send AgentState (in ticks). 2 = 10 updates/sec, 5 = 4 updates/sec.
+    // How often to send AgentState (in ticks). 2 = 10 updates/sec, 5 = 4
+    // updates/sec.
     private static final int STATE_SYNC_PERIOD_TICKS = 1;
 
     private final List<FakeBot> bots = new CopyOnWriteArrayList<>();
@@ -121,8 +122,7 @@ public class FakeBotManager {
     private final ConcurrentLinkedQueue<StepRequest> pendingSteps = new ConcurrentLinkedQueue<>();
     private long nextStepId = 1;
 
-    private final java.util.concurrent.ConcurrentLinkedQueue<com.google.gson.JsonObject> completedStepResults =
-    new java.util.concurrent.ConcurrentLinkedQueue<>();
+    private final java.util.concurrent.ConcurrentLinkedQueue<com.google.gson.JsonObject> completedStepResults = new java.util.concurrent.ConcurrentLinkedQueue<>();
 
     private int tickCounter = 0;
 
@@ -130,22 +130,24 @@ public class FakeBotManager {
         return completedStepResults;
     }
 
-
-    public List<FakeBot> getAllBots() { return bots; }
+    public List<FakeBot> getAllBots() {
+        return bots;
+    }
 
     public JsonObject pollCompletedResult() {
         return completedStepResults.poll();
     }
 
-
     public void enqueueActionJson(String json) {
-        if (json == null || json.isEmpty()) return;
+        if (json == null || json.isEmpty())
+            return;
         pendingActionJson.offer(json);
     }
 
     /** Old signature kept for compatibility. Finds overworld and spawns there. */
     public void ensureDefaultBot(MinecraftServer server) {
-        if (server == null) return;
+        if (server == null)
+            return;
         ServerLevel overworld = server.overworld();
         if (overworld == null) {
             System.out.println("[AI-BOT] ensureDefaultBot(server): overworld null, cannot spawn yet.");
@@ -156,7 +158,8 @@ public class FakeBotManager {
 
     /** Spawn in provided level (recommended). */
     public void ensureDefaultBot(MinecraftServer server, ServerLevel level) {
-        if (server == null || level == null) return;
+        if (server == null || level == null)
+            return;
 
         FakeBot existing = getDefaultBot();
         if (existing != null && existing.player != null && existing.player.isAlive()) {
@@ -197,9 +200,9 @@ public class FakeBotManager {
 
     /**
      * Called every server tick:
-     *  - drains queued actions (latest wins)
-     *  - applies control state to FakePlayer(s)
-     *  - periodically syncs state to clients for ghost rendering
+     * - drains queued actions (latest wins)
+     * - applies control state to FakePlayer(s)
+     * - periodically syncs state to clients for ghost rendering
      */
     public void tick() {
         tickCounter++;
@@ -208,9 +211,12 @@ public class FakeBotManager {
         drainActions();
 
         for (FakeBot bot : bots) {
-            if (bot == null || bot.player == null) continue;
-            if (!bot.player.isAlive()) continue;
-            if (!(bot.player.level() instanceof ServerLevel level)) continue;
+            if (bot == null || bot.player == null)
+                continue;
+            if (!bot.player.isAlive())
+                continue;
+            if (!(bot.player.level() instanceof ServerLevel level))
+                continue;
 
             bot.player.setNoGravity(false);
             bot.player.noPhysics = false;
@@ -221,8 +227,7 @@ public class FakeBotManager {
                         "agent0",
                         bot.player.getX(), bot.player.getY(), bot.player.getZ(),
                         bot.player.getYRot(), bot.player.getXRot(),
-                        bot.player.onGround()
-                );
+                        bot.player.onGround());
                 BotNet.CHANNEL.send(PacketDistributor.DIMENSION.with(() -> level.dimension()), msg);
             }
 
@@ -245,166 +250,110 @@ public class FakeBotManager {
                     bot.stepStartY = bot.player.getY();
                     bot.stepStartZ = bot.player.getZ();
 
+                    // Reset inputs ONCE at step start
                     clearControls(bot);
-                }
-            }
 
-            if (bot.stepActive) {
-                // Invariant: stepActive must always have valid correlation fields
-                if (bot.stepSeq < 0 || bot.stepActionId == null || bot.stepActionId.isBlank()) {
-                    System.out.println("[AI-BOT] WARNING: stepActive but missing seq/action_id; forcing reset. "
-                            + "name=" + bot.player.getGameProfile().getName()
-                            + " stepSeq=" + bot.stepSeq
-                            + " actionId=" + bot.stepActionId);
-
-                    clearControls(bot);
-                    bot.stepActive = false;
-                    bot.stepTicksRemaining = 0;
-                    bot.stepAction = null;
-                    bot.stepSeq = -1;
-                    bot.stepActionId = null;
-                    continue;
-                }
-
-                // Apply the step action each tick
-                applyPayloadToBot(bot.stepAction, bot);
-
-                // Drive the player based on current control fields
-                applyControl(bot, level);
-
-                // Count down and finish cleanly
-                bot.stepTicksRemaining--;
-
-                if (bot.stepTicksRemaining <= 0) {
-                    // Capture correlation BEFORE reset
-                    int finishedSeq = bot.stepSeq;
-                    String finishedActionId = bot.stepActionId;
-
-                    // Guard (should never fail now, but keep it anyway)
-                    if (finishedSeq < 0 || finishedActionId == null || finishedActionId.isBlank()) {
-                        System.out.println("[AI-BOT] ERROR: invalid finishedSeq/actionId at finish; skipping emit. "
-                                + "name=" + bot.player.getGameProfile().getName()
-                                + " finishedSeq=" + finishedSeq
-                                + " actionId=" + finishedActionId);
-                    } else {
-                        ServerPlayer p = bot.player;
-
-                        // -----------------------------
-                        // Build OBSERVATION (schema-valid minimal)
-                        // -----------------------------
-                        JsonObject obsMsg = new JsonObject();
-                        obsMsg.addProperty("proto", "1");
-                        obsMsg.addProperty("kind", "observation");
-                        obsMsg.addProperty("seq", finishedSeq);
-                        obsMsg.addProperty("timestamp", System.currentTimeMillis() / 1000.0);
-
-                        JsonObject obsPayload = new JsonObject();
-
-                        // pose
-                        JsonObject pose = new JsonObject();
-                        pose.addProperty("x", p.getX());
-                        pose.addProperty("y", p.getY());
-                        pose.addProperty("z", p.getZ());
-                        pose.addProperty("yaw", p.getYRot());
-                        pose.addProperty("pitch", p.getXRot());
-                        obsPayload.add("pose", pose);
-
-                        // rays (send empty if you aren't attaching them here)
-                        obsPayload.add("rays", new com.google.gson.JsonArray());
-
-                        // REQUIRED: front_clear (placeholder is OK for now)
-                        obsPayload.addProperty("front_clear", true);
-
-                        // REQUIRED: world
-                        JsonObject world = new JsonObject();
-                        world.addProperty("time_of_day", (double) (level.getDayTime() % 24000L));
-                        world.addProperty("weather", level.isRaining() ? "rain" : "clear");
-                        world.addProperty(
-                                "biome",
-                                level.getBiome(p.blockPosition()).unwrapKey()
-                                        .map(k -> k.location().toString())
-                                        .orElse("unknown")
-                        );
-                        obsPayload.add("world", world);
-
-                        // REQUIRED: inventory (selected_slot + hotbar)
-                        JsonObject inv = new JsonObject();
-                        inv.addProperty("selected_slot", p.getInventory().selected);
-
-                        com.google.gson.JsonArray hotbar = new com.google.gson.JsonArray();
-                        for (int i = 0; i < 9; i++) {
-                            JsonObject item = new JsonObject();
-                            var stack = p.getInventory().getItem(i);
-                            item.addProperty("id", stack.isEmpty() ? "air" : stack.getItem().toString());
-                            item.addProperty("count", stack.isEmpty() ? 0 : stack.getCount());
-                            hotbar.add(item);
-                        }
-                        inv.add("hotbar", hotbar);
-                        obsPayload.add("inventory", inv);
-
-                        // REQUIRED: collision (is_grounded, is_colliding, no_progress)
-                        boolean grounded = p.onGround();
-                        boolean colliding = p.horizontalCollision || p.verticalCollision;
-
-                        double dx = p.getX() - bot.stepStartX;
-                        double dy = p.getY() - bot.stepStartY;
-                        double dz = p.getZ() - bot.stepStartZ;
-                        double dist2 = dx * dx + dy * dy + dz * dz;
-                        boolean noProgress = dist2 < 1e-4;
-
-                        JsonObject collision = new JsonObject();
-                        collision.addProperty("is_grounded", grounded);
-                        collision.addProperty("is_colliding", colliding);
-                        collision.addProperty("no_progress", noProgress);
-                        obsPayload.add("collision", collision);
-
-                        obsMsg.add("payload", obsPayload);
-
-                        // -----------------------------
-                        // Build ACTION_RESULT
-                        // -----------------------------
-                        JsonObject arMsg = new JsonObject();
-                        arMsg.addProperty("proto", "1");
-                        arMsg.addProperty("kind", "action_result");
-                        arMsg.addProperty("seq", finishedSeq);
-                        arMsg.addProperty("timestamp", System.currentTimeMillis() / 1000.0);
-
-                        JsonObject arPayload = new JsonObject();
-                        JsonObject ar = new JsonObject();
-                        ar.addProperty("action_id", finishedActionId);
-                        ar.addProperty("status", "success");
-                        arPayload.add("action_result", ar);
-                        arMsg.add("payload", arPayload);
-
-                        System.out.println("[AI-BOT] FINISH step seq=" + finishedSeq
-                                + " action_id=" + finishedActionId
-                                + " name=" + bot.player.getGameProfile().getName());
-
-                        completedStepResults.offer(obsMsg);
-                        completedStepResults.offer(arMsg);
+                    if (DEBUG_MOVE) {
+                        System.out.println("[STEP] START name=" + bot.player.getGameProfile().getName()
+                                + " seq=" + req.seq
+                                + " action_id=" + req.actionId
+                                + " ticks=" + req.ticks
+                                + " hasMove=" + (req.action != null && req.action.has("move")));
                     }
-
-                    // Reset bot state
-                    clearControls(bot);
-                    bot.stepActive = false;
-                    bot.stepTicksRemaining = 0;
-                    bot.stepAction = null;
-
-                    bot.stepSeq = -1;
-                    bot.stepActionId = null;
                 }
             }
+
+            // If there is no active step, do nothing this tick (vanilla physics still runs)
+            if (!bot.stepActive) {
+                continue;
+            }
+
+            // -----------------------------
+            // ACTIVE STEP TICK
+            // -----------------------------
+
+            // Invariant: stepActive must always have valid correlation fields
+            if (bot.stepSeq < 0 || bot.stepActionId == null || bot.stepActionId.isBlank()) {
+                System.out.println("[AI-BOT] WARNING: stepActive but missing seq/action_id; forcing reset. "
+                        + "name=" + bot.player.getGameProfile().getName()
+                        + " stepSeq=" + bot.stepSeq
+                        + " actionId=" + bot.stepActionId);
+
+                clearControls(bot);
+                bot.stepActive = false;
+                bot.stepTicksRemaining = 0;
+                bot.stepAction = null;
+                bot.stepSeq = -1;
+                bot.stepActionId = null;
+                continue;
+            }
+
+            // Apply the step action each tick
+            applyPayloadToBot(bot.stepAction, bot);
+
+            if (DEBUG_MOVE) {
+                System.out.println("[STEP TICK] seq=" + bot.stepSeq
+                        + " action_id=" + bot.stepActionId
+                        + " f=" + bot.forward
+                        + " s=" + bot.strafe
+                        + " jump=" + bot.jump
+                        + " sprint=" + bot.sprint
+                        + " sneak=" + bot.sneak);
+            }
+
+            // 1) apply look/hotbar/attack/use
+            applyLookAndHotbarAndActions(bot, level);
+
+            // 2) apply movement FOR THIS STEP ONLY
+            applyMovementTravel(bot);
+
+            // Count down
+            bot.stepTicksRemaining--;
+
+            if (bot.stepTicksRemaining <= 0) {
+                int finishedSeq = bot.stepSeq;
+                String finishedActionId = bot.stepActionId;
+
+                if (finishedSeq < 0 || finishedActionId == null || finishedActionId.isBlank()) {
+                    System.out.println("[AI-BOT] ERROR: invalid finishedSeq/actionId at finish; skipping emit. "
+                            + "name=" + bot.player.getGameProfile().getName()
+                            + " finishedSeq=" + finishedSeq
+                            + " actionId=" + finishedActionId);
+                } else {
+                    // 1) ACTION_RESULT (required for Python pending-future ACK)
+                    // Status choice: for now always success if we reached step finish cleanly.
+                    JsonObject arMsg = buildActionResultEvent(finishedSeq, finishedActionId, "success", null);
+                    completedStepResults.offer(arMsg);
+
+                    // 2) OBSERVATION (optional — only enable if your Python expects it)
+                    // JsonObject obsMsg = buildObservationEvent(finishedSeq, bot);
+                    // completedStepResults.offer(obsMsg);
+
+                    if (DEBUG_WS) {
+                        System.out.println("[AI-BOT] ENQUEUE action_result seq=" + finishedSeq + " action_id=" + finishedActionId);
+                    }
+                }
+
+            }
+
+            // Reset bot state
+            clearControls(bot);
+            bot.stepActive = false;
+            bot.stepTicksRemaining = 0;
+            bot.stepAction = null;
+            bot.stepSeq = -1;
+            bot.stepActionId = null;
         }
+
     }
-
-
 
     private void drainActions() {
         String s;
         while ((s = pendingActionJson.poll()) != null) {
             try {
                 JsonObject msg = BotMod.GSON.fromJson(s, JsonObject.class);
-                if (msg == null) continue;
+                if (msg == null)
+                    continue;
 
                 // Internal step format (created by ServerBridgeWebSocketClient):
                 // { "cmd":"step", "ticks":N, "seq":INT, "action_id":"...", "action":{...} }
@@ -413,26 +362,55 @@ public class FakeBotManager {
                         && msg.has("seq") && msg.has("action_id")) {
 
                     int ticks = msg.get("ticks").getAsInt();
-                    if (ticks <= 0) ticks = 1;
+                    if (ticks <= 0)
+                        ticks = 1;
 
                     int seq = msg.get("seq").getAsInt();
                     String actionId = msg.get("action_id").getAsString();
-                    if (actionId == null || actionId.isBlank()) continue;
+                    if (actionId == null || actionId.isBlank())
+                        continue;
+
+                    if (!msg.get("action").isJsonObject()) {
+                        if (DEBUG_MOVE)
+                            System.out.println("[DRAIN] action is not object: " + msg.get("action"));
+                        continue;
+                    }
 
                     JsonObject action = msg.getAsJsonObject("action");
-                    if (action == null) continue;
+                    if (action == null)
+                        continue;
+
+                    if (pendingSteps.size() > 200) {
+                        // drop oldest to keep latency low
+                        pendingSteps.poll();
+                    }
 
                     pendingSteps.offer(new StepRequest(action, ticks, seq, actionId));
+
+                    if (DEBUG_MOVE) {
+                        System.out.println("[DRAIN] queued step seq=" + seq
+                                + " action_id=" + actionId
+                                + " ticks=" + ticks
+                                + " hasMove=" + action.has("move")
+                                + " keys=" + action.keySet());
+                        if (action.has("move")) {
+                            JsonObject mv = action.getAsJsonObject("move");
+                            System.out.println("[DRAIN] move payload forward="
+                                    + (mv.has("forward") ? mv.get("forward").getAsDouble() : null)
+                                    + " strafe="
+                                    + (mv.has("strafe") ? mv.get("strafe").getAsDouble() : null));
+                        }
+                    }
                     continue;
                 }
 
                 // Back-compat: if someone enqueues raw payload, treat as 1-tick anonymous step
                 pendingSteps.offer(new StepRequest(msg, 1, -1, "anon-" + (nextStepId++)));
 
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) {
+            }
         }
     }
-
 
     private FakeBot getDefaultBot() {
         for (FakeBot b : bots) {
@@ -443,8 +421,63 @@ public class FakeBotManager {
         return null;
     }
 
+    // --- WS Event Builders (Bridge v1) ---
+    private JsonObject buildActionResultEvent(int seq, String actionId, String status, String reason) {
+        JsonObject root = new JsonObject();
+        root.addProperty("proto", "1");
+        root.addProperty("kind", "action_result");
+        root.addProperty("seq", seq);
+
+        JsonObject ar = new JsonObject();
+        ar.addProperty("action_id", actionId);
+        ar.addProperty("status", status); // success|fail|cooldown|blocked|timeout
+        if (reason != null && !reason.isBlank()) ar.addProperty("reason", reason);
+
+        ar.addProperty("server_tick", tickCounter);
+        ar.addProperty("ts_server", System.currentTimeMillis() / 1000.0);
+
+        JsonObject payload = new JsonObject();
+        payload.add("action_result", ar);
+
+        root.add("payload", payload);
+        return root;
+    }
+
+    /**
+     * Optional: only use if your Python expects observation as kind="observation".
+     * If your Python validates events strictly against event.schema.json, DO NOT send this
+     * until you add an observation schema on the Python side.
+     */
+    private JsonObject buildObservationEvent(int seq, FakeBot bot) {
+        JsonObject root = new JsonObject();
+        root.addProperty("proto", "1");
+        root.addProperty("kind", "observation");
+        root.addProperty("seq", seq);
+
+        JsonObject obs = new JsonObject();
+        obs.addProperty("x", bot.player.getX());
+        obs.addProperty("y", bot.player.getY());
+        obs.addProperty("z", bot.player.getZ());
+        obs.addProperty("yaw", bot.player.getYRot());
+        obs.addProperty("pitch", bot.player.getXRot());
+        obs.addProperty("on_ground", bot.player.onGround());
+
+        // small useful extras
+        obs.addProperty("dx", bot.player.getX() - bot.stepStartX);
+        obs.addProperty("dy", bot.player.getY() - bot.stepStartY);
+        obs.addProperty("dz", bot.player.getZ() - bot.stepStartZ);
+
+        JsonObject payload = new JsonObject();
+        payload.add("observation", obs);
+
+        root.add("payload", payload);
+        return root;
+    }
+
+
     private void applyPayloadToBot(JsonObject payload, FakeBot bot) {
-        if (payload == null || bot == null) return;
+        if (payload == null || bot == null)
+            return;
 
         // LOOK (deltas)
         if (payload.has("look")) {
@@ -455,49 +488,128 @@ public class FakeBotManager {
             bot.yaw += dYaw;
             bot.pitch += dPitch;
 
-            if (bot.pitch > 89f) bot.pitch = 89f;
-            if (bot.pitch < -89f) bot.pitch = -89f;
+            if (bot.pitch > 89f)
+                bot.pitch = 89f;
+            if (bot.pitch < -89f)
+                bot.pitch = -89f;
         }
 
         // MOVE
-        if (payload.has("move")) {
+        if (payload.has("move") && payload.get("move").isJsonObject()) {
             JsonObject move = payload.getAsJsonObject("move");
+            if (DEBUG_MOVE)
+                System.out.println("[PAYLOAD MOVE] keys=" + payload.keySet()
+                        + " move=" + move.toString());
             bot.forward = move.has("forward") ? move.get("forward").getAsDouble() : 0.0;
-            bot.strafe  = move.has("strafe")  ? move.get("strafe").getAsDouble()  : 0.0;
+            bot.strafe = move.has("strafe") ? move.get("strafe").getAsDouble() : 0.0;
+
+            if (DEBUG_DEEP_MOVE)
+                System.out.println("[BOT INPUT] seq=" + bot.stepSeq
+                        + " f=" + bot.forward + " s=" + bot.strafe
+                        + " jump=" + bot.jump + " sprint=" + bot.sprint + " sneak=" + bot.sneak);
+
         } else {
-            bot.forward = 0.0;
-            bot.strafe = 0.0;
+            if (DEBUG_MOVE)
+                System.out.println("[PAYLOAD NO-MOVE] keys=" + payload.keySet());
         }
 
-        bot.jump   = payload.has("jump")   && payload.get("jump").getAsBoolean();
+        bot.jump = payload.has("jump") && payload.get("jump").getAsBoolean();
         bot.sprint = payload.has("sprint") && payload.get("sprint").getAsBoolean();
-        bot.sneak  = payload.has("sneak")  && payload.get("sneak").getAsBoolean();
+        bot.sneak = payload.has("sneak") && payload.get("sneak").getAsBoolean();
 
         if (payload.has("select_slot")) {
             bot.selectSlot = payload.get("select_slot").getAsInt();
         }
 
         bot.attack = payload.has("attack") && payload.get("attack").getAsBoolean();
-        bot.use    = payload.has("use")    && payload.get("use").getAsBoolean();
+        bot.use = payload.has("use") && payload.get("use").getAsBoolean();
     }
 
-    private void applyControl(FakeBot bot, ServerLevel level) {
+    private void applyMovementTravel(FakeBot bot) {
+        ServerPlayer p = bot.player;
+
+        // Convert bot inputs to [-1..1]
+        float forward = (float) bot.forward;
+        float strafe = (float) bot.strafe;
+
+        if (DEBUG_DEEP_MOVE)
+            System.out.println("[APPLYCONTROL] seq=" + bot.stepSeq
+                    + " f=" + bot.forward + " s=" + bot.strafe
+                    + " yRot=" + p.getYRot());
+
+        // deadzone + clamp
+        if (Math.abs(forward) < 0.2f)
+            forward = 0f;
+        if (Math.abs(strafe) < 0.2f)
+            strafe = 0f;
+
+        forward = Math.max(-1f, Math.min(1f, forward));
+        strafe = Math.max(-1f, Math.min(1f, strafe));
+
+        p.setSprinting(bot.sprint);
+        p.setShiftKeyDown(bot.sneak);
+
+        // Jump input
+        p.setJumping(bot.jump);
+
+        // Base speed. travel() uses p.getSpeed() internally.
+        // Tune these (they’re “player-like” but you can adjust)
+        p.setSpeed(bot.sprint ? 0.13f : 0.10f);
+
+        if ((tickCounter % 20) == 0) {
+            if (DEBUG_MOVE)
+                System.out.println("[MOVE] f=" + bot.forward + " s=" + bot.strafe
+                        + " sprint=" + bot.sprint + " sneak=" + bot.sneak
+                        + " speed=" + p.getSpeed()
+                        + " dV=" + p.getDeltaMovement());
+        }
+
+        Vec3 pos0 = p.position();
+        Vec3 v0 = p.getDeltaMovement();
+
+        p.travel(new Vec3(strafe, 0.0, forward));
+
+        Vec3 pos1 = p.position();
+        Vec3 v1 = p.getDeltaMovement();
+
+        if (DEBUG_DEEP_MOVE)
+            System.out.println("[VEL] before=" + v0 + " after=" + v1
+                    + " onGround=" + p.onGround()
+                    + " hColl=" + p.horizontalCollision
+                    + " vColl=" + p.verticalCollision);
+
+        if (DEBUG_MOVE) {
+            System.out.println("[TRAVEL] f=" + forward + " s=" + strafe
+                    + " posΔ=(" + (pos1.x - pos0.x) + ", " + (pos1.y - pos0.y) + ", " + (pos1.z - pos0.z) + ")"
+                    + " vel0=" + v0 + " vel1=" + v1
+                    + " onGround=" + p.onGround()
+                    + " hColl=" + p.horizontalCollision
+                    + " vColl=" + p.verticalCollision);
+        }
+
+        var attr = p.getAttribute(net.minecraft.world.entity.ai.attributes.Attributes.MOVEMENT_SPEED);
+        if (DEBUG_MOVE && attr != null) {
+            System.out.println("[ATTR] movement_speed base=" + attr.getBaseValue()
+                    + " value=" + attr.getValue());
+        }
+
+    }
+
+    private void applyLookAndHotbarAndActions(FakeBot bot, ServerLevel level) {
         ServerPlayer p = bot.player;
 
         // -----------------------------
-        // 1) LOOK (authoritative)
+        // 1) LOOK
         // -----------------------------
-        // Clamp pitch (safety)
-        if (bot.pitch > 89f) bot.pitch = 89f;
-        if (bot.pitch < -89f) bot.pitch = -89f;
+        if (bot.pitch > 89f)
+            bot.pitch = 89f;
+        if (bot.pitch < -89f)
+            bot.pitch = -89f;
 
         p.setYRot(bot.yaw);
         p.setXRot(bot.pitch);
-
-        // Head yaw matters for a lot of "player-like" behavior
         p.setYHeadRot(bot.yaw);
 
-        // Previous-frame fields (helps interpolation / some logic that uses old values)
         p.yRotO = bot.yaw;
         p.xRotO = bot.pitch;
         p.yHeadRotO = bot.yaw;
@@ -517,50 +629,7 @@ public class FakeBotManager {
         p.setShiftKeyDown(bot.sneak);
 
         // -----------------------------
-        // 4) MOVE (set lateral velocity, preserve gravity)
-        // -----------------------------
-        double f = bot.forward;
-        double s = bot.strafe;
-
-        // deadzone + clamp
-        if (Math.abs(f) < 0.2) f = 0.0;
-        if (Math.abs(s) < 0.2) s = 0.0;
-
-        f = Math.max(-1.0, Math.min(1.0, f));
-        s = Math.max(-1.0, Math.min(1.0, s));
-
-        p.setJumping(bot.jump);
-
-        // Convert strafe/forward into world-space using yaw
-        float yawRad = (float) Math.toRadians(p.getYRot());
-        double sin = Math.sin(yawRad);
-        double cos = Math.cos(yawRad);
-
-        // Minecraft forward is -Z in local space; using (forward=f, strafe=s):
-        double dx = (f * -sin) + (s * cos);
-        double dz = (f *  cos) + (s * sin);
-
-        // Normalize so diagonal isn’t faster
-        double mag = Math.sqrt(dx*dx + dz*dz);
-        if (mag > 1e-6) {
-            dx /= mag;
-            dz /= mag;
-        }
-
-        // Speed: tune these
-        double baseSpeed = bot.sprint ? 0.15 : 0.10; // blocks/tick-ish
-        dx *= baseSpeed;
-        dz *= baseSpeed;
-
-        // Preserve current Y velocity so gravity works normally
-        Vec3 v = p.getDeltaMovement();
-        p.setDeltaMovement(dx, v.y, dz);
-
-        // Optional: helps when you manually set delta movement
-        p.hurtMarked = true;
-
-        // -----------------------------
-        // 5) ATTACK (edge-trigger)
+        // 4) ATTACK (edge-trigger)
         // -----------------------------
         if (bot.attack && !bot.lastAttack) {
             doServerAttack(level, p);
@@ -568,16 +637,16 @@ public class FakeBotManager {
         bot.lastAttack = bot.attack;
 
         // -----------------------------
-        // 6) USE (edge-trigger)
+        // 5) USE (edge-trigger)
         // -----------------------------
         if (bot.use && !bot.lastUse) {
             p.swing(InteractionHand.MAIN_HAND);
-            // Later (real right-click):
-            // p.gameMode.useItem(p, level, p.getItemInHand(InteractionHand.MAIN_HAND), InteractionHand.MAIN_HAND);
+            // Later: real right-click use
+            // p.gameMode.useItem(p, level, p.getItemInHand(InteractionHand.MAIN_HAND),
+            // InteractionHand.MAIN_HAND);
         }
         bot.lastUse = bot.use;
     }
-
 
     private void doServerAttack(ServerLevel level, ServerPlayer p) {
         Vec3 from = p.getEyePosition();
@@ -612,27 +681,30 @@ public class FakeBotManager {
      * If it's already there, do nothing.
      */
     private void ensureAddedToWorld(ServerLevel level, ServerPlayer fp) {
-        if (level == null || fp == null) return;
-        if (fp.isRemoved()) return;
+        if (level == null || fp == null)
+            return;
+        if (fp.isRemoved())
+            return;
 
         if (level.getEntity(fp.getId()) == null) {
             level.addFreshEntity(fp);
         }
     }
 
-
-
     public void despawnAll() {
         for (FakeBot b : bots) {
-            if (b == null || b.player == null) continue;
+            if (b == null || b.player == null)
+                continue;
 
             try {
 
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) {
+            }
 
             try {
                 b.player.discard();
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) {
+            }
         }
 
         bots.clear();
@@ -695,11 +767,13 @@ public class FakeBotManager {
         JsonObject collision = new JsonObject();
         collision.addProperty("is_grounded", p.onGround());
 
-        // If these fields are accessible in your mappings, use them. If not, fallback false.
+        // If these fields are accessible in your mappings, use them. If not, fallback
+        // false.
         boolean isColliding = false;
         try {
             isColliding = p.horizontalCollision || p.verticalCollision;
-        } catch (Throwable ignored) {}
+        } catch (Throwable ignored) {
+        }
 
         collision.addProperty("is_colliding", isColliding);
 
@@ -722,6 +796,5 @@ public class FakeBotManager {
         BlockHitResult hit = level.clip(ctx);
         return hit.getType() == HitResult.Type.MISS;
     }
-
 
 }

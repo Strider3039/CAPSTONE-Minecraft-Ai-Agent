@@ -111,8 +111,18 @@ async def SendEvents(ws: WebSocketServerProtocol, kind: str, payload: dict) -> N
     }
     try:
         validate(instance=msg, schema=EVT)
+        log.debug("event validated", extra={"kind": kind, "seq": msg.get("seq")})
     except ValidationError as e:
         log.warning("internal event failed schema", extra={"error": str(e), "kind": kind})
+
+    # log.info(
+    #     "ws send event",
+    #     extra={
+    #         "ws_id": id(ws),
+    #         "kind": kind
+    #     }
+    # )
+    
     await ws.send(_dumps(msg))
 
 
@@ -227,6 +237,15 @@ async def HeartBeatLoop(ws: WebSocketServerProtocol, stopEvt: asyncio.Event) -> 
 
 async def Handle(ws: WebSocketServerProtocol) -> None:
     log = stdlog.getLogger("bridge.server")
+
+    log.info(
+        "ws connected",
+        extra={
+            "ws_id": id(ws),
+            "remote": getattr(ws, "remote_address", None)
+        }
+    )
+
     cfg = LoadConfig(env=os.getenv("APP_ENV", "prod"))
 
     SetupLogging(cfg.bridge.get("logging", {}))
@@ -251,7 +270,8 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
 
     seqCounter = 0
 
-    async def SendAction(actionMsg: dict, timeoutMs: int = 300, wait_for_result: bool = True):
+    async def SendAction(actionMsg: dict, timeoutMs: int = 300, wait_for_result: bool = False):
+        timeoutMs = max(timeoutMs, actionMsg.get("deadline_ms", 50) + 1000)
         nonlocal seqCounter
         seqCounter += 1
 
@@ -260,6 +280,12 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
         actionMsg.setdefault("proto", "1")
         actionMsg.setdefault("kind", "action")
         actionMsg.setdefault("timestamp", time.time())
+
+        is_move = bool(actionMsg.get("payload", {}).get("move"))
+
+        # movement should not block the pipeline
+        if is_move:
+            wait_for_result = False
 
         # ---- REQUIRED by schema + Java: action_id must be TOP-LEVEL
         if not actionMsg.get("action_id"):
@@ -273,9 +299,6 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
         if "payload" not in actionMsg or not isinstance(actionMsg["payload"], dict):
             actionMsg["payload"] = {}
 
-        # validate AFTER normalization
-        validate(instance=actionMsg, schema=ACT)
-
         seq = actionMsg["seq"]  # <-- int correlation key (matches Java replies)
 
         if not wait_for_result:
@@ -284,6 +307,20 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
 
         fut = asyncio.get_running_loop().create_future()
         pending[seq] = fut
+
+        if actionMsg.get("payload", {}).get("move"):
+            log.info("TX MOVE", extra={"seq": actionMsg["seq"], "payload": actionMsg["payload"]})
+        else:
+            log.info("TX NOMOVE", extra={"seq": actionMsg["seq"], "payload_keys": list(actionMsg.get("payload", {}).keys())})
+
+        log.info(
+            "ws send action",
+            extra={
+                "ws_id": id(ws),
+                "seq": actionMsg.get("seq"),
+            }
+        )
+
 
         await ws.send(_dumps(actionMsg))  # TEXT
 
@@ -324,13 +361,61 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
                 except asyncio.QueueEmpty:
                     break
 
+                # If this is a control (await_result False), coalesce by keeping the most recent control
+                if isinstance(item, dict) and not bool(item.get("await_result", False)):
+                    latest = item
+                    while True:
+                        try:
+                            peek = actQueue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+
+                        # keep ACK actions in queue, but keep replacing latest control
+                        if isinstance(peek, dict) and not bool(peek.get("await_result", False)):
+                            latest = peek
+                            actQueue.task_done()
+                            continue
+
+                        # put ACK back and stop coalescing
+                        await actQueue.put(peek)
+                        actQueue.task_done()
+                        break
+
+                    item = latest
+
+
+                if not isinstance(item, dict):
+                    sent += 1
+                    continue
+
+                payload = item.get("payload") or {}
+
+                # Option A: treat "await_result" as the truth
+                await_result = bool(item.get("await_result", False))
+
+                # Default timeouts:
+                # - ACK actions need a realistic timeout (your p50 was ~1s+)
+                # - fire-and-forget should not wait at all
+                timeout_ms = int(item.get("timeout_ms", 2000 if await_result else 0))
+
+                # If this is a blocking (ACK) action, don't send if one is already pending.
+                # Instead of requeueing and spinning, just stop for this tick.
+                if await_result and len(pending) >= 1:
+                    # Put it back at the front-ish by just requeueing once and exiting this tick
+                    await actQueue.put(item)
+                    break
+
                 try:
-                    await SendAction(item)
+                    await SendAction(item, timeoutMs=timeout_ms, wait_for_result=await_result)
                 except Exception as e:
-                    log.warning("action send failed", extra={"error": repr(e), "trace": traceback.format_exc()},)
-
-
+                    log.warning(
+                        "action send failed",
+                        extra={"error": repr(e), "trace": traceback.format_exc()},
+                    )
+                finally:
+                    actQueue.task_done()
                 sent += 1
+
 
             await sleep_exact()
 
@@ -372,6 +457,11 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
                 continue
 
             kind = msg.get("kind")
+            seq_in = msg.get("seq")
+            log.debug("rx msg", extra={"kind": kind, "seq": seq_in})
+
+
+            kind = msg.get("kind")
 
             if kind == "observation":
                 try:
@@ -380,28 +470,38 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
                     log.warning("obs failed schema", extra={"error": str(ve)})
                     continue
 
-                # Old schema: payload already *is* the observation body (pose, rays, world, etc.)
-                # We just enqueue the entire message for the policy.
+                log.debug(
+                    "rx observation",
+                    extra={
+                        "seq": msg.get("seq"),
+                        "obs_qsize": obsQueue.qsize(),
+                        "obs_max": obsQueue.maxsize
+                    }
+                )
+
                 await EnqueueObservation(obsQueue, msg, obsState)
 
             elif kind == "action_result":
                 try:
-                    validate(instance=msg, schema=EVT)  # or ACTION_RESULT_SCHEMA, see Fix 2
+                    validate(instance=msg, schema=EVT)
+                    log.debug("event validated", extra={"kind": kind, "seq": msg.get("seq")})
                 except ValidationError as ve:
-                    log.warning("event failed schema", extra={"error": str(ve), "kind": kind})
+                    log.warning("action_result failed schema", extra={"error": ve.message, "path": list(ve.path), "msg": msg})
                     continue
 
-                seq = msg["seq"]
+                seq = int(msg["seq"])
                 payload = msg.get("payload") or {}
                 res = payload.get("action_result")
 
                 if res is None:
-                    log.warning("action_result missing payload.action_result", extra={"seq": seq})
+                    log.warning("action_result missing payload.action_result", extra={"seq": seq, "payload_keys": list(payload.keys())})
                     continue
 
                 fut = pending.pop(seq, None)
+                log.debug("resolve fut", extra={"seq": seq, "had_fut": fut is not None})
                 if fut and not fut.done():
                     fut.set_result(res)
+                    log.debug("set_result", extra={"seq": seq})
 
 
             elif kind == "bridge_health":

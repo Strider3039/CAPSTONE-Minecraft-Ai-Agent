@@ -5,6 +5,7 @@ from typing import Any, Optional
 import uuid
 from jsonschema import validate, ValidationError
 from collections import deque
+import time
 
 # Make sure ai/src is on path if needed
 SRC = _pathlib.Path(__file__).resolve().parents[1]  # ai/src
@@ -44,6 +45,13 @@ def normalize_action(action_msg: dict, seq_hint: int | None = None) -> dict:
 
     return action_msg
 
+DISCRETE_KEYS = {"attack", "use", "select_slot"}  # add more later (place_block, break_block, etc.)
+
+def action_needs_ack(action_msg: dict) -> bool:
+    payload = (action_msg.get("payload") or {})
+    return any(k in payload for k in DISCRETE_KEYS)
+
+
 async def PolicyWorker(
     obs_q: asyncio.Queue,
     act_q: asyncio.Queue,
@@ -63,6 +71,10 @@ async def PolicyWorker(
     - Enqueue for server → Minecraft
     - Emit latency stats every ~2 seconds
     """
+
+    # at top of PolicyWorker
+    last_move = None
+    last_move_ts = 0.0
 
     tick_hz = 20.0
     tick_dt = 1.0 / tick_hz
@@ -85,6 +97,9 @@ async def PolicyWorker(
                 obs_q.task_done()
                 drained = True
         return drained
+    
+    last_payload = None
+
 
     while True:
         now = time.time()
@@ -106,7 +121,32 @@ async def PolicyWorker(
             action_msg = policy_step(latestObs)
 
             action_msg = normalize_action(action_msg)
-            validate(instance=action_msg, schema=act_schema)
+            payload = action_msg.get("payload") or {}
+
+            RESEND_INTERVAL_S = 0.10  # 10 Hz; use 0.05 for 20 Hz if you want snappier control
+
+            if not action_needs_ack(action_msg):
+                now = time.time()
+                if payload == last_payload and (now - last_send_ts) < RESEND_INTERVAL_S:
+                    continue
+                last_payload = payload
+                last_send_ts = now
+
+
+            # 2) Mark whether sender should await action_result
+            action_msg["await_result"] = action_needs_ack(action_msg)
+
+            # # 3) Coalesce controls if queue is backing up:
+            # # Keep newest control action only (don't grow latency)
+            # if not action_msg["await_result"]:
+            #     # drain existing queued controls
+            #     while True:
+            #         try:
+            #             act_q.get_nowait()
+            #             act_q.task_done()
+            #         except asyncio.QueueEmpty:
+            #             break
+
             await QueueAdd(act_q, action_msg)
 
 
