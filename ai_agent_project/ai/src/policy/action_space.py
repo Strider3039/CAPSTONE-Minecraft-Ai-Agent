@@ -83,127 +83,61 @@ def ToMinecraftControls(idx: int, seq: int) -> Dict:
     # NOOP: valid action that does nothing (zero-look)
     if name == "noop":
         return BuildAction(
-            "look",
+            "noop",
             {
-                "look": {
-                    "dYaw": 0.0,
-                    "dPitch": 0.0,
-                    "turn_speed": 1.0,
-                }
+                "look": {"yaw_delta": 0.0, "pitch_delta": 0.0, "turn_speed": 1.0},
+                "move": {"forward": 0.0, "strafe": 0.0, "jump": False, "sprint": False, "sneak": False},
             },
             seq,
         )
 
     # Movement ----------------------------------------------------
-    if name == "move_forward":
+    def _move(forward: float, strafe: float, jump=False, sprint=False, sneak=False):
         return BuildAction(
             "move",
-            {
-                "move": {
-                    "forward": MoveSpeed,
-                    "strafe": 0.0,
-                    "speed": MoveSpeed,
-                }
-            },
+            {"move": {"forward": forward, "strafe": strafe, "jump": bool(jump), "sprint": bool(sprint), "sneak": bool(sneak)}},
             seq,
         )
+
+    if name == "move_forward":
+        return _move(MoveSpeed, 0.0)
 
     if name == "move_back":
-        return BuildAction(
-            "move",
-            {
-                "move": {
-                    "forward": -MoveSpeed,
-                    "strafe": 0.0,
-                    "speed": MoveSpeed,
-                }
-            },
-            seq,
-        )
+        return _move(-MoveSpeed, 0.0)
 
     if name == "strafe_left":
-        return BuildAction(
-            "move",
-            {
-                "move": {
-                    "forward": 0.0,
-                    "strafe": -MoveSpeed,
-                    "speed": MoveSpeed,
-                }
-            },
-            seq,
-        )
+        return _move(0.0, -MoveSpeed)
 
     if name == "strafe_right":
-        return BuildAction(
-            "move",
-            {
-                "move": {
-                    "forward": 0.0,
-                    "strafe": MoveSpeed,
-                    "speed": MoveSpeed,
-                }
-            },
-            seq,
-        )
+        return _move(0.0, MoveSpeed)
 
-    # Jump -------------------------------------------------------
-    # Schema expects boolean for payload.jump
     if name == "jump":
-        return BuildAction("jump", {"jump": True}, seq)
+        # jump as move-control (one-tick pulse if your server clears it)
+        return _move(0.0, 0.0, jump=True)
+
+    if name == "sneak":
+        # sneak as move-control (hold if your server holds move for N ticks)
+        return _move(0.0, 0.0, sneak=True)
 
     # Look --------------------------------------------------------
-    if name == "look_left_small":
+    def _look(yaw_delta: float, pitch_delta: float):
         return BuildAction(
             "look",
-            {
-                "look": {
-                    "dYaw": -LookStep,
-                    "dPitch": 0.0,
-                    "turn_speed": 1.0,
-                }
-            },
+            {"look": {"yaw_delta": yaw_delta, "pitch_delta": pitch_delta, "turn_speed": 1.0}},
             seq,
         )
+
+    if name == "look_left_small":
+        return _look(-LookStep, 0.0)
 
     if name == "look_right_small":
-        return BuildAction(
-            "look",
-            {
-                "look": {
-                    "dYaw": LookStep,
-                    "dPitch": 0.0,
-                    "turn_speed": 1.0,
-                }
-            },
-            seq,
-        )
+        return _look(LookStep, 0.0)
 
     if name == "look_up_small":
-        return BuildAction(
-            "look",
-            {
-                "look": {
-                    "dYaw": 0.0,
-                    "dPitch": -LookStep,
-                    "turn_speed": 1.0,
-                }
-            },
-            seq,
-        )
+        return _look(0.0, -LookStep)
 
     if name == "look_down_small":
-        return BuildAction(
-            "look",
-            {
-                "look": {
-                    "dYaw": 0.0,
-                    "dPitch": LookStep,
-                    "turn_speed": 1.0,
-                }
-            },
-            seq,
-        )
+        return _look(0.0, LookStep)
 
     # Actions ------------------------------------------------------
     if name == "attack":

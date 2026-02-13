@@ -41,6 +41,7 @@ public class ServerBridgeWebSocketClient {
 
         try {
             WebSocketClient c = new WebSocketClient(new URI(uri)) {
+                
 
                 @Override
                 public void onOpen(ServerHandshake handshakedata) {
@@ -144,6 +145,7 @@ public class ServerBridgeWebSocketClient {
             };
 
             client = c;
+            client.setConnectionLostTimeout(0); // detect dead connections faster
 
             new Thread(() -> {
                 try {

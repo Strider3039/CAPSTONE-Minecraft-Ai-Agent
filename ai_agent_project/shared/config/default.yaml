@@ -1,20 +1,115 @@
-server:
-  host: 0.0.0.0
-  port: 8765
-  ping_interval_s: 5
-  ping_timeout_s: 5
-  max_msg_bytes: 1048576
+schema_version: 2
+
+bridge:
+  paths:
+      data_dir: "shared/Data"
+      schemas_dir: "shared/schemas"
+      episode_state_path: "shared/Data/episode_state.json"
+
+  server:
+    host: 0.0.0.0
+    port: 8765
+    ping_interval_s: 5
+    ping_timeout_s: 5
+    max_msg_bytes: 1048576
+
+  streaming:
+    target_hz: 12
+    max_skips: 2
+
+  queues:
+    obs_max: 128
+    act_max: 64
+    obs_drop_policy: oldest
+    act_full_behavior: block
+    coalesce:
+      enabled: false
+      kinds: ["look", "move"]
+
+  rate_limits:
+    look_hz: 15
+    move_hz: 15
+    jump_min_ms: 200
+    interact_cooldown_ms: 150
+
+  reconnect:
+    backoff_ms: [250, 1000, 2000, 5000]
+    jitter_ms: 150
+    max_attempts: 0
+    clear_queues_on_reconnect: true
+    new_session_on_reconnect: true
+
+  metrics:
+    enabled: true
+    sample_interval_s: 2
+    emit:
+      queue_watermarks: true
+      drops_and_timeouts: true
+      tick_latency_ms: true
+      reconnects: true
+    sink:
+      kind: file
+      path: "logs/bridge_metrics.ndjson"
+
+  logging:
+    level: INFO
+    json: true
+    file:
+      enabled: true
+      path: "logs/bridge.log.ndjson"
 
 runtime:
-  obs_queue_size: 64
-  act_queue_size: 64
+  # ---- Control-plane (handshake/actions) ----
+  control_mode: SERVER_BOT # SERVER_BOT | PLAYER
+  hello_timeout_s: 2.0
+  discrete_action_timeout_s: 2.0 # wait_for_result=True timeouts
+  continuous_resend_interval_s: 0.05
+  continuous_hold_ticks: 3 # your smoothing hold
   worker_tasks: 1
-  drop_policy: oldest
+  validate_actions: true
+  default_deadline_ms: 50
 
-policy:
-  tick_hz: 10
-  budget_ms: 100
+  # ---- Policy/Obs encoding ----
+  policy:
+    type: "online_dqn"
+    tick_hz: 20
+    budget_ms: 80
+    max_actions_per_tick: 3
+    max_ray_dist: 20
+    success_radius: 1.5
+    stuck_speed_thresh: 0.02
+    stuck_ticks: 15
 
-logging:
-  level: INFO
-  json: true
+    heading:
+      max_look_deg: 20.0
+      yaw_p_gain: 1.0
+      stop_on_collision: true
+
+    action_rates:
+      look_hz: 20
+      move_hz: 20
+      jump_min_ms: 200
+      interact_cooldown_ms: 500
+
+    dqn:
+      checkpoint_path: "policy/runs/checkpoints/dqn_initial.pt"
+
+  obs:
+    rate_hz: 12
+    entity_cap: 8
+    include:
+      pose: true
+      world_time_weather_biome: true
+      inventory_hotbar_summary: true
+      entities_nearby: true
+      los_flags: true
+    quantization:
+      pos_decimals: 2
+      angle_decimals: 2
+      dist_decimals: 2
+
+  raycasts:
+    count: 8
+    max_dist: 6.0
+    fov_deg: 60
+    front_clear_threshold: 1.3

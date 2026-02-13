@@ -242,12 +242,9 @@ public class FakeBotManager {
         drainActions();
 
         for (FakeBot bot : bots) {
-            if (bot == null || bot.player == null)
-                continue;
-            if (!bot.player.isAlive())
-                continue;
-            if (!(bot.player.level() instanceof ServerLevel level))
-                continue;
+            if (bot == null || bot.player == null) continue;
+            if (!bot.player.isAlive()) continue;
+            if (!(bot.player.level() instanceof ServerLevel level)) continue;
 
             bot.player.setNoGravity(false);
             bot.player.noPhysics = false;
@@ -263,7 +260,7 @@ public class FakeBotManager {
             }
 
             // -----------------------------
-            // STEP STATE MACHINE
+            // STEP STATE MACHINE (lifecycle)
             // -----------------------------
 
             // Start a new step if idle
@@ -294,85 +291,57 @@ public class FakeBotManager {
                 }
             }
 
-            // If there is no active step, do nothing this tick (vanilla physics still runs)
-            if (!bot.stepActive) {
-                continue;
+            // If stepActive, it must always have valid correlation fields
+            if (bot.stepActive) {
+                if (bot.stepSeq < 0 || bot.stepActionId == null || bot.stepActionId.isBlank()) {
+                    System.out.println("[AI-BOT] WARNING: stepActive but missing seq/action_id; forcing reset. "
+                            + "name=" + bot.player.getGameProfile().getName()
+                            + " stepSeq=" + bot.stepSeq
+                            + " actionId=" + bot.stepActionId);
+
+                    // Full reset because state is corrupted
+                    clearAllControls(bot);
+                    bot.stepActive = false;
+                    bot.stepTicksRemaining = 0;
+                    bot.stepAction = null;
+                    bot.stepSeq = -1;
+                    bot.stepActionId = null;
+                } else {
+                    // Apply the step payload for this tick (updates ctrl* / one-shots)
+                    applyPayloadToBot(bot.stepAction, bot);
+
+                    if (DEBUG_MOVE) {
+                        System.out.println("[STEP TICK] seq=" + bot.stepSeq
+                                + " action_id=" + bot.stepActionId
+                                + " f=" + bot.forward
+                                + " s=" + bot.strafe
+                                + " jump=" + bot.jump
+                                + " sprint=" + bot.sprint
+                                + " sneak=" + bot.sneak);
+                    }
+
+                    // Decrement step timer AFTER applying payload for this tick
+                    bot.stepTicksRemaining--;
+                }
             }
 
             // -----------------------------
-            // ACTIVE STEP TICK
+            // PER-TICK CONTROL APPLICATION (always run)
             // -----------------------------
 
-            // Invariant: stepActive must always have valid correlation fields
-            if (bot.stepSeq < 0 || bot.stepActionId == null || bot.stepActionId.isBlank()) {
-                System.out.println("[AI-BOT] WARNING: stepActive but missing seq/action_id; forcing reset. "
-                        + "name=" + bot.player.getGameProfile().getName()
-                        + " stepSeq=" + bot.stepSeq
-                        + " actionId=" + bot.stepActionId);
-
-                // Full reset because state is corrupted
-                clearAllControls(bot);
-                bot.stepActive = false;
-                bot.stepTicksRemaining = 0;
-                bot.stepAction = null;
-                bot.stepSeq = -1;
-                bot.stepActionId = null;
-                continue;
-            }
-
-            // Apply the step action each tick
-            applyPayloadToBot(bot.stepAction, bot);
-
-            if (DEBUG_MOVE) {
-                System.out.println("[STEP TICK] seq=" + bot.stepSeq
-                        + " action_id=" + bot.stepActionId
-                        + " f=" + bot.forward
-                        + " s=" + bot.strafe
-                        + " jump=" + bot.jump
-                        + " sprint=" + bot.sprint
-                        + " sneak=" + bot.sneak);
-            }
-
-            // --- NEW: apply continuous controls from ctrl* with short TTL ---
-            if (bot.ctrlHoldTicks > 0) {
-
-                // Apply look deltas deterministically
-                bot.yaw += bot.ctrlYawDelta;
-                bot.pitch += bot.ctrlPitchDelta;
-                if (bot.pitch > 89f) bot.pitch = 89f;
-                if (bot.pitch < -89f) bot.pitch = -89f;
-
-                // Materialize movement controls for this tick
-                bot.forward = bot.ctrlForward;
-                bot.strafe  = bot.ctrlStrafe;
-                bot.jump    = bot.ctrlJump;
-                bot.sprint  = bot.ctrlSprint;
-                bot.sneak   = bot.ctrlSneak;
-
-                bot.ctrlHoldTicks--;
-
-            } else {
-                // No recent control update -> decay to neutral
-                bot.forward = 0.0;
-                bot.strafe  = 0.0;
-                bot.jump    = false;
-                bot.sprint  = false;
-                bot.sneak   = false;
-
-                bot.ctrlYawDelta = 0f;
-                bot.ctrlPitchDelta = 0f;
-            }
+            // Hold last continuous controls for a short TTL so we behave like held keys.
+            materializeContinuousControls(bot);
 
             // 1) apply look/hotbar/attack/use
             applyLookAndHotbarAndActions(bot, level);
 
-            // 2) apply movement FOR THIS STEP ONLY
+            // 2) apply movement / physics integration
             applyMovementTravel(bot);
 
-            // Count down
-            bot.stepTicksRemaining--;
-
-            if (bot.stepTicksRemaining <= 0) {
+            // -----------------------------
+            // STEP FINISH (emit obs + ack) 
+            // -----------------------------
+            if (bot.stepActive && bot.stepTicksRemaining <= 0) {
                 int finishedSeq = bot.stepSeq;
                 String finishedActionId = bot.stepActionId;
 
@@ -397,17 +366,48 @@ public class FakeBotManager {
                     }
                 }
 
+                // Clear one-shot actions so clicks don't repeat; keep ctrl* for short persistence
+                clearOneShotControls(bot);
+
+                // Reset step fields
+                bot.stepActive = false;
+                bot.stepTicksRemaining = 0;
+                bot.stepAction = null;
+                bot.stepSeq = -1;
+                bot.stepActionId = null;
             }
-
-            // Clear one-shot actions so clicks don't repeat; keep ctrl* for short persistence
-            clearOneShotControls(bot);
-            bot.stepActive = false;
-            bot.stepTicksRemaining = 0;
-            bot.stepAction = null;
-            bot.stepSeq = -1;
-            bot.stepActionId = null;
         }
+    }
 
+    private void materializeContinuousControls(FakeBot bot) {
+        // Apply continuous controls from ctrl* with short TTL (behaves like held keys).
+        if (bot.ctrlHoldTicks > 0) {
+
+            // Apply look deltas deterministically (treated as per-tick rates)
+            bot.yaw += bot.ctrlYawDelta;
+            bot.pitch += bot.ctrlPitchDelta;
+            if (bot.pitch > 89f) bot.pitch = 89f;
+            if (bot.pitch < -89f) bot.pitch = -89f;
+
+            // Materialize movement controls for this tick
+            bot.forward = bot.ctrlForward;
+            bot.strafe  = bot.ctrlStrafe;
+            bot.jump    = bot.ctrlJump;
+            bot.sprint  = bot.ctrlSprint;
+            bot.sneak   = bot.ctrlSneak;
+
+            bot.ctrlHoldTicks--;
+        } else {
+            // No recent control update -> decay to neutral
+            bot.forward = 0.0;
+            bot.strafe  = 0.0;
+            bot.jump    = false;
+            bot.sprint  = false;
+            bot.sneak   = false;
+
+            bot.ctrlYawDelta = 0f;
+            bot.ctrlPitchDelta = 0f;
+        }
     }
 
     private void drainActions() {

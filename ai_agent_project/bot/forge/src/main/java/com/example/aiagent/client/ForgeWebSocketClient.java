@@ -163,31 +163,26 @@ public class ForgeWebSocketClient extends WebSocketClient {
 
     @Override
     public void onOpen(ServerHandshake handshake) {
-
-        // NEW: If we're in multiplayer / dedicated context, client WS must not be active.
-        if (!shouldClientWebSocketBeEnabled()) {
-            System.out.println("[WS] Connected but CLIENT WS is disabled in this mode. Closing.");
-            try { close(); } catch (Exception ignored) {}
-            return;
-        }
         System.out.println("[WS] Connected to AI bridge");
         bridgeReady.set(true);
 
-        // IMPORTANT: reset stale sequence tracking on a new connection
         lastAckSeq = -1;
         inflight.clear();
 
-        // NEW: identify this websocket as the CLIENT
         JsonObject hello = new JsonObject();
         hello.addProperty("proto", "1");
         hello.addProperty("kind", "hello");
         hello.addProperty("role", "client");
         send(hello.toString());
 
+        // IMPORTANT: do not close here; just refuse to execute actions when disabled
+        if (!shouldClientWebSocketBeEnabled()) {
+            System.out.println("[WS] CLIENT WS is disabled in this environment; will ignore actions.");
+        }
+
         emitBridgeHealth("info", "connected");
         sendBridgeReady();
 
-        // notify hook layer
         if (onReconnect != null) onReconnect.run();
     }
 

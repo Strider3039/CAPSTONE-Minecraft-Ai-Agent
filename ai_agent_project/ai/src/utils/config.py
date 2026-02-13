@@ -28,29 +28,32 @@ def LoadYaml(path: pathlib.Path) -> Dict[str, Any]:
         return yaml.safe_load(f) or {}
     
 def LoadConfig(env: str | None = None) -> Config:
-    """Load and merge bridge/runtime/evaluation configs."""
-    env = env or os.getenv("APP_ENV", "dev")
+    env = env or os.getenv("APP_ENV", "prod")
 
-    bridge_cfg = LoadYaml(CONF_DIR / "bridge.yaml")
-    runtime_cfg = LoadYaml(CONF_DIR / "runtime.yaml")
-    eval_cfg = LoadYaml(CONF_DIR / "evaluation.yaml")
+    base = LoadYaml(CONF_DIR / "default.yaml")
+    if not base:
+        raise FileNotFoundError(f"Missing default.yaml in {CONF_DIR}")
 
-    # optional defaults/dev overrides (same logic as before)
-    default_cfg = LoadYaml(CONF_DIR / "default.yaml")
-    dev_cfg = LoadYaml(CONF_DIR / "dev.yaml") if env == "dev" else {}
+    # Support dev/prod/evaluation overrides by name
+    env_path = CONF_DIR / f"{env}.yaml"
+    env_cfg = LoadYaml(env_path)
 
-    combined = {
-        "bridge": bridge_cfg,
-        "runtime": runtime_cfg,
-        "evaluation": eval_cfg,
-    }
-    merged = DeepMerge(default_cfg, combined)
-    if dev_cfg:
-        merged = DeepMerge(merged, dev_cfg)
+    merged = DeepMerge(base, env_cfg) if env_cfg else base
 
-    # validate schema version if present
-    schema_ver = merged.get("bridge", {}).get("schema_version")
-    if schema_ver and schema_ver != "1":
-        raise ValueError(f"Unsupported schema_version {schema_ver}, expected '1'")
+    # Optional: load evaluation only when env == "evaluation" OR keep separate entirely
+    # (I recommend separate runner; but if you want it merged, do this:)
+    if env == "evaluation":
+        eval_cfg = LoadYaml(CONF_DIR / "evaluation.yaml")
+        if eval_cfg:
+            # either merge under evaluation: or require evaluation.yaml already has evaluation:
+            if "evaluation" in eval_cfg:
+                merged = DeepMerge(merged, eval_cfg)
+            else:
+                merged = DeepMerge(merged, {"evaluation": eval_cfg})
+
+    # Validate schema version (root-level in unified)
+    schema_ver = merged.get("schema_version", None)
+    if schema_ver not in (None, 2):
+        raise ValueError(f"Unsupported schema_version {schema_ver}, expected 2")
 
     return Config(merged)

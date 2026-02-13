@@ -1,21 +1,58 @@
-# evaluation.yaml — Sprint 2
-worlds:                           # worlds, not final yet
-  - name: flat_clear
-    start: {x: 0, y: 64, z: 0, yaw: 0.0, pitch: 0.0}
-    target: {x: 20, y: 64, z: 0}
-  - name: pylons
-    start: {x: 0, y: 64, z: 0, yaw: 0.0, pitch: 0.0}
-    target: {x: 25, y: 64, z: 0}
-  - name: corridor
-    start: {x: 0, y: 64, z: 0, yaw: 0.0, pitch: 0.0}
-    target: {x: 30, y: 64, z: 0}
+schema_version: 2
 
-trials_per_world: 20
-episode_timeout_s: 120
-success_dist_threshold: 1.0
-no_progress_ticks: 30
-max_steps: 1200
-seeds: [1,2,3,4,5,6,7,8,9,10]   # recycled if < trials, tbd later
+# Evaluation is now "scenario-driven" instead of "world-driven".
+# A scenario defines how to start/reset an episode and how success/failure is determined.
+scenarios:
+  - name: reach_goal_basic
+    enabled: true
+
+    # How this scenario drives episodes
+    episodes:
+      trials: 20
+      seeds: [1,2,3,4,5,6,7,8,9,10]   # recycled if < trials
+
+    # Termination / success criteria (runner or bridge enforces)
+    termination:
+      episode_timeout_s: 120
+      max_steps: 1200
+      no_progress:
+        enabled: true
+        ticks: 30
+        # metric to compute progress against (runner-defined)
+        metric: dist_to_goal
+        min_delta: 0.05
+
+    success:
+      metric: dist_to_goal
+      threshold: 1.0
+
+    # Optional: if you still support "goal" in the environment via commands/packets
+    # The runner can set a per-episode goal using whatever mechanism you have.
+    goal:
+      mode: external            # external | fixed | random
+      fixed: null               # used if mode=fixed, e.g. {x: 20, y: 64, z: 0}
+      random:
+        enabled: false
+        radius: 30
+        y: 64
+
+  - name: survival_stability
+    enabled: true
+
+    episodes:
+      trials: 10
+      seeds: [101,102,103,104,105]
+
+    termination:
+      episode_timeout_s: 180
+      max_steps: 1800
+      no_progress:
+        enabled: false
+
+    # Success here means "didn't die / didn't disconnect / maintained control"
+    success:
+      metric: survived
+      threshold: 1
 
 metrics:
   capture:
@@ -29,13 +66,15 @@ metrics:
     - obs_dropped
     - action_timeouts
     - reconnects
+
+  # Keep this since your bridge already emits NDJSON metrics
   bridge_metrics_path: "logs/bridge_metrics.ndjson"
 
 report:
   out_dir: "reports"
   csv_name: "eval.csv"
   plots:
-    success_by_world: true
+    success_by_scenario: true
     steps_distribution: true
     collisions_distribution: true
     queue_watermarks: true
