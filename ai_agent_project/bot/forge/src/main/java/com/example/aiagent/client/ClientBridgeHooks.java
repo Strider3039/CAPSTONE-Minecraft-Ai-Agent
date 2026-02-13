@@ -316,10 +316,17 @@ public class ClientBridgeHooks {
     }
 
     private void sendObservation(Minecraft mc) {
+
+        // Only send client observations in singleplayer / integrated server.
+        if (!mc.hasSingleplayerServer()) return;
+
         var p = mc.player;
         var level = mc.level;
         if (p == null || level == null) return;
 
+        // --------------------
+        // pose
+        // --------------------
         JsonObject pose = new JsonObject();
         pose.addProperty("x", p.getX());
         pose.addProperty("y", p.getY());
@@ -327,6 +334,9 @@ public class ClientBridgeHooks {
         pose.addProperty("yaw", p.getYRot());
         pose.addProperty("pitch", p.getXRot());
 
+        // --------------------
+        // rays (16 around player)
+        // --------------------
         JsonArray rays = new JsonArray();
         int count = 16;
         double fov = 360.0;
@@ -335,9 +345,10 @@ public class ClientBridgeHooks {
         for (int i = 0; i < count; i++) {
             double angle = (i / (double) count) * fov;
             float yaw = (float) (p.getYRot() + angle);
-            var from = p.getEyePosition(1f);
+
+            Vec3 from = p.getEyePosition(1f);
             Vec3 dir = Vec3.directionFromRotation(p.getXRot(), yaw);
-            var to = from.add(dir.scale(maxDist));
+            Vec3 to = from.add(dir.scale(maxDist));
 
             var hit = level.clip(new net.minecraft.world.level.ClipContext(
                     from, to,
@@ -349,16 +360,28 @@ public class ClientBridgeHooks {
             boolean hitBlock = hit.getType() != net.minecraft.world.phys.HitResult.Type.MISS;
             r.addProperty("hit", hitBlock);
             r.addProperty("dist", hitBlock ? from.distanceTo(hit.getLocation()) : maxDist);
-            r.addProperty("angle_deg", (i / (double) count) * fov);
+            r.addProperty("angle_deg", angle);
             rays.add(r);
         }
 
+        // --------------------
+        // inventory
+        // --------------------
         JsonArray hotbar = new JsonArray();
         var inv = p.getInventory();
+
         for (int i = 0; i < 9; i++) {
             ItemStack s = inv.getItem(i);
+
             JsonObject item = new JsonObject();
-            item.addProperty("id", s.getItem().toString());
+            String id = "minecraft:air";
+            try {
+                id = net.minecraft.core.registries.BuiltInRegistries.ITEM
+                        .getKey(s.getItem())
+                        .toString();
+            } catch (Exception ignored) {}
+
+            item.addProperty("id", id);
             item.addProperty("count", s.getCount());
             hotbar.add(item);
         }
@@ -367,10 +390,67 @@ public class ClientBridgeHooks {
         inventory.addProperty("selected_slot", inv.selected);
         inventory.add("hotbar", hotbar);
 
+        // --------------------
+        // front_clear
+        // --------------------
+        boolean frontClear = true;
+        try {
+            if (rays.size() > 0) {
+                JsonObject r0 = rays.get(0).getAsJsonObject();
+                boolean hitBlock = r0.get("hit").getAsBoolean();
+                double dist = r0.get("dist").getAsDouble();
+                frontClear = !(hitBlock && dist < 1.25);
+            }
+        } catch (Exception ignored) {}
+
+        // --------------------
+        // world
+        // --------------------
+        JsonObject world = new JsonObject();
+        long dayTime = level.getDayTime() % 24000L;
+        world.addProperty("time_of_day", (double) dayTime);
+
+        String weather = "clear";
+        if (level.isThundering()) weather = "thunder";
+        else if (level.isRaining()) weather = "rain";
+        world.addProperty("weather", weather);
+
+        String biomeName = "unknown";
+        try {
+            var biomeKey = level.getBiome(p.blockPosition()).unwrapKey();
+            if (biomeKey.isPresent())
+                biomeName = biomeKey.get().location().toString();
+        } catch (Exception ignored) {}
+        world.addProperty("biome", biomeName);
+
+        // --------------------
+        // collision
+        // --------------------
+        JsonObject collision = new JsonObject();
+        collision.addProperty("is_grounded", p.onGround());
+        collision.addProperty("is_colliding", p.horizontalCollision || p.verticalCollision);
+
+        double vx = p.getDeltaMovement().x;
+        double vz = p.getDeltaMovement().z;
+        boolean noProgress = (vx * vx + vz * vz) < 0.0004;
+        collision.addProperty("no_progress", noProgress);
+
+        // --------------------
+        // entities (empty for now)
+        // --------------------
+        JsonArray entities = new JsonArray();
+
+        // --------------------
+        // final payload
+        // --------------------
         JsonObject payload = new JsonObject();
         payload.add("pose", pose);
         payload.add("rays", rays);
+        payload.addProperty("front_clear", frontClear);
+        payload.add("world", world);
         payload.add("inventory", inventory);
+        payload.add("collision", collision);
+        payload.add("entities", entities);
 
         JsonObject obs = new JsonObject();
         obs.addProperty("proto", "1");
@@ -392,6 +472,7 @@ public class ClientBridgeHooks {
             System.err.println("[AI-BOT] Send failed: " + e.getMessage());
         }
     }
+
 
     @SubscribeEvent
     public void onRegisterCommands(RegisterClientCommandsEvent event) {

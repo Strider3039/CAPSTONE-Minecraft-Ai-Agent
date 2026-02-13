@@ -99,6 +99,8 @@ async def PolicyWorker(
         return drained
     
     last_payload = None
+    last_send_ts = 0.0
+    RESEND_INTERVAL_S = 0.05  # 10 Hz; 0.05 for 20 Hz
 
 
     while True:
@@ -123,29 +125,33 @@ async def PolicyWorker(
             action_msg = normalize_action(action_msg)
             payload = action_msg.get("payload") or {}
 
-            RESEND_INTERVAL_S = 0.10  # 10 Hz; use 0.05 for 20 Hz if you want snappier control
+            needs_ack = action_needs_ack(action_msg)
 
-            if not action_needs_ack(action_msg):
+            if not needs_ack:
                 now = time.time()
                 if payload == last_payload and (now - last_send_ts) < RESEND_INTERVAL_S:
                     continue
                 last_payload = payload
                 last_send_ts = now
 
+            # Mark whether sender should await action_result
+            action_msg["await_result"] = needs_ack
+
+
 
             # 2) Mark whether sender should await action_result
             action_msg["await_result"] = action_needs_ack(action_msg)
 
-            # # 3) Coalesce controls if queue is backing up:
-            # # Keep newest control action only (don't grow latency)
-            # if not action_msg["await_result"]:
-            #     # drain existing queued controls
-            #     while True:
-            #         try:
-            #             act_q.get_nowait()
-            #             act_q.task_done()
-            #         except asyncio.QueueEmpty:
-            #             break
+            # 3) Coalesce controls if queue is backing up:
+            # Keep newest control action only (don't grow latency)
+            if not action_msg["await_result"]:
+                # drain existing queued controls
+                while True:
+                    try:
+                        act_q.get_nowait()
+                        act_q.task_done()
+                    except asyncio.QueueEmpty:
+                        break
 
             await QueueAdd(act_q, action_msg)
 

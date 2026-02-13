@@ -58,15 +58,34 @@ public class FakeBotManager {
         }
     }
 
-    private void clearControls(FakeBot bot) {
-        bot.forward = 0.0;
-        bot.strafe = 0.0;
-        bot.jump = false;
-        bot.sprint = false;
-        bot.sneak = false;
+    private void clearOneShotControls(FakeBot bot) {
+        // things that should only apply for ONE tick/step
         bot.attack = false;
         bot.use = false;
         bot.selectSlot = -1;
+        // if you have "swapHands", "pickBlock", etc. put them here
+    }
+
+    private void clearAllControls(FakeBot bot) {
+        // one-shot
+        clearOneShotControls(bot);
+
+        // continuous
+        bot.forward = 0f;
+        bot.strafe = 0f;
+        bot.jump = false;
+        bot.sprint = false;
+        bot.sneak = false;
+
+        bot.ctrlForward = 0f;
+        bot.ctrlStrafe = 0f;
+        bot.ctrlJump = false;
+        bot.ctrlSprint = false;
+        bot.ctrlSneak = false;
+
+        bot.ctrlYawDelta = 0f;
+        bot.ctrlPitchDelta = 0f;
+        bot.ctrlHoldTicks = 0;
     }
 
     public ServerPlayer getDefaultPlayerOrNull() {
@@ -89,6 +108,18 @@ public class FakeBotManager {
         public boolean use = false;
         public int selectSlot = -1;
         public double stepStartX = 0, stepStartY = 0, stepStartZ = 0;
+
+        // --- Continuous controls (persist for a short time) ---
+        public float ctrlForward = 0f;
+        public float ctrlStrafe  = 0f;
+        public boolean ctrlJump  = false;
+        public boolean ctrlSprint = false;
+        public boolean ctrlSneak = false;
+
+        float ctrlYawDelta = 0f;
+        float ctrlPitchDelta = 0f;
+
+        int ctrlHoldTicks = 0;  // counts down each server tick
 
         // --- Step execution state ---
         public boolean stepActive = false;
@@ -250,8 +281,8 @@ public class FakeBotManager {
                     bot.stepStartY = bot.player.getY();
                     bot.stepStartZ = bot.player.getZ();
 
-                    // Reset inputs ONCE at step start
-                    clearControls(bot);
+                    // Reset ONLY one-shot actions at step start; keep continuous ctrl* state
+                    clearOneShotControls(bot);
 
                     if (DEBUG_MOVE) {
                         System.out.println("[STEP] START name=" + bot.player.getGameProfile().getName()
@@ -279,7 +310,8 @@ public class FakeBotManager {
                         + " stepSeq=" + bot.stepSeq
                         + " actionId=" + bot.stepActionId);
 
-                clearControls(bot);
+                // Full reset because state is corrupted
+                clearAllControls(bot);
                 bot.stepActive = false;
                 bot.stepTicksRemaining = 0;
                 bot.stepAction = null;
@@ -301,6 +333,36 @@ public class FakeBotManager {
                         + " sneak=" + bot.sneak);
             }
 
+            // --- NEW: apply continuous controls from ctrl* with short TTL ---
+            if (bot.ctrlHoldTicks > 0) {
+
+                // Apply look deltas deterministically
+                bot.yaw += bot.ctrlYawDelta;
+                bot.pitch += bot.ctrlPitchDelta;
+                if (bot.pitch > 89f) bot.pitch = 89f;
+                if (bot.pitch < -89f) bot.pitch = -89f;
+
+                // Materialize movement controls for this tick
+                bot.forward = bot.ctrlForward;
+                bot.strafe  = bot.ctrlStrafe;
+                bot.jump    = bot.ctrlJump;
+                bot.sprint  = bot.ctrlSprint;
+                bot.sneak   = bot.ctrlSneak;
+
+                bot.ctrlHoldTicks--;
+
+            } else {
+                // No recent control update -> decay to neutral
+                bot.forward = 0.0;
+                bot.strafe  = 0.0;
+                bot.jump    = false;
+                bot.sprint  = false;
+                bot.sneak   = false;
+
+                bot.ctrlYawDelta = 0f;
+                bot.ctrlPitchDelta = 0f;
+            }
+
             // 1) apply look/hotbar/attack/use
             applyLookAndHotbarAndActions(bot, level);
 
@@ -320,24 +382,25 @@ public class FakeBotManager {
                             + " finishedSeq=" + finishedSeq
                             + " actionId=" + finishedActionId);
                 } else {
-                    // 1) ACTION_RESULT (required for Python pending-future ACK)
-                    // Status choice: for now always success if we reached step finish cleanly.
+                    // 1) OBSERVATION (full schema with defaults)
+                    JsonObject obsMsg = buildObservationEvent(finishedSeq, bot, level);
+                    completedStepResults.offer(obsMsg);
+
+                    if (DEBUG_MOVE) System.out.println("[AI-BOT] COMPLETE seq=" + finishedSeq + " action_id=" + finishedActionId);
+
+                    // 2) ACTION_RESULT (ack)
                     JsonObject arMsg = buildActionResultEvent(finishedSeq, finishedActionId, "success", null);
                     completedStepResults.offer(arMsg);
 
-                    // 2) OBSERVATION (optional — only enable if your Python expects it)
-                    // JsonObject obsMsg = buildObservationEvent(finishedSeq, bot);
-                    // completedStepResults.offer(obsMsg);
-
                     if (DEBUG_WS) {
-                        System.out.println("[AI-BOT] ENQUEUE action_result seq=" + finishedSeq + " action_id=" + finishedActionId);
+                        System.out.println("[AI-BOT] ENQUEUE obs+action_result seq=" + finishedSeq + " action_id=" + finishedActionId);
                     }
                 }
 
             }
 
-            // Reset bot state
-            clearControls(bot);
+            // Clear one-shot actions so clicks don't repeat; keep ctrl* for short persistence
+            clearOneShotControls(bot);
             bot.stepActive = false;
             bot.stepTicksRemaining = 0;
             bot.stepAction = null;
@@ -352,7 +415,38 @@ public class FakeBotManager {
         while ((s = pendingActionJson.poll()) != null) {
             try {
                 JsonObject msg = BotMod.GSON.fromJson(s, JsonObject.class);
-                if (msg == null)
+
+                // --- NEW: Accept Action v1 envelope format ---
+                // { "proto":"1", "kind":"action", "seq":INT, "action_id":"...", "deadline_ms":INT, "payload":{...} }
+                if (msg.has("proto") && msg.has("kind")
+                        && "1".equals(msg.get("proto").getAsString())
+                        && "action".equals(msg.get("kind").getAsString())
+                        && msg.has("seq") && msg.has("action_id") && msg.has("payload")) {
+
+                    int seq = msg.get("seq").getAsInt();
+                    String actionId = msg.get("action_id").getAsString();
+                    int deadlineMs = msg.has("deadline_ms") ? msg.get("deadline_ms").getAsInt() : 50;
+
+                    if (seq < 0) continue;
+                    if (actionId == null || actionId.isBlank()) continue;
+                    if (deadlineMs <= 0) deadlineMs = 50;
+
+                    if (!msg.get("payload").isJsonObject()) continue;
+                    JsonObject action = msg.getAsJsonObject("payload");
+
+                    int ticks = Math.max(1, (deadlineMs + 49) / 50); // 50ms per tick
+
+                    if (pendingSteps.size() > 200) pendingSteps.poll(); // keep latency bounded
+                    pendingSteps.offer(new StepRequest(action, ticks, seq, actionId));
+
+                    if (DEBUG_MOVE) {
+                        System.out.println("[DRAIN] queued ENVELOPE step seq=" + seq
+                                + " action_id=" + actionId + " ticks=" + ticks
+                                + " keys=" + action.keySet());
+                    }
+                    continue;
+                }
+                else if (msg == null)
                     continue;
 
                 // Internal step format (created by ServerBridgeWebSocketClient):
@@ -404,8 +498,10 @@ public class FakeBotManager {
                     continue;
                 }
 
-                // Back-compat: if someone enqueues raw payload, treat as 1-tick anonymous step
-                pendingSteps.offer(new StepRequest(msg, 1, -1, "anon-" + (nextStepId++)));
+                // Back-compat: drop unknown formats (prevents seq=-1 steps that never ACK)
+                if (DEBUG_MOVE) {
+                    System.out.println("[DRAIN] dropped unknown action json: " + msg);
+                }
 
             } catch (Exception ignored) {
             }
@@ -448,32 +544,134 @@ public class FakeBotManager {
      * If your Python validates events strictly against event.schema.json, DO NOT send this
      * until you add an observation schema on the Python side.
      */
-    private JsonObject buildObservationEvent(int seq, FakeBot bot) {
-        JsonObject root = new JsonObject();
-        root.addProperty("proto", "1");
-        root.addProperty("kind", "observation");
-        root.addProperty("seq", seq);
 
-        JsonObject obs = new JsonObject();
-        obs.addProperty("x", bot.player.getX());
-        obs.addProperty("y", bot.player.getY());
-        obs.addProperty("z", bot.player.getZ());
-        obs.addProperty("yaw", bot.player.getYRot());
-        obs.addProperty("pitch", bot.player.getXRot());
-        obs.addProperty("on_ground", bot.player.onGround());
 
-        // small useful extras
-        obs.addProperty("dx", bot.player.getX() - bot.stepStartX);
-        obs.addProperty("dy", bot.player.getY() - bot.stepStartY);
-        obs.addProperty("dz", bot.player.getZ() - bot.stepStartZ);
+// --- Observation Builder (Bridge v1) ---
+// Builds an observation payload that ALWAYS includes the required keys:
+// pose, rays, front_clear, world, inventory, collision (+ entities as empty list)
 
-        JsonObject payload = new JsonObject();
-        payload.add("observation", obs);
+private JsonObject buildObservationEvent(int seq, FakeBot bot, ServerLevel level) {
+    JsonObject root = new JsonObject();
+    root.addProperty("timestamp", System.currentTimeMillis() / 1000.0);
+    root.addProperty("proto", "1");
+    root.addProperty("kind", "observation");
+    root.addProperty("seq", seq);
 
-        root.add("payload", payload);
-        return root;
+    JsonObject payload = new JsonObject();
+
+    // --------------------
+    // pose (required)
+    // --------------------
+    JsonObject pose = new JsonObject();
+    pose.addProperty("x", bot.player.getX());
+    pose.addProperty("y", bot.player.getY());
+    pose.addProperty("z", bot.player.getZ());
+    pose.addProperty("yaw", bot.player.getYRot());
+    pose.addProperty("pitch", bot.player.getXRot());
+    payload.add("pose", pose);
+
+    // --------------------
+    // rays (required)
+    // --------------------
+    // Use your existing rays if you already compute them; otherwise default to empty array.
+    // If your Python schema requires items, empty array is still valid if "rays" itself is required.
+    // --------------------
+    // rays (required) — default placeholder
+    // --------------------
+    com.google.gson.JsonArray rays = new com.google.gson.JsonArray();
+
+    // 16 rays @ 22.5° increments, default "no hit" at max distance
+    for (int i = 0; i < 16; i++) {
+        JsonObject r = new JsonObject();
+        r.addProperty("hit", false);
+        r.addProperty("dist", 5.0);
+        r.addProperty("angle_deg", i * 22.5);
+        rays.add(r);
     }
 
+    payload.add("rays", rays);
+
+
+    // --------------------
+    // front_clear (required)
+    // --------------------
+    // Default: assume clear unless your rays say otherwise.
+    boolean frontClear = true;
+    try {
+        JsonObject r0 = rays.get(0).getAsJsonObject();
+        boolean hit = r0.get("hit").getAsBoolean();
+        double dist = r0.get("dist").getAsDouble();
+        frontClear = !(hit && dist < 1.25);
+    } catch (Exception ignored) {}
+
+    payload.addProperty("front_clear", frontClear);
+
+
+    // --------------------
+    // world (required)
+    // --------------------
+    JsonObject world = new JsonObject();
+    long dayTime = level.getDayTime() % 24000L;
+    world.addProperty("time_of_day", (double) dayTime);
+
+    String weather = "clear";
+    if (level.isThundering()) weather = "thunder";
+    else if (level.isRaining()) weather = "rain";
+    world.addProperty("weather", weather);
+
+    String biomeName = "unknown";
+    try {
+        var biomeKey = level.getBiome(bot.player.blockPosition()).unwrapKey();
+        if (biomeKey.isPresent()) biomeName = biomeKey.get().location().toString();
+    } catch (Exception ignored) {}
+    world.addProperty("biome", biomeName);
+
+    payload.add("world", world);
+
+    // --------------------
+    // inventory (required)
+    // --------------------
+    JsonObject inv = new JsonObject();
+    inv.addProperty("selected_slot", bot.player.getInventory().selected);
+
+    com.google.gson.JsonArray hotbar = new com.google.gson.JsonArray();
+    for (int i = 0; i < 9; i++) {
+        var stack = bot.player.getInventory().getItem(i);
+        JsonObject it = new JsonObject();
+        String id = "air";
+        try {
+            id = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+        } catch (Exception ignored) {}
+        it.addProperty("id", id);
+        it.addProperty("count", stack.getCount());
+        hotbar.add(it);
+    }
+    inv.add("hotbar", hotbar);
+    payload.add("inventory", inv);
+
+    // --------------------
+    // collision (required)
+    // --------------------
+    JsonObject collision = new JsonObject();
+    collision.addProperty("is_grounded", bot.player.onGround());
+    collision.addProperty("is_colliding", bot.player.horizontalCollision || bot.player.verticalCollision);
+
+    // "no_progress" default heuristic: if movement over step is tiny
+    double dx = bot.player.getX() - bot.stepStartX;
+    double dz = bot.player.getZ() - bot.stepStartZ;
+    boolean noProgress = (dx * dx + dz * dz) < 0.0004; // ~2cm threshold squared
+    collision.addProperty("no_progress", noProgress);
+
+    payload.add("collision", collision);
+
+    // --------------------
+    // entities (optional in your schema, but nice to include)
+    // --------------------
+    payload.add("entities", new com.google.gson.JsonArray());
+
+    root.add("payload", payload);
+    return root;
+}
 
     private void applyPayloadToBot(JsonObject payload, FakeBot bot) {
         if (payload == null || bot == null)
@@ -482,11 +680,9 @@ public class FakeBotManager {
         // LOOK (deltas)
         if (payload.has("look")) {
             JsonObject look = payload.getAsJsonObject("look");
-            float dYaw = look.has("dYaw") ? look.get("dYaw").getAsFloat() : 0f;
-            float dPitch = look.has("dPitch") ? look.get("dPitch").getAsFloat() : 0f;
-
-            bot.yaw += dYaw;
-            bot.pitch += dPitch;
+            bot.ctrlYawDelta = look.has("dYaw") ? look.get("dYaw").getAsFloat() : 0f;
+            bot.ctrlPitchDelta = look.has("dPitch") ? look.get("dPitch").getAsFloat() : 0f;
+            bot.ctrlHoldTicks = 3;
 
             if (bot.pitch > 89f)
                 bot.pitch = 89f;
@@ -500,8 +696,9 @@ public class FakeBotManager {
             if (DEBUG_MOVE)
                 System.out.println("[PAYLOAD MOVE] keys=" + payload.keySet()
                         + " move=" + move.toString());
-            bot.forward = move.has("forward") ? move.get("forward").getAsDouble() : 0.0;
-            bot.strafe = move.has("strafe") ? move.get("strafe").getAsDouble() : 0.0;
+            bot.ctrlForward = move.has("forward") ? (float) move.get("forward").getAsDouble() : 0f;
+            bot.ctrlStrafe  = move.has("strafe")  ? (float) move.get("strafe").getAsDouble()  : 0f;
+            bot.ctrlHoldTicks = 3;
 
             if (DEBUG_DEEP_MOVE)
                 System.out.println("[BOT INPUT] seq=" + bot.stepSeq
@@ -513,9 +710,12 @@ public class FakeBotManager {
                 System.out.println("[PAYLOAD NO-MOVE] keys=" + payload.keySet());
         }
 
-        bot.jump = payload.has("jump") && payload.get("jump").getAsBoolean();
-        bot.sprint = payload.has("sprint") && payload.get("sprint").getAsBoolean();
-        bot.sneak = payload.has("sneak") && payload.get("sneak").getAsBoolean();
+        if (payload.has("jump") || payload.has("sprint") || payload.has("sneak")) {
+            bot.ctrlJump   = payload.has("jump")   && payload.get("jump").getAsBoolean();
+            bot.ctrlSprint = payload.has("sprint") && payload.get("sprint").getAsBoolean();
+            bot.ctrlSneak  = payload.has("sneak")  && payload.get("sneak").getAsBoolean();
+            bot.ctrlHoldTicks = Math.max(bot.ctrlHoldTicks, 3);
+        }
 
         if (payload.has("select_slot")) {
             bot.selectSlot = payload.get("select_slot").getAsInt();

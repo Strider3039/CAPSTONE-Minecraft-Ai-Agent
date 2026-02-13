@@ -46,6 +46,13 @@ public class ServerBridgeWebSocketClient {
                 public void onOpen(ServerHandshake handshakedata) {
                     System.out.println("[AI-BOT][SERVER-WS] Connected to " + uri);
                     connecting.set(false);
+
+                    // NEW: identify this websocket as the SERVER
+                    JsonObject hello = new JsonObject();
+                    hello.addProperty("proto", "1");
+                    hello.addProperty("kind", "hello");
+                    hello.addProperty("role", "server");
+                    send(hello.toString());
                 }
 
                 @Override
@@ -194,7 +201,7 @@ public class ServerBridgeWebSocketClient {
             System.out.println("[AI-BOT][SERVER-WS] sendJson SKIP (socket not open) kind=" + kind + " seq=" + seq);
             return;
         }
-        System.out.println("[AI-BOT][SERVER-WS] OUT " + s);
+        if (DEBUG_WS) System.out.println("[AI-BOT][SERVER-WS] OUT " + s);
         if (DEBUG_WS) System.out.println("[AI-BOT][SERVER-WS] sendJson TEXT kind=" + kind + " seq=" + seq + " bytes=" + s.length());
 
         client.send(s);

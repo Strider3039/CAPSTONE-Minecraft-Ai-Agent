@@ -163,12 +163,26 @@ public class ForgeWebSocketClient extends WebSocketClient {
 
     @Override
     public void onOpen(ServerHandshake handshake) {
+
+        // NEW: If we're in multiplayer / dedicated context, client WS must not be active.
+        if (!shouldClientWebSocketBeEnabled()) {
+            System.out.println("[WS] Connected but CLIENT WS is disabled in this mode. Closing.");
+            try { close(); } catch (Exception ignored) {}
+            return;
+        }
         System.out.println("[WS] Connected to AI bridge");
         bridgeReady.set(true);
 
         // IMPORTANT: reset stale sequence tracking on a new connection
         lastAckSeq = -1;
         inflight.clear();
+
+        // NEW: identify this websocket as the CLIENT
+        JsonObject hello = new JsonObject();
+        hello.addProperty("proto", "1");
+        hello.addProperty("kind", "hello");
+        hello.addProperty("role", "client");
+        send(hello.toString());
 
         emitBridgeHealth("info", "connected");
         sendBridgeReady();
@@ -238,7 +252,7 @@ public class ForgeWebSocketClient extends WebSocketClient {
                 return;
             }
 
-            long seq = json.has("seq") ? json.get("seq").getAsLong() : -1;
+            int seq = json.has("seq") ? json.get("seq").getAsInt() : -1;
             String actionId = json.has("action_id") ? json.get("action_id").getAsString() : "unknown";
 
             // Stale protection: drops replays/out-of-order actions
@@ -249,10 +263,21 @@ public class ForgeWebSocketClient extends WebSocketClient {
             lastAckSeq = seq;
 
             JsonObject payload = json.getAsJsonObject("payload");
+            boolean needsAck = actionNeedsAck(json, payload);
+
+            // NEW: refuse control if client WS is disabled in this environment
+            if (!shouldClientWebSocketBeEnabled()) {
+                System.out.println("[WS] Dropping action: client WS disabled in multiplayer/dedicated. seq=" + seq);
+                if (needsAck) {
+                    emitActionResult(seq, actionId, "fail", "client_ws_disabled_in_multiplayer");
+                }
+                return;
+            }
+
             if (payload == null) return;
 
             if (!isAiEnabled()) {
-                emitActionResult(actionId, "ignored", "ai_disabled");
+                emitActionResult(seq, actionId, "blocked", "ai_disabled");
                 return;
             }
 
@@ -270,15 +295,36 @@ public class ForgeWebSocketClient extends WebSocketClient {
                 mc.execute(() -> {
                     try {
                         releaseAllKeys(mc);
-                        forwardActionToServer(payload);
-                        emitActionResult(actionId, "forwarded", "server_bot");
+                        int deadlineMs = json.has("deadline_ms") ? json.get("deadline_ms").getAsInt() : 50;
+                        forwardActionToServer(seq, actionId, deadlineMs, payload);
+
+                        // IMPORTANT:
+                        // Do NOT emit action_result on success in SERVER_BOT mode.
+                        // The dedicated server mod will emit the real action_result for the seq.
                     } catch (Exception e) {
-                        emitActionResult(actionId, "fail", "forward_exception");
+                        // If forwarding fails, respond so Python doesn't hang.
+                        if (needsAck) {
+                            emitActionResult(seq, actionId, "fail", "forward_exception");
+                        }
                         System.err.println("[WS] forwardActionToServer error: " + e.getMessage());
                     }
                 });
             } else {
-                mc.execute(() -> handleStructuredAction(actionId, payload, mc));
+                mc.execute(() -> {
+                    try {
+                        handleStructuredAction(seq, actionId, payload, mc);
+
+                        // ACK discrete actions to prevent Python timeouts
+                        if (needsAck) {
+                            emitActionResult(seq, actionId, "success", "client_player");
+                        }
+                    } catch (Exception e) {
+                        if (needsAck) {
+                            emitActionResult(seq, actionId, "fail", "client_exception");
+                        }
+                        System.err.println("[WS] handleStructuredAction error: " + e.getMessage());
+                    }
+                });
             }
 
         } catch (Exception e) {
@@ -286,30 +332,77 @@ public class ForgeWebSocketClient extends WebSocketClient {
         }
     }
 
+    private static boolean shouldClientWebSocketBeEnabled() {
+        Minecraft mc = Minecraft.getInstance();
+        return mc.hasSingleplayerServer();
+    }
+
+    private boolean canClientSendToBridge() {
+        return shouldClientWebSocketBeEnabled() && bridgeReady.get() && this.isOpen();
+    }
+
     // ───────────────────────────────────────────────
     // Mode B: forward payload to server via Forge packet
     // ───────────────────────────────────────────────
 
-    private void forwardActionToServer(JsonObject payload) {
+    private void forwardActionToServer(int seq, String actionId, int deadlineMs, JsonObject payload) {
         if (payload == null) return;
-        BotNet.CHANNEL.sendToServer(new C2SBotActionPacket(payload.toString()));
+        if (actionId == null || actionId.isBlank())
+            actionId = "unknown";
+        if (deadlineMs <= 0)
+            deadlineMs = 50;
+
+        JsonObject env = new JsonObject();
+        env.addProperty("proto", "1");
+        env.addProperty("kind", "action");
+        env.addProperty("seq", seq);
+        env.addProperty("action_id", actionId);
+        env.addProperty("deadline_ms", deadlineMs);
+        env.add("payload", payload);
+
+        BotNet.CHANNEL.sendToServer(new C2SBotActionPacket(env.toString()));
     }
+
+    private static boolean actionNeedsAck(JsonObject json, JsonObject payload) {
+        // Prefer explicit await_result if present
+        if (json.has("await_result") && json.get("await_result").isJsonPrimitive()) {
+            try {
+                return json.get("await_result").getAsBoolean();
+            } catch (Exception ignored) {
+            }
+        }
+        // Fallback: infer discrete actions from payload keys
+        if (payload == null)
+            return false;
+        return payload.has("select_slot") || payload.has("attack") || payload.has("use");
+    }
+
+    // Use ONLY schema-allowed statuses
+    private static String normalizeStatus(String s) {
+        if (s == null)
+            return "fail";
+        return switch (s) {
+            case "success", "fail", "cooldown", "blocked", "timeout" -> s;
+            default -> "success"; // treat "forwarded"/"ignored" as success in client bridge
+        };
+    }
+
 
     // ───────────────────────────────────────────────
     // Mode A: local execution on LocalPlayer
     // ───────────────────────────────────────────────
 
-    private void handleStructuredAction(String actionId, JsonObject payload, Minecraft mc) {
+    private void handleStructuredAction(int actionSeq, String actionId, JsonObject payload, Minecraft mc) {
 
         if (!isAiEnabled()) {
             releaseAllKeys(mc);
-            emitActionResult(actionId, "ignored", "ai_disabled");
+            emitActionResult(actionSeq, actionId, "blocked", "ai_disabled");
             return;
         }
 
         LocalPlayer p = mc.player;
         if (p == null) {
-            emitActionResult(actionId, "fail", "no_player");
+            emitActionResult(actionSeq, actionId, "fail", "no_player");
             return;
         }
 
@@ -410,7 +503,7 @@ public class ForgeWebSocketClient extends WebSocketClient {
             System.err.println("[WS] Action exec error: " + e.getMessage());
         }
 
-        emitActionResult(actionId, status, reason);
+        emitActionResult(actionSeq, actionId, status, reason);
     }
 
     private static void doAttack(Minecraft mc) {
@@ -453,35 +546,30 @@ public class ForgeWebSocketClient extends WebSocketClient {
     // Emitters
     // ───────────────────────────────────────────────
 
-    private void emitActionResult(String actionId, String status, String reason) {
-        long now = System.currentTimeMillis();
-        long latency = 0L;
+    private void emitActionResult(int seq, String actionId, String status, String reason) {
+        JsonObject ar = new JsonObject();
+        ar.addProperty("action_id", actionId);
+        ar.addProperty("status", normalizeStatus(status));
+        ar.addProperty("server_tick", 0);
+        ar.addProperty("ts_server", System.currentTimeMillis() / 1000.0);
 
-        try {
-            Long sent = actionTimestamps.remove(actionId);
-            if (sent != null) latency = now - sent;
-        } catch (Exception ignored) {}
+        if (reason != null)
+            ar.addProperty("reason", reason);
 
         JsonObject payload = new JsonObject();
-        JsonObject result = new JsonObject();
-        result.addProperty("action_id", actionId);
-        result.addProperty("status", status);
-        if (reason != null && !reason.isEmpty()) result.addProperty("reason", reason);
-        result.addProperty("server_tick",
-                Minecraft.getInstance().level != null ? Minecraft.getInstance().level.getGameTime() : 0);
-        result.addProperty("ts_server", now / 1000.0);
-        result.addProperty("latency_ms", latency);
+        payload.add("action_result", ar);
 
-        payload.add("action_result", result);
+        JsonObject msg = new JsonObject();
+        msg.addProperty("proto", "1");
+        msg.addProperty("kind", "action_result");
+        msg.addProperty("seq", seq);
+        msg.addProperty("timestamp", System.currentTimeMillis() / 1000.0);
+        msg.add("payload", payload);
 
-        JsonObject evt = new JsonObject();
-        evt.addProperty("proto", "1");
-        evt.addProperty("kind", "action_result");
-        evt.addProperty("seq", seqCounter.incrementAndGet());
-        evt.addProperty("timestamp", now / 1000.0);
-        evt.add("payload", payload);
+        if (canClientSendToBridge()) {
+            this.send(BotMod.GSON.toJson(msg));
+        }
 
-        send(evt.toString());
     }
 
     private void emitBridgeHealth(String level, String detail) {
@@ -498,7 +586,9 @@ public class ForgeWebSocketClient extends WebSocketClient {
         evt.addProperty("timestamp", System.currentTimeMillis() / 1000.0);
         evt.add("payload", payload);
 
-        send(evt.toString());
+        if (canClientSendToBridge()) {
+            send(evt.toString());
+        }
     }
 
     private void sendBridgeReady() {
@@ -519,7 +609,9 @@ public class ForgeWebSocketClient extends WebSocketClient {
         evt.addProperty("timestamp", System.currentTimeMillis() / 1000.0);
         evt.add("payload", payload);
 
-        send(evt.toString());
+        if (canClientSendToBridge()) {
+            send(evt.toString());
+        }
     }
 
     public void emitEpisodeStart() {
@@ -535,6 +627,8 @@ public class ForgeWebSocketClient extends WebSocketClient {
         evt.addProperty("timestamp", System.currentTimeMillis() / 1000.0);
         evt.add("payload", payload);
 
-        send(evt.toString());
+        if (canClientSendToBridge()) {
+            send(evt.toString());
+        }
     }
 }

@@ -71,6 +71,13 @@ public class ServerBotHooks {
         if (!spawned) return;
 
         MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+
+        // If this is an integrated server (singleplayer), don't run server-side bot obs.
+        // In singleplayer we want client-side obs controlling the local player instead.
+        if (!server.isDedicatedServer()) {
+            return;
+        }
+
         if (!shouldRun(server)) return;
 
         ServerLevel level = server.overworld();

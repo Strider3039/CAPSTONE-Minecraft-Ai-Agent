@@ -236,6 +236,11 @@ async def HeartBeatLoop(ws: WebSocketServerProtocol, stopEvt: asyncio.Event) -> 
 # Main connection handler
 
 async def Handle(ws: WebSocketServerProtocol) -> None:
+
+    ws_role = None
+    ws_ready = asyncio.Event()
+    closing = False
+
     log = stdlog.getLogger("bridge.server")
 
     log.info(
@@ -271,6 +276,14 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
     seqCounter = 0
 
     async def SendAction(actionMsg: dict, timeoutMs: int = 300, wait_for_result: bool = False):
+
+        if stopEvt.is_set():
+            raise ConnectionError("bridge stopping")
+        if ws.closed:
+            raise ConnectionError("ws closed")
+        if not ws_ready.is_set():
+            raise ConnectionError("ws not ready (no hello)")
+        
         timeoutMs = max(timeoutMs, actionMsg.get("deadline_ms", 50) + 1000)
         nonlocal seqCounter
         seqCounter += 1
@@ -281,11 +294,23 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
         actionMsg.setdefault("kind", "action")
         actionMsg.setdefault("timestamp", time.time())
 
-        is_move = bool(actionMsg.get("payload", {}).get("move"))
+        payload = actionMsg.get("payload", {}) if isinstance(actionMsg.get("payload", {}), dict) else {}
+        is_control = bool(payload.get("move")) or bool(payload.get("look"))
 
-        # movement should not block the pipeline
-        if is_move:
+        # Option 1: make control last multiple ticks to reduce choppiness (3–5 ticks)
+        # Minecraft tick is 50ms. 150ms ≈ 3 ticks, 250ms ≈ 5 ticks.
+        if is_control:
+            actionMsg["deadline_ms"] = max(int(actionMsg.get("deadline_ms", 0) or 0), 150)
+
+
+        if "await_result" in actionMsg:
+            wait_for_result = bool(actionMsg["await_result"])
+
+
+        # control should not block the pipeline
+        if is_control:
             wait_for_result = False
+
 
         # ---- REQUIRED by schema + Java: action_id must be TOP-LEVEL
         if not actionMsg.get("action_id"):
@@ -301,33 +326,29 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
 
         seq = actionMsg["seq"]  # <-- int correlation key (matches Java replies)
 
+        if actionMsg.get("payload", {}).get("move"):
+            log.debug("TX MOVE", extra={"seq": seq, "payload": actionMsg["payload"]})
+        else:
+            log.debug("TX ACTION", extra={"seq": seq, "action_id": actionMsg.get("action_id"), "payload_keys": list(actionMsg.get("payload", {}).keys())})
+
+
         if not wait_for_result:
-            await ws.send(_dumps(actionMsg))  # TEXT
+            await ws.send(_dumps(actionMsg))
             return None
 
         fut = asyncio.get_running_loop().create_future()
         pending[seq] = fut
 
-        if actionMsg.get("payload", {}).get("move"):
-            log.info("TX MOVE", extra={"seq": actionMsg["seq"], "payload": actionMsg["payload"]})
-        else:
-            log.info("TX NOMOVE", extra={"seq": actionMsg["seq"], "payload_keys": list(actionMsg.get("payload", {}).keys())})
-
-        log.info(
-            "ws send action",
-            extra={
-                "ws_id": id(ws),
-                "seq": actionMsg.get("seq"),
-            }
-        )
-
-
-        await ws.send(_dumps(actionMsg))  # TEXT
+        # ✅ SEND BEFORE WAITING
+        await ws.send(_dumps(actionMsg))
 
         try:
             return await asyncio.wait_for(fut, timeout=timeoutMs / 1000)
         except asyncio.TimeoutError:
             actState["actionTimeouts"] += 1
+            pending.pop(seq, None)
+            raise
+        except Exception:
             pending.pop(seq, None)
             raise
 
@@ -440,9 +461,6 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
         )
     )
 
-    # Start first episode when connection opens
-    await start_new_episode(ws, obsQueue, obsState)
-
     # Receive loop
 
     try:
@@ -463,6 +481,24 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
 
             kind = msg.get("kind")
 
+            if kind == "hello":
+                ws_role = msg.get("role")
+                log.info("ws hello", extra={"ws_id": id(ws), "role": ws_role})
+
+                # If we're in dedicated/server-bot mode, ONLY accept role=server
+                if runtime_cfg.get("control_mode") == "SERVER_BOT" and ws_role != "server":
+                    log.warning("rejecting non-server ws in SERVER_BOT", extra={"ws_id": id(ws), "role": ws_role})
+                    await ws.close()
+                    return
+
+                ws_ready.set()
+
+                if episode_start_time is None:
+                    await start_new_episode(ws, obsQueue, obsState)
+                continue
+
+
+
             if kind == "observation":
                 try:
                     validate(instance=msg, schema=OBS)
@@ -482,11 +518,34 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
                 await EnqueueObservation(obsQueue, msg, obsState)
 
             elif kind == "action_result":
+                # Compatibility shim: some Java builds may emit status="forwarded"
+                try:
+                    if (
+                        isinstance(msg, dict)
+                        and msg.get("kind") == "action_result"
+                        and isinstance(msg.get("payload"), dict)
+                        and isinstance(msg["payload"].get("action_result"), dict)
+                        and msg["payload"]["action_result"].get("status") == "forwarded"
+                    ):
+                        msg["payload"]["action_result"]["status"] = "success"
+                except Exception:
+                    pass
+                
+                msg_kind = msg.get("kind")
+
                 try:
                     validate(instance=msg, schema=EVT)
-                    log.debug("event validated", extra={"kind": kind, "seq": msg.get("seq")})
+                    log.debug("event validated", extra={"kind": msg_kind, "seq": msg.get("seq")})
                 except ValidationError as ve:
-                    log.warning("action_result failed schema", extra={"error": ve.message, "path": list(ve.path), "msg": msg})
+                    log.warning(
+                        "action_result failed schema",
+                        extra={"error": ve.message, "path": list(ve.path), "raw": msg},
+                    )
+
+                    continue
+
+                if "seq" not in msg:
+                    log.warning("action_result missing seq", extra={"raw": msg})
                     continue
 
                 seq = int(msg["seq"])
@@ -552,9 +611,24 @@ async def Handle(ws: WebSocketServerProtocol) -> None:
 
     except (ConnectionClosed, ConnectionClosedOK, ConnectionClosedError):
         log.info("client disconnected")
+        closing = True
+
+        # NEW: immediately fail all pending action waits (prevents TimeoutError)
+        for seq, fut in list(pending.items()):
+            if not fut.done():
+                fut.set_exception(ConnectionError("ws disconnected"))
+        pending.clear()
 
     finally:
+        closing = True
         stopEvt.set()
+
+        # NEW: also fail pending here (covers any exit path)
+        for seq, fut in list(pending.items()):
+            if not fut.done():
+                fut.set_exception(ConnectionError("ws closing"))
+        pending.clear()
+
         for t in tasks:
             t.cancel()
         with contextlib.suppress(Exception):
