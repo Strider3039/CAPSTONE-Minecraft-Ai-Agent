@@ -30,16 +30,45 @@ public class AIBotCommand {
                 )
                 .then(
                     Commands.literal("info")
-                        .executes(ctx -> showInfo(ctx.getSource()))
-                )   
+                        .executes(ctx -> {
+                            
+                            showInfo(ctx.getSource());
+                            ctx.getSource().sendSuccess(() -> Component.literal("Bots: " + ServerBotHooks.BOTS.getBotIds()), 
+                            false);
+
+                            return 1;
+                        
+                        })
+                        
+                    )
+                .then(
+                    Commands.literal("tptoself")
+                        .executes(ctx -> {
+                            ServerPlayer player = ctx.getSource().getPlayerOrException();
+
+                            boolean ok = ServerBotHooks.BOTS.teleportBotToPlayer(player, "agent0");
+
+                            if (ok) {
+                                ctx.getSource().sendSuccess(() -> Component.literal("§a[AI-BOT] agent0 teleported to you."), false);
+                                return 1;
+                            } else {
+                                ctx.getSource().sendFailure(Component.literal("§c[AI-BOT] Teleport failed (bot missing or different dimension)."));
+                                return 0;
+                            }
+                        })
+                )
         );
     }
 
     private static int spawnBot(CommandSourceStack source) {
         MinecraftServer server = source.getServer();
-        ServerLevel level = server.overworld();
+        if (server == null) {
+            source.sendFailure(Component.literal("§c[AI-BOT] Server is null."));
+            return 0;
+        }
 
-        if (server == null || level == null) {
+        ServerLevel level = server.overworld();
+        if (level == null) {
             source.sendFailure(Component.literal("§c[AI-BOT] Failed to get overworld level."));
             return 0;
         }
@@ -55,23 +84,24 @@ public class AIBotCommand {
 
     private static int showInfo(CommandSourceStack source) {
         var bots = ServerBotHooks.BOTS.getAllBots();
-        
-        if (bots.isEmpty()) {
+
+        if (bots == null || bots.isEmpty()) {
             source.sendFailure(Component.literal("§c[AI-BOT] No bots spawned."));
             return 0;
         }
-        
-        var bot = bots.get(0); // Get first bot
+
+        var bot = bots.iterator().next(); // ✅ no List indexing
+
         if (bot.player == null) {
             source.sendFailure(Component.literal("§c[AI-BOT] Bot player is null."));
             return 0;
         }
-        
+
         String dimension = bot.player.level().dimension().location().toString();
         double x = bot.player.getX();
         double y = bot.player.getY();
         double z = bot.player.getZ();
-        
+
         source.sendSuccess(
             () -> Component.literal(String.format(
                 "§a[AI-BOT] Dimension: %s | Pos: (%.2f, %.2f, %.2f)",

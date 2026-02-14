@@ -2,6 +2,7 @@ package com.example.aiagent.client;
 
 import com.example.aiagent.BotMod;
 import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.event.lifecycle.FMLClientSetupEvent;
@@ -14,5 +15,8 @@ public final class ClientBootstrap {
         // Runs ONLY on client. Safe. No DistExecutor needed.
         event.enqueueWork(ClientBridgeHooks::init);
         System.out.println("[AI-BOT] ClientBootstrap: ClientBridgeHooks.init enqueued.");
+        event.enqueueWork(() -> {
+            MinecraftForge.EVENT_BUS.addListener(ClientGhostBots::onRenderTick);
+        });
     }
 }

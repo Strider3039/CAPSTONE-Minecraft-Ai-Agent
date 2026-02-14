@@ -19,10 +19,15 @@ import net.minecraftforge.network.PacketDistributor;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.item.ItemStack;
 
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.Map;
+import java.util.Set;
+import java.util.HashMap;
 
 /**
  * FakeBotManager (SERVER SIDE)
@@ -95,6 +100,7 @@ public class FakeBotManager {
 
     public static class FakeBot {
         public final ServerPlayer player;
+        public final String botId = "agent0"; // for now we only support one bot, so hardcode the ID (important for ghost tracking)
 
         // Control state (latest received)
         public float yaw = 0f;
@@ -121,6 +127,8 @@ public class FakeBotManager {
 
         int ctrlHoldTicks = 0;  // counts down each server tick
 
+        public boolean forceStateSync = false; // if true, will send AgentState to clients on next tick (use this if you do a teleport or other non-physics-based movement)
+
         // --- Step execution state ---
         public boolean stepActive = false;
         public int stepTicksRemaining = 0;
@@ -133,6 +141,9 @@ public class FakeBotManager {
         // edge detection for click-like actions
         public boolean lastAttack = false;
         public boolean lastUse = false;
+
+        // one-tick pulse for client ghost animation
+        public boolean swingMainHandPulse = false;
 
         public FakeBot(ServerPlayer player) {
             this.player = player;
@@ -147,7 +158,7 @@ public class FakeBotManager {
     // updates/sec.
     private static final int STATE_SYNC_PERIOD_TICKS = 1;
 
-    private final List<FakeBot> bots = new CopyOnWriteArrayList<>();
+    private final Map<String, FakeBot> bots = new HashMap<>();
     private final ConcurrentLinkedQueue<String> pendingActionJson = new ConcurrentLinkedQueue<>();
 
     private final ConcurrentLinkedQueue<StepRequest> pendingSteps = new ConcurrentLinkedQueue<>();
@@ -161,9 +172,57 @@ public class FakeBotManager {
         return completedStepResults;
     }
 
-    public List<FakeBot> getAllBots() {
-        return bots;
+    public Collection<FakeBot> getAllBots() {
+        return bots.values();
     }
+
+    public Set<String> getBotIds() {
+        return bots.keySet();
+    }
+
+    public boolean teleportBotToPlayer(ServerPlayer caller, String botId) {
+    FakeBot bot = bots.get(botId);
+    if (bot == null || bot.player == null) return false;
+
+    // For now: only support same-dimension teleports (keeps it safe & deterministic)
+    if (bot.player.level() != caller.level()) {
+        System.out.println("[AI-BOT] Refusing teleport: bot and caller are in different dimensions.");
+        return false;
+    }
+
+    final double x = caller.getX();
+    final double y = caller.getY();
+    final double z = caller.getZ();
+    final float yaw = caller.getYRot();
+    final float pitch = caller.getXRot();
+
+    // Stop motion/state that could fight the move
+    bot.player.stopRiding();
+    bot.player.setDeltaMovement(0, 0, 0);
+    bot.player.fallDistance = 0;
+
+    // IMPORTANT: raw position set bypasses ServerPlayer connection teleport logic
+    bot.player.setPosRaw(x, y, z);
+
+    // Rotation (set both current and "old" so it doesn't snap back)
+    bot.player.setYRot(yaw);
+    bot.player.setXRot(pitch);
+    bot.player.yRotO = yaw;
+    bot.player.xRotO = pitch;
+
+    // Head/body for rendering correctness
+    bot.player.setYHeadRot(yaw);
+    bot.player.yBodyRot = yaw;
+
+    // Mark dirty so tracking/clients update
+    bot.player.hasImpulse = true;
+    bot.player.hurtMarked = true;
+
+    System.out.println("[AI-BOT] Teleported " + botId + " to "
+            + bot.player.getX() + ", " + bot.player.getY() + ", " + bot.player.getZ());
+
+    return true;
+}
 
     public JsonObject pollCompletedResult() {
         return completedStepResults.poll();
@@ -223,7 +282,7 @@ public class FakeBotManager {
         ensureAddedToWorld(level, fp);
 
         FakeBot bot = new FakeBot(fp);
-        bots.add(bot);
+        bots.put(bot.botId, bot);
 
         System.out.println("[AI-BOT] Default FakeBot spawned: " + DEFAULT_BOT_NAME + " at " + spawn
                 + " in " + level.dimension().location());
@@ -241,26 +300,39 @@ public class FakeBotManager {
         // Convert incoming JSON into queued steps
         drainActions();
 
-        for (FakeBot bot : bots) {
-            if (bot == null || bot.player == null) continue;
-            if (!bot.player.isAlive()) continue;
-            if (!(bot.player.level() instanceof ServerLevel level)) continue;
+        for (FakeBot bot : bots.values()) {
+            if (bot == null || bot.player == null)
+                continue;
+            if (!bot.player.isAlive())
+                continue;
+            if (!(bot.player.level() instanceof ServerLevel level))
+                continue;
 
             bot.player.setNoGravity(false);
             bot.player.noPhysics = false;
 
             // --- State sync to clients for ghost rendering ---
-            if ((tickCounter % STATE_SYNC_PERIOD_TICKS) == 0) {
+            if (bot.forceStateSync || (tickCounter % STATE_SYNC_PERIOD_TICKS) == 0) {
+                bot.forceStateSync = false;
+                final boolean swingPulse = bot.swingMainHandPulse;
+                long serverTick = level.getGameTime(); // authoritative server tick
+                Vec3 v = bot.player.getDeltaMovement();
+
                 S2CBotStatePacket msg = new S2CBotStatePacket(
                         "agent0",
+                        serverTick,
                         bot.player.getX(), bot.player.getY(), bot.player.getZ(),
+                        v.x, v.y, v.z,
                         bot.player.getYRot(), bot.player.getXRot(),
-                        bot.player.onGround());
+                        bot.player.onGround(),
+                        swingPulse
+                );
                 BotNet.CHANNEL.send(PacketDistributor.DIMENSION.with(() -> level.dimension()), msg);
+                bot.swingMainHandPulse = false;
             }
 
             // -----------------------------
-            // STEP STATE MACHINE (lifecycle)
+            // STEP STATE MACHINE
             // -----------------------------
 
             // Start a new step if idle
@@ -291,57 +363,85 @@ public class FakeBotManager {
                 }
             }
 
-            // If stepActive, it must always have valid correlation fields
-            if (bot.stepActive) {
-                if (bot.stepSeq < 0 || bot.stepActionId == null || bot.stepActionId.isBlank()) {
-                    System.out.println("[AI-BOT] WARNING: stepActive but missing seq/action_id; forcing reset. "
-                            + "name=" + bot.player.getGameProfile().getName()
-                            + " stepSeq=" + bot.stepSeq
-                            + " actionId=" + bot.stepActionId);
-
-                    // Full reset because state is corrupted
-                    clearAllControls(bot);
-                    bot.stepActive = false;
-                    bot.stepTicksRemaining = 0;
-                    bot.stepAction = null;
-                    bot.stepSeq = -1;
-                    bot.stepActionId = null;
-                } else {
-                    // Apply the step payload for this tick (updates ctrl* / one-shots)
-                    applyPayloadToBot(bot.stepAction, bot);
-
-                    if (DEBUG_MOVE) {
-                        System.out.println("[STEP TICK] seq=" + bot.stepSeq
-                                + " action_id=" + bot.stepActionId
-                                + " f=" + bot.forward
-                                + " s=" + bot.strafe
-                                + " jump=" + bot.jump
-                                + " sprint=" + bot.sprint
-                                + " sneak=" + bot.sneak);
-                    }
-
-                    // Decrement step timer AFTER applying payload for this tick
-                    bot.stepTicksRemaining--;
-                }
+            // If there is no active step, do nothing this tick (vanilla physics still runs)
+            if (!bot.stepActive) {
+                continue;
             }
 
             // -----------------------------
-            // PER-TICK CONTROL APPLICATION (always run)
+            // ACTIVE STEP TICK
             // -----------------------------
 
-            // Hold last continuous controls for a short TTL so we behave like held keys.
-            materializeContinuousControls(bot);
+            // Invariant: stepActive must always have valid correlation fields
+            if (bot.stepSeq < 0 || bot.stepActionId == null || bot.stepActionId.isBlank()) {
+                System.out.println("[AI-BOT] WARNING: stepActive but missing seq/action_id; forcing reset. "
+                        + "name=" + bot.player.getGameProfile().getName()
+                        + " stepSeq=" + bot.stepSeq
+                        + " actionId=" + bot.stepActionId);
+
+                // Full reset because state is corrupted
+                clearAllControls(bot);
+                bot.stepActive = false;
+                bot.stepTicksRemaining = 0;
+                bot.stepAction = null;
+                bot.stepSeq = -1;
+                bot.stepActionId = null;
+                continue;
+            }
+
+            // Apply the step action each tick
+            applyPayloadToBot(bot.stepAction, bot);
+
+            if (DEBUG_MOVE) {
+                System.out.println("[STEP TICK] seq=" + bot.stepSeq
+                        + " action_id=" + bot.stepActionId
+                        + " f=" + bot.forward
+                        + " s=" + bot.strafe
+                        + " jump=" + bot.jump
+                        + " sprint=" + bot.sprint
+                        + " sneak=" + bot.sneak);
+            }
+
+            // --- NEW: apply continuous controls from ctrl* with short TTL ---
+            if (bot.ctrlHoldTicks > 0) {
+
+                // Apply look deltas deterministically
+                bot.yaw += bot.ctrlYawDelta;
+                bot.pitch += bot.ctrlPitchDelta;
+                if (bot.pitch > 89f) bot.pitch = 89f;
+                if (bot.pitch < -89f) bot.pitch = -89f;
+
+                // Materialize movement controls for this tick
+                bot.forward = bot.ctrlForward;
+                bot.strafe  = bot.ctrlStrafe;
+                bot.jump    = bot.ctrlJump;
+                bot.sprint  = bot.ctrlSprint;
+                bot.sneak   = bot.ctrlSneak;
+
+                bot.ctrlHoldTicks--;
+
+            } else {
+                // No recent control update -> decay to neutral
+                bot.forward = 0.0;
+                bot.strafe  = 0.0;
+                bot.jump    = false;
+                bot.sprint  = false;
+                bot.sneak   = false;
+
+                bot.ctrlYawDelta = 0f;
+                bot.ctrlPitchDelta = 0f;
+            }
 
             // 1) apply look/hotbar/attack/use
             applyLookAndHotbarAndActions(bot, level);
 
-            // 2) apply movement / physics integration
+            // 2) apply movement FOR THIS STEP ONLY
             applyMovementTravel(bot);
 
-            // -----------------------------
-            // STEP FINISH (emit obs + ack) 
-            // -----------------------------
-            if (bot.stepActive && bot.stepTicksRemaining <= 0) {
+            // Count down
+            bot.stepTicksRemaining--;
+
+            if (bot.stepTicksRemaining <= 0) {
                 int finishedSeq = bot.stepSeq;
                 String finishedActionId = bot.stepActionId;
 
@@ -366,48 +466,17 @@ public class FakeBotManager {
                     }
                 }
 
-                // Clear one-shot actions so clicks don't repeat; keep ctrl* for short persistence
-                clearOneShotControls(bot);
-
-                // Reset step fields
-                bot.stepActive = false;
-                bot.stepTicksRemaining = 0;
-                bot.stepAction = null;
-                bot.stepSeq = -1;
-                bot.stepActionId = null;
             }
+
+            // Clear one-shot actions so clicks don't repeat; keep ctrl* for short persistence
+            clearOneShotControls(bot);
+            bot.stepActive = false;
+            bot.stepTicksRemaining = 0;
+            bot.stepAction = null;
+            bot.stepSeq = -1;
+            bot.stepActionId = null;
         }
-    }
 
-    private void materializeContinuousControls(FakeBot bot) {
-        // Apply continuous controls from ctrl* with short TTL (behaves like held keys).
-        if (bot.ctrlHoldTicks > 0) {
-
-            // Apply look deltas deterministically (treated as per-tick rates)
-            bot.yaw += bot.ctrlYawDelta;
-            bot.pitch += bot.ctrlPitchDelta;
-            if (bot.pitch > 89f) bot.pitch = 89f;
-            if (bot.pitch < -89f) bot.pitch = -89f;
-
-            // Materialize movement controls for this tick
-            bot.forward = bot.ctrlForward;
-            bot.strafe  = bot.ctrlStrafe;
-            bot.jump    = bot.ctrlJump;
-            bot.sprint  = bot.ctrlSprint;
-            bot.sneak   = bot.ctrlSneak;
-
-            bot.ctrlHoldTicks--;
-        } else {
-            // No recent control update -> decay to neutral
-            bot.forward = 0.0;
-            bot.strafe  = 0.0;
-            bot.jump    = false;
-            bot.sprint  = false;
-            bot.sneak   = false;
-
-            bot.ctrlYawDelta = 0f;
-            bot.ctrlPitchDelta = 0f;
-        }
     }
 
     private void drainActions() {
@@ -509,7 +578,7 @@ public class FakeBotManager {
     }
 
     private FakeBot getDefaultBot() {
-        for (FakeBot b : bots) {
+        for (FakeBot b : bots.values()) {
             if (b.player != null && DEFAULT_BOT_UUID.equals(b.player.getUUID())) {
                 return b;
             }
@@ -833,6 +902,7 @@ private JsonObject buildObservationEvent(int seq, FakeBot bot, ServerLevel level
         // -----------------------------
         if (bot.attack && !bot.lastAttack) {
             doServerAttack(level, p);
+            bot.swingMainHandPulse = true;
         }
         bot.lastAttack = bot.attack;
 
@@ -840,7 +910,8 @@ private JsonObject buildObservationEvent(int seq, FakeBot bot, ServerLevel level
         // 5) USE (edge-trigger)
         // -----------------------------
         if (bot.use && !bot.lastUse) {
-            p.swing(InteractionHand.MAIN_HAND);
+            p.swing(InteractionHand.MAIN_HAND, true);
+            bot.swingMainHandPulse = true;
             // Later: real right-click use
             // p.gameMode.useItem(p, level, p.getItemInHand(InteractionHand.MAIN_HAND),
             // InteractionHand.MAIN_HAND);
@@ -892,7 +963,7 @@ private JsonObject buildObservationEvent(int seq, FakeBot bot, ServerLevel level
     }
 
     public void despawnAll() {
-        for (FakeBot b : bots) {
+        for (FakeBot b : bots.values()) {
             if (b == null || b.player == null)
                 continue;
 
