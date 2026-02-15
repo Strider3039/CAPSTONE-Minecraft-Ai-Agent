@@ -16,7 +16,7 @@ public final class ClientBootstrap {
         event.enqueueWork(ClientBridgeHooks::init);
         System.out.println("[AI-BOT] ClientBootstrap: ClientBridgeHooks.init enqueued.");
         event.enqueueWork(() -> {
-            MinecraftForge.EVENT_BUS.addListener(ClientGhostBots::onRenderTick);
+            MinecraftForge.EVENT_BUS.addListener(ClientGhostBots::onClientTick);
         });
     }
 }

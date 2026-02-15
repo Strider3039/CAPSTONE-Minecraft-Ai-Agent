@@ -9,6 +9,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.projectile.ProjectileUtil;
@@ -316,7 +317,7 @@ public class FakeBotManager {
                 bot.forceStateSync = false;
                 final boolean swingPulse = bot.swingMainHandPulse;
                 long serverTick = level.getGameTime(); // authoritative server tick
-                Vec3 v = bot.player.getDeltaMovement();
+                Vec3 v = bot.player.getDeltaMovement().scale(20.0); // blocks/tick -> blocks/second
 
                 S2CBotStatePacket msg = new S2CBotStatePacket(
                         "agent0",
@@ -870,18 +871,31 @@ private JsonObject buildObservationEvent(int seq, FakeBot bot, ServerLevel level
         // -----------------------------
         // 1) LOOK
         // -----------------------------
-        if (bot.pitch > 89f)
-            bot.pitch = 89f;
-        if (bot.pitch < -89f)
-            bot.pitch = -89f;
+        // 1) LOOK
+        bot.pitch = Mth.clamp(bot.pitch, -89f, 89f);
 
+        // Set current rotations
         p.setYRot(bot.yaw);
         p.setXRot(bot.pitch);
+
+        // Head yaw (look direction)
         p.setYHeadRot(bot.yaw);
 
-        p.yRotO = bot.yaw;
-        p.xRotO = bot.pitch;
-        p.yHeadRotO = bot.yaw;
+        // Make body follow head gradually (less robotic)
+        float body = p.yBodyRot;
+        float targetBody = bot.yaw;
+        float maxBodyStep = 10.0f; // degrees per tick (tune 6–12)
+        float delta = Mth.wrapDegrees(targetBody - body);
+        delta = Mth.clamp(delta, -maxBodyStep, maxBodyStep);
+        p.yBodyRot = body + delta;
+
+        // Clamp head relative to body (vanilla-like)
+        float headDelta = Mth.wrapDegrees(bot.yaw - p.yBodyRot);
+        headDelta = Mth.clamp(headDelta, -75f, 75f);
+        p.setYHeadRot(p.yBodyRot + headDelta);
+
+        // Body yaw (torso direction) — critical for player rendering
+        p.yBodyRot = bot.yaw;
 
         // -----------------------------
         // 2) HOTBAR

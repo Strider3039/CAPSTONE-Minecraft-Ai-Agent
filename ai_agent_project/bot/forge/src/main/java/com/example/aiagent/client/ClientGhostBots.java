@@ -11,11 +11,14 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.Entity.RemovalReason;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.event.TickEvent;
+import net.minecraftforge.registries.ForgeRegistry.Snapshot;
 
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
+
+import org.jline.reader.impl.DefaultParser.Bracket;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
@@ -26,30 +29,39 @@ import java.util.Deque;
  * Tick-driven smoothing (20Hz) + vanilla render interpolation.
  *
  * Key design:
- *  - S2C packets ONLY update target state (no ghost movement on packet arrival)
- *  - ClientTickEvent END runs smoothing at fixed dt=1/20
- *  - We write xo/yo/zo + x/y/z each client tick so vanilla interpolation works cleanly
+ * - S2C packets ONLY update target state (no ghost movement on packet arrival)
+ * - ClientTickEvent END runs smoothing at fixed dt=1/20
+ * - We write xo/yo/zo + x/y/z each client tick so vanilla interpolation works
+ * cleanly
  *
- * Register ClientGhostBots::onClientTick on the Forge EVENT_BUS from client bootstrap.
+ * Register ClientGhostBots::onClientTick on the Forge EVENT_BUS from client
+ * bootstrap.
  */
 public final class ClientGhostBots {
 
     private static final Map<String, RemotePlayer> ghosts = new HashMap<>();
-    private static final Map<String, Deque<Snapshot>> snapQueues = new HashMap<>();
+    private static final Map<String, ServerTruth> truthByBot = new HashMap<>();
+    private static final Map<String, GhostSim> simByBot = new HashMap<>();
     private static ClientLevel lastLevel;
 
-    // Client-side estimate of current server tick time (as a double so we can add partialTicks)
-    private static double serverTickNowEstimate = 0.0;
+    private static final boolean DEBUG_GHOST = false;
 
-    // Interpolation delay in server ticks (2 = 100ms at 20 TPS; 3 = 150ms)
-    private static final double DELAY_TICKS = 2.0;
+    private static final double TPS = 20.0;
 
-    private static boolean serverTickInitialized = false;
+    // Client-side physics constants (vanilla-ish)
+    private static final double GRAVITY_PER_TICK = -0.08; // blocks/tick^2
+    private static final double DRAG_AIR = 0.98;          // per tick
 
-    // Snapshot buffer sizing
-    private static final int MAX_SNAPSHOTS = 64;
+    // PD correction tuning (visual)
+    private static final double KP_POS = 0.28;            // position stiffness per tick
+    private static final double KD_VEL = 0.55;            // velocity damping per tick
+    private static final double MAX_CORR_PER_TICK = 0.35; // clamp correction accel-like term (blocks/tick)
 
-    private ClientGhostBots() {}
+    // Hard snap thresholds (authority)
+    private static final double SNAP_POS_ERR = 6.0;       // blocks
+
+    private ClientGhostBots() {
+    }
 
     // ===== Packet ingestion =====
 
@@ -61,116 +73,46 @@ public final class ClientGhostBots {
         // Clear cached ghosts when switching worlds/servers/dimensions
         if (lastLevel != level) {
             ghosts.clear();
-            snapQueues.clear();
+            truthByBot.clear();
+            simByBot.clear();
             lastLevel = level;
-            serverTickNowEstimate = 0.0;
-            serverTickInitialized = false;
             System.out.println("[AI-BOT][CLIENT] Level changed, cleared ghosts.");
         }
 
         RemotePlayer ghost = ghosts.get(s.botId());
-
         if (ghost == null) {
             ghost = spawnGhost(level, s);
             ghosts.put(s.botId(), ghost);
         }
-        // Ensure snapshot queue exists
-        Deque<Snapshot> q = snapQueues.computeIfAbsent(s.botId(), k -> new ArrayDeque<>());
 
-        // Build snapshot (serverTick is REQUIRED)
-        long tick = s.serverTick();
-
-        // If you haven’t added velocity to the packet yet, use Vec3.ZERO for now.
-        // If you DID add it, use new Vec3(s.vx(), s.vy(), s.vz()).
+        // Packet velocities appear to be blocks/sec currently -> convert to blocks/tick
         Vec3 pos = new Vec3(s.x(), s.y(), s.z());
-        Vec3 vel = new Vec3(s.vx(), s.vy(), s.vz());
+        Vec3 velTick = new Vec3(s.vx(), s.vy(), s.vz()).scale(1.0 / TPS);
 
-        Snapshot snap = new Snapshot(
-                tick,
+        ServerTruth truth = new ServerTruth(
+                s.serverTick(),
                 pos,
-                vel,
+                velTick,
                 s.yaw(),
                 s.pitch(),
                 s.onGround()
         );
 
-        // Remove any existing snapshot with the same tick (handle rare duplicates)
-        if (!q.isEmpty() && q.getLast().tick == tick) {
-            q.removeLast();
-        }
+        truthByBot.put(s.botId(), truth);
 
-        // Insert snapshot in-order (handle rare out-of-order)
-        if (!q.isEmpty() && tick <= q.getLast().tick) {
-            insertSorted(q, snap);
-        } else {
-            q.addLast(snap);
-        }
+        // Initialize sim state on first packet (hard snap init)
+        GhostSim sim = simByBot.get(s.botId());
+        if (sim == null) {
+            sim = new GhostSim(truth);
+            simByBot.put(s.botId(), sim);
 
-        // Cap queue size
-        while (q.size() > MAX_SNAPSHOTS) {
-            q.removeFirst();
-        }
-
-        // World change reset safety: initialize server tick estimate on first packet arrival
-        if (!serverTickInitialized) {
-            serverTickNowEstimate = tick;
-            serverTickInitialized = true;
+            // Apply immediately so the entity exists at correct place/rot before first tick
+            applySimToEntity(ghost, sim);
         }
 
         // One-shot animation pulse
         if (s.swingMainHandPulse()) {
             ghost.swing(InteractionHand.MAIN_HAND);
-        }
-
-    }
-
-    public static void onRenderTick(TickEvent.RenderTickEvent event) {
-        if (event.phase != TickEvent.Phase.END) return;
-
-        Minecraft mc = Minecraft.getInstance();
-        ClientLevel level = mc.level;
-        if (level == null) return;
-
-        // Level swap safety
-        if (lastLevel != level) return;
-
-        double partial = mc.getFrameTime(); // 0..1
-        double serverNow = serverTickNowEstimate + partial;
-        double renderTick = serverNow - DELAY_TICKS;
-
-        for (Map.Entry<String, RemotePlayer> e : ghosts.entrySet()) {
-            String botId = e.getKey();
-            RemotePlayer ghost = e.getValue();
-            Deque<Snapshot> q = snapQueues.get(botId);
-            if (ghost == null || q == null || q.size() < 2) continue;
-
-            Bracket b = findBracket(q, renderTick);
-            if (b == null) continue;
-
-            Pose p = interpolatePose(b.a, b.b, renderTick);
-
-            // IMPORTANT: Disable vanilla interpolation by setting old==new each frame
-            ghost.xo = p.pos.x;
-            ghost.yo = p.pos.y;
-            ghost.zo = p.pos.z;
-
-            ghost.setPos(p.pos.x, p.pos.y, p.pos.z);
-
-            ghost.yRotO = p.yaw;
-            ghost.xRotO = p.pitch;
-
-            ghost.setYRot(p.yaw);
-            ghost.setXRot(p.pitch);
-
-            // Head yaw
-            ghost.setYHeadRot(p.yaw);
-            try { ghost.yHeadRotO = p.yaw; } catch (Throwable ignored) {}
-
-            // Body yaw (CRITICAL for player model head turning)
-            ghost.yBodyRot = p.yaw;
-            ghost.yBodyRotO = p.yaw;
-
-            ghost.setOnGround(p.onGround);
         }
     }
 
@@ -184,176 +126,182 @@ public final class ClientGhostBots {
         // Level swap safety
         if (lastLevel != level) {
             ghosts.clear();
-            snapQueues.clear();
+            truthByBot.clear();
+            simByBot.clear();
             lastLevel = level;
-            serverTickNowEstimate = 0.0;
-            serverTickInitialized = false;
             return;
         }
 
-        // Advance estimate by exactly 1 tick per client tick
-        serverTickNowEstimate += 1.0;
+        for (Map.Entry<String, RemotePlayer> e : ghosts.entrySet()) {
+            String botId = e.getKey();
+            RemotePlayer ghost = e.getValue();
+            if (ghost == null) continue;
 
-        // Soft-correct drift toward newest snapshot tick (low gain!)
-        long newest = newestSnapshotTick();
-        if (newest != Long.MIN_VALUE) {
-            double err = newest - serverTickNowEstimate;
-            serverTickNowEstimate += err * 0.02; // low gain drift correction
+            ServerTruth truth = truthByBot.get(botId);
+            GhostSim sim = simByBot.get(botId);
+            if (truth == null || sim == null) continue;
+
+            // Save prev tick values for vanilla interpolation
+            sim.prevPos = sim.pos;
+            sim.prevYawHead = sim.yawHead;
+            sim.prevYawBody = sim.yawBody;
+            sim.prevPitch = sim.pitch;
+
+            // Authority discontinuity handling (teleports / big drift)
+            double posErr = truth.pos.subtract(sim.pos).length();
+            if (posErr > SNAP_POS_ERR) {
+                hardSnapToTruth(sim, truth);
+                applySimToEntity(ghost, sim);
+                continue;
+            }
+
+            // 1) Predict one tick locally
+            predictOneTick(sim);
+
+            // 2) Smoothly correct toward server truth (PD controller)
+            correctTowardTruth(sim, truth);
+
+            // 3) Smooth yaw/head/body like vanilla-ish expectations
+            updateYaw(sim, truth);
+
+            // 4) Apply to entity with tick-delta fields for vanilla render interpolation
+            applySimTickDeltaToEntity(ghost, sim);
+        }
+
+        if (DEBUG_GHOST) {
+            // optional: print a single bot’s error, but don’t spam in production
         }
     }
 
-    private static final class Bracket {
-        final Snapshot a;
-        final Snapshot b;
-        Bracket(Snapshot a, Snapshot b) { this.a = a; this.b = b; }
+    private static void applySimTickDeltaToEntity(RemotePlayer ghost, GhostSim sim) {
+        // Prev tick values (vanilla uses these to interpolate + animate)
+        ghost.xo = sim.prevPos.x;
+        ghost.yo = sim.prevPos.y;
+        ghost.zo = sim.prevPos.z;
+
+        ghost.yRotO = sim.prevYawBody;
+        ghost.xRotO = sim.prevPitch;
+
+        try { ghost.yHeadRotO = sim.prevYawHead; } catch (Throwable ignored) {}
+        try { ghost.yBodyRotO = sim.prevYawBody; } catch (Throwable ignored) {}
+
+        // Current tick values
+        ghost.setPos(sim.pos.x, sim.pos.y, sim.pos.z);
+        ghost.setYRot(sim.yawBody);
+        ghost.setXRot(sim.pitch);
+        ghost.setYHeadRot(sim.yawHead);
+        try { ghost.yBodyRot = sim.yawBody; } catch (Throwable ignored) {}
+
+        ghost.setOnGround(sim.onGround);
+        ghost.setDeltaMovement(sim.velTick); // helps animation/motion expectations
     }
 
-    private static final class Pose {
-        final Vec3 pos;
-        final float yaw;
-        final float pitch;
-        final boolean onGround;
+    private static void applySimToEntity(RemotePlayer ghost, GhostSim sim) {
+        // Used for initialization or hard snaps
+        ghost.xo = sim.pos.x;
+        ghost.yo = sim.pos.y;
+        ghost.zo = sim.pos.z;
 
-        Pose(Vec3 pos, float yaw, float pitch, boolean onGround) {
-            this.pos = pos;
-            this.yaw = yaw;
-            this.pitch = pitch;
-            this.onGround = onGround;
+        ghost.setPos(sim.pos.x, sim.pos.y, sim.pos.z);
+        ghost.setYRot(sim.yawBody);
+        ghost.setXRot(sim.pitch);
+        ghost.setYHeadRot(sim.yawHead);
+        try { ghost.yBodyRot = sim.yawBody; } catch (Throwable ignored) {}
+
+        ghost.setOnGround(sim.onGround);
+        ghost.setDeltaMovement(sim.velTick);
+    }
+
+    private static void predictOneTick(GhostSim sim) {
+        // Gravity + drag (air). You can later branch per onGround / block slipperiness.
+        double vy = sim.velTick.y;
+
+        // If onGround, vanilla tends to keep small negative vy from accumulating.
+        if (sim.onGround && vy < 0.0) vy = 0.0;
+
+        // Apply drag + gravity (simple model)
+        double newVy = (vy * DRAG_AIR) + GRAVITY_PER_TICK;
+
+        sim.velTick = new Vec3(
+                sim.velTick.x * DRAG_AIR,
+                newVy,
+                sim.velTick.z * DRAG_AIR
+        );
+
+        // Integrate position (no collision resolution yet; you can upgrade later)
+        sim.pos = sim.pos.add(sim.velTick);
+
+        // NOTE: without collision, sim.onGround can only drift via server correction.
+        // For now, bias onGround toward existing state; truth correction will fix it.
+    }
+
+    private static void correctTowardTruth(GhostSim sim, ServerTruth truth) {
+        Vec3 ePos = truth.pos.subtract(sim.pos);
+        Vec3 eVel = truth.velTick.subtract(sim.velTick);
+
+        Vec3 corr = ePos.scale(KP_POS).add(eVel.scale(KD_VEL));
+
+        double mag = corr.length();
+        if (mag > MAX_CORR_PER_TICK) {
+            corr = corr.scale(MAX_CORR_PER_TICK / mag);
         }
-    }
 
-    private static Bracket findBracket(Deque<Snapshot> q, double renderTick) {
-        // Drop snapshots that are too old to ever be used again
-        while (q.size() >= 2) {
-            Snapshot first = q.peekFirst();
-            Snapshot second = q.stream().skip(1).findFirst().orElse(null);
-            if (second == null) break;
+        sim.velTick = sim.velTick.add(corr);
 
-            // Only drop the first snapshot if the *second* is also strictly before renderTick.
-            if (second.tick < renderTick) {
-                q.removeFirst();
-            } else {
-                break;
+        // On-ground truth constraint (soft)
+        // If server says grounded and we're close in Y, bias downward velocity away.
+        if (truth.onGround) {
+            double dy = truth.pos.y - sim.pos.y;
+            if (Math.abs(dy) < 0.35 && sim.velTick.y < -0.05) {
+                sim.velTick = new Vec3(sim.velTick.x, sim.velTick.y * 0.5, sim.velTick.z);
             }
         }
-        if (q.size() < 2) return null;
 
-        Snapshot a = q.peekFirst();
-        Snapshot b = null;
-
-        for (Snapshot s : q) {
-            if (s.tick <= renderTick) a = s;
-            if (s.tick >= renderTick) { b = s; break; }
+        // Blend onGround slowly to avoid toggle flutter
+        if (truth.onGround != sim.onGround) {
+            // One-tick hysteresis: accept truth if we’re close enough vertically
+            double dy = Math.abs(truth.pos.y - sim.pos.y);
+            if (dy < 0.25) sim.onGround = truth.onGround;
         }
-
-        if (b == null) {
-            // renderTick is newer than newest snapshot (we’re missing data)
-            // You can choose to return null or extrapolate slightly.
-            return null;
-        }
-
-        if (a == b) {
-            // Need two distinct snapshots
-            Snapshot next = null;
-            boolean found = false;
-            for (Snapshot s : q) {
-                if (found) { next = s; break; }
-                if (s == a) found = true;
-            }
-            if (next == null) return null;
-            b = next;
-        }
-
-        return new Bracket(a, b);
     }
 
-    private static Pose interpolatePose(Snapshot a, Snapshot b, double renderTick) {
-        double span = (double)(b.tick - a.tick);
-        if (span <= 0.0) {
-            return new Pose(a.pos, a.yaw, a.pitch, a.onGround);
-        }
+    private static void updateYaw(GhostSim sim, ServerTruth truth) {
+        // Head tracks truth faster
+        float headErr = Mth.wrapDegrees(truth.yawHead - sim.yawHead);
+        sim.yawHead = sim.yawHead + headErr * 0.40f;
 
-        double t = (renderTick - a.tick) / span;
-        t = Mth.clamp((float)t, 0.0f, 1.0f);
+        // Pitch tracks truth
+        float pitchErr = truth.pitch - sim.pitch;
+        sim.pitch = sim.pitch + pitchErr * 0.40f;
 
-        // Position (linear for now)
-        // Position (Hermite, using server velocities) for smooth acceleration
-        double dtSeconds = (b.tick - a.tick) / 20.0;
+        // Body follows head with clamp per tick (vanilla-ish)
+        float targetBody = sim.yawHead;
 
-        // Guard: if tick span is weird or landing state toggles, fall back to linear
-        Vec3 pos;
-        if (dtSeconds <= 0.0 || a.onGround != b.onGround) {
-            pos = new Vec3(
-                    Mth.lerp(t, a.pos.x, b.pos.x),
-                    Mth.lerp(t, a.pos.y, b.pos.y),
-                    Mth.lerp(t, a.pos.z, b.pos.z)
-            );
-        } else {
-            double tt = t;
-            double tt2 = tt * tt;
-            double tt3 = tt2 * tt;
+        float maxStep = 12.0f; // deg/tick
+        float d = Mth.wrapDegrees(targetBody - sim.yawBody);
+        d = Mth.clamp(d, -maxStep, maxStep);
+        sim.yawBody = sim.yawBody + d;
 
-            double h00 =  2.0 * tt3 - 3.0 * tt2 + 1.0;
-            double h10 =        tt3 - 2.0 * tt2 + tt;
-            double h01 = -2.0 * tt3 + 3.0 * tt2;
-            double h11 =        tt3 -       tt2;
-
-            Vec3 p0 = a.pos;
-            Vec3 p1 = b.pos;
-
-            Vec3 v0 = a.vel;
-            Vec3 v1 = b.vel;
-
-            // If on ground, kill vertical tangent to avoid ground buzzing
-            if (a.onGround) v0 = new Vec3(v0.x, 0.0, v0.z);
-            if (b.onGround) v1 = new Vec3(v1.x, 0.0, v1.z);
-
-            // Tangents are velocity scaled by dtSeconds
-            Vec3 m0 = a.vel.scale(dtSeconds);
-            Vec3 m1 = b.vel.scale(dtSeconds);
-
-            pos = p0.scale(h00)
-                    .add(m0.scale(h10))
-                    .add(p1.scale(h01))
-                    .add(m1.scale(h11));
-        }
-
-        // Rotation (shortest path yaw)
-        float yaw = a.yaw + Mth.wrapDegrees(b.yaw - a.yaw) * (float)t;
-        float pitch = (float) Mth.lerp(t, a.pitch, b.pitch);
-
-        // Ground flag: choose closer snapshot’s state
-        boolean onGround = (t < 0.5) ? a.onGround : b.onGround;
-
-        return new Pose(pos, yaw, pitch, onGround);
+        // Clamp head relative to body (prevents exorcist turns)
+        float headDelta = Mth.wrapDegrees(sim.yawHead - sim.yawBody);
+        headDelta = Mth.clamp(headDelta, -75f, 75f);
+        sim.yawHead = sim.yawBody + headDelta;
     }
 
-    private static long newestSnapshotTick() {
-        long newest = Long.MIN_VALUE;
-        for (Deque<Snapshot> q : snapQueues.values()) {
-            if (q != null && !q.isEmpty()) {
-                newest = Math.max(newest, q.getLast().tick);
-            }
-        }
-        return newest;
-    }
+    private static void hardSnapToTruth(GhostSim sim, ServerTruth truth) {
+        sim.pos = truth.pos;
+        sim.velTick = truth.velTick;
+        sim.onGround = truth.onGround;
 
-    private static void insertSorted(Deque<Snapshot> q, Snapshot s) {
-        // q is small (<=64), so O(n) insertion is fine.
-        ArrayDeque<Snapshot> tmp = new ArrayDeque<>(q.size() + 1);
+        sim.yawHead = truth.yawHead;
+        sim.yawBody = truth.yawHead;
+        sim.pitch = truth.pitch;
 
-        boolean inserted = false;
-        while (!q.isEmpty()) {
-            Snapshot cur = q.removeFirst();
-            if (!inserted && s.tick < cur.tick) {
-                tmp.addLast(s);
-                inserted = true;
-            }
-            tmp.addLast(cur);
-        }
-        if (!inserted) tmp.addLast(s);
-
-        q.addAll(tmp);
+        sim.prevPos = truth.pos;
+        sim.prevYawHead = truth.yawHead;
+        sim.prevYawBody = truth.yawHead;
+        sim.prevPitch = truth.pitch;
+        sim.lastTruthTick = truth.tick;
     }
 
     private static RemotePlayer spawnGhost(ClientLevel level, S2CBotStatePacket s) {
@@ -369,11 +317,14 @@ public final class ClientGhostBots {
         ghost.setYRot(s.yaw());
         ghost.setXRot(s.pitch());
         ghost.setYHeadRot(s.yaw());
+        ghost.setDeltaMovement(new Vec3(s.vx(), s.vy(), s.vz()).scale(1.0 / TPS));
         try {
             ghost.yHeadRotO = s.yaw();
-        } catch (Throwable ignored) {}
+        } catch (Throwable ignored) {
+        }
 
-        // If an entity with this ID already exists, remove it first (prevents duplicates)
+        // If an entity with this ID already exists, remove it first (prevents
+        // duplicates)
         Entity existing = level.getEntity(entityId);
         if (existing != null) {
             existing.remove(RemovalReason.DISCARDED);
@@ -389,21 +340,56 @@ public final class ClientGhostBots {
         return 0x3FFF0000 ^ botId.hashCode();
     }
 
-    private static final class Snapshot {
-        final long tick;
-        final Vec3 pos;
-        final Vec3 vel;      // if you don’t send vel yet, set Vec3.ZERO
-        final float yaw;
-        final float pitch;
-        final boolean onGround;
+    private static final class ServerTruth {
+        long tick;
+        Vec3 pos;        // blocks
+        Vec3 velTick;    // blocks/tick
+        float yawHead;
+        float pitch;
+        boolean onGround;
 
-        Snapshot(long tick, Vec3 pos, Vec3 vel, float yaw, float pitch, boolean onGround) {
+        ServerTruth(long tick, Vec3 pos, Vec3 velTick, float yawHead, float pitch, boolean onGround) {
             this.tick = tick;
             this.pos = pos;
-            this.vel = vel;
-            this.yaw = yaw;
+            this.velTick = velTick;
+            this.yawHead = yawHead;
             this.pitch = pitch;
             this.onGround = onGround;
+        }
+    }
+
+    private static final class GhostSim {
+        Vec3 pos;        // blocks
+        Vec3 velTick;    // blocks/tick
+        boolean onGround;
+
+        float yawHead;   // degrees
+        float yawBody;   // degrees
+        float pitch;     // degrees
+
+        // prev tick values for vanilla interpolation
+        Vec3 prevPos;
+        float prevYawHead;
+        float prevYawBody;
+        float prevPitch;
+
+        long lastTruthTick;
+
+        GhostSim(ServerTruth t) {
+            this.pos = t.pos;
+            this.velTick = t.velTick;
+            this.onGround = t.onGround;
+
+            this.yawHead = t.yawHead;
+            this.yawBody = t.yawHead;
+            this.pitch = t.pitch;
+
+            this.prevPos = t.pos;
+            this.prevYawHead = t.yawHead;
+            this.prevYawBody = t.yawHead;
+            this.prevPitch = t.pitch;
+
+            this.lastTruthTick = t.tick;
         }
     }
 }
