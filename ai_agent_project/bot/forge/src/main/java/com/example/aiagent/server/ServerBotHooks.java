@@ -27,11 +27,16 @@ public class ServerBotHooks {
     private static final String WS_URI = "ws://127.0.0.1:8765";
     private final ServerBridgeWebSocketClient ws = new ServerBridgeWebSocketClient(WS_URI);
 
+    private static final java.util.concurrent.atomic.AtomicInteger INSTANCES =
+        new java.util.concurrent.atomic.AtomicInteger(0);
+
+    private final int instanceId = INSTANCES.incrementAndGet();
+
     private boolean spawned = false;
 
     public ServerBotHooks() {
-        MinecraftForge.EVENT_BUS.register(this);
-        System.out.println("[AI-BOT] ServerBotHooks registered.");
+        System.out.println("[AI-BOT] ServerBotHooks registered. instanceId=" + instanceId
+                + " this=" + System.identityHashCode(this));
         System.out.println("[AI-BOT][SERVER-WS] Will connect to " + WS_URI + " (dedicated servers only)");
     }
 
@@ -69,6 +74,10 @@ public class ServerBotHooks {
     public void onServerTick(TickEvent.ServerTickEvent event) {
         if (event.phase != TickEvent.Phase.END) return;
         if (!spawned) return;
+
+        System.out.println("[AI-BOT][DBG][HOOK] onServerTick instanceId=" + instanceId
+        + " this=" + System.identityHashCode(this)
+        + " phase=" + event.phase);
 
         MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
 

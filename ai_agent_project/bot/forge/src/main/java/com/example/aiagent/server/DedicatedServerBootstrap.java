@@ -1,5 +1,6 @@
 package com.example.aiagent.server;
 
+import net.minecraftforge.common.MinecraftForge;
 import com.example.aiagent.BotMod;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.event.TickEvent;
@@ -17,25 +18,17 @@ import net.minecraftforge.fml.event.lifecycle.FMLDedicatedServerSetupEvent;
 @Mod.EventBusSubscriber(
         modid = BotMod.MODID,
         value = Dist.DEDICATED_SERVER,
-        bus = Mod.EventBusSubscriber.Bus.FORGE   // ✅ THIS IS THE IMPORTANT CHANGE
+        bus = Mod.EventBusSubscriber.Bus.MOD
 )
+
 public final class DedicatedServerBootstrap {
 
     /** Called once when the dedicated server is ready */
     @SubscribeEvent
     public static void onDedicatedServerSetup(FMLDedicatedServerSetupEvent event) {
         event.enqueueWork(() -> {
-            new ServerBotHooks();
-            System.out.println("[AI-BOT] DedicatedServerBootstrap: ServerBotHooks initialized.");
+            MinecraftForge.EVENT_BUS.register(new ServerBotHooks());
+            System.out.println("[AI-BOT] DedicatedServerBootstrap: ServerBotHooks registered (dedicated-only).");
         });
-    }
-
-    /** Called EVERY server tick */
-    @SubscribeEvent
-    public static void onServerTick(TickEvent.ServerTickEvent event) {
-        if (event.phase != TickEvent.Phase.END) return;
-
-        // Drive FakePlayer physics + DQN actions
-        ServerBotHooks.BOTS.tick();
     }
 }

@@ -49,6 +49,9 @@ public class FakeBotManager {
     private static final boolean DEBUG_MOVE = false;
     private static final boolean DEBUG_DEEP_MOVE = false;
 
+    private long dbgLastServerGameTime = Long.MIN_VALUE;
+    private int dbgCallsThisServerTick = 0;
+
     // --- Step state machine (FIFO queue) ---
     private static final class StepRequest {
         final JsonObject action; // action payload (look/move/jump/etc)
@@ -298,6 +301,31 @@ public class FakeBotManager {
     public void tick() {
         tickCounter++;
 
+        // DEBUG: measure how often this method runs per actual server tick
+        // Use any bot's level to sample authoritative gameTime
+        ServerLevel anyLevel = null;
+        for (FakeBot b : bots.values()) {
+            if (b != null && b.player != null && (b.player.level() instanceof ServerLevel sl)) {
+                anyLevel = sl;
+                break;
+            }
+        }
+        if (anyLevel != null) {
+            long gt = anyLevel.getGameTime();
+            if (gt == dbgLastServerGameTime) {
+                dbgCallsThisServerTick++;
+                // Only print when it becomes > 1 to avoid noise
+                if (dbgCallsThisServerTick == 2 || dbgCallsThisServerTick == 3 || dbgCallsThisServerTick == 5) {
+                    System.out.println("[AI-BOT][DBG][SRV] FakeBotManager.tick() called multiple times in same serverTick="
+                            + gt + " callsSoFar=" + dbgCallsThisServerTick + " tickCounter=" + tickCounter
+                            + " thread=" + Thread.currentThread().getName());
+                }
+            } else {
+                dbgLastServerGameTime = gt;
+                dbgCallsThisServerTick = 1;
+            }
+        }
+
         // Convert incoming JSON into queued steps
         drainActions();
 
@@ -328,6 +356,18 @@ public class FakeBotManager {
                         bot.player.onGround(),
                         swingPulse
                 );
+
+                System.out.println("[AI-BOT][DBG][SRV-SEND] bot=" + bot.player.getGameProfile().getName()
+                + " serverTick=" + serverTick
+                + " tickCounter=" + tickCounter
+                + " period=" + STATE_SYNC_PERIOD_TICKS
+                + " force=" + bot.forceStateSync
+                + " pos=(" + bot.player.getX() + "," + bot.player.getY() + "," + bot.player.getZ() + ")"
+                + " velBPS=(" + v.x + "," + v.y + "," + v.z + ")"
+                + " onGround=" + bot.player.onGround()
+                + " dim=" + level.dimension().location()
+                + " thread=" + Thread.currentThread().getName());
+
                 BotNet.CHANNEL.send(PacketDistributor.DIMENSION.with(() -> level.dimension()), msg);
                 bot.swingMainHandPulse = false;
             }

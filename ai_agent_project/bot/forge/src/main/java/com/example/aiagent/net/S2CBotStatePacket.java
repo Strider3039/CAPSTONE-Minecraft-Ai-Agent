@@ -68,6 +68,10 @@ public record S2CBotStatePacket(
         NetworkEvent.Context ctx = ctxSup.get();
         ctx.enqueueWork(() -> {
             DistExecutor.unsafeRunWhenOn(Dist.CLIENT, () -> () -> {
+                System.out.println("[AI-BOT][DBG][CL-RECV] bot=" + msg.botId()
+                    + " serverTick=" + msg.serverTick()
+                    + " hash=" + System.identityHashCode(msg)
+                    + " thread=" + Thread.currentThread().getName());
                 com.example.aiagent.client.ClientGhostBots.onBotState(msg);
             });
         });

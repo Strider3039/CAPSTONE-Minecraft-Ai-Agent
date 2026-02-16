@@ -1,9 +1,7 @@
 package com.example.aiagent;
 
-import com.example.aiagent.server.ServerBotHooks;
-import net.minecraftforge.common.MinecraftForge;
-
 import com.example.aiagent.net.BotNet;
+import com.example.aiagent.server.ServerBotHooks;
 import com.example.aiagent.server.FakeBotManager;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -11,6 +9,8 @@ import net.minecraftforge.eventbus.api.IEventBus;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
+import net.minecraftforge.fml.loading.FMLEnvironment;
+import net.minecraftforge.api.distmarker.Dist;
 
 @Mod(BotMod.MODID)
 public class BotMod {
@@ -34,14 +34,20 @@ public class BotMod {
         IEventBus modBus = FMLJavaModLoadingContext.get().getModEventBus();
         modBus.addListener(this::onCommonSetup);
 
-        MinecraftForge.EVENT_BUS.register(new ServerBotHooks());
-
         System.out.println("[AI-BOT] BotMod constructed (common).");
     }
 
     private void onCommonSetup(final FMLCommonSetupEvent event) {
         event.enqueueWork(BotNet::register);
         System.out.println("[AI-BOT] CommonSetup: BotNet.register enqueued.");
+
+        // Dedicated server only: start bot system + tick hooks + overworld spawn hook
+        if (FMLEnvironment.dist == Dist.DEDICATED_SERVER) {
+            event.enqueueWork(() -> {
+                System.out.println("[AI-BOT] CommonSetup: constructing ServerBotHooks (dedicated server).");
+                new ServerBotHooks();
+            });
+        }
     }
 
     public void markEpisodeStarted(long startTick) {

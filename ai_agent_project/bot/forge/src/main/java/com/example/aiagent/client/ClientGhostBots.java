@@ -44,21 +44,45 @@ public final class ClientGhostBots {
     private static final Map<String, GhostSim> simByBot = new HashMap<>();
     private static ClientLevel lastLevel;
 
-    private static final boolean DEBUG_GHOST = false;
+    // Debug telemetry
+    private static final boolean DEBUG_GHOST = true;
+    private static final int DEBUG_EVERY_TICKS = 10; // print once per bot every N client ticks
+    private static long debugClientTickCounter = 0;
+    private static final Map<String, Long> lastSeenTickByBot = new HashMap<>();
+
+    private static final class DebugStats {
+        long lastPrintTick = -1;
+
+        // rolling counters since last print
+        int snaps = 0;
+        int packets = 0;
+        int groundMismatch = 0;
+        int bigCorrClamp = 0;
+
+        // last known
+        long lastServerTick = -1;
+        double lastPosErr = 0;
+        double lastVelErr = 0;
+        double lastCorrMag = 0;
+        boolean lastTruthGround = false;
+        boolean lastSimGround = false;
+    }
+
+    private static final Map<String, DebugStats> dbgByBot = new HashMap<>();
 
     private static final double TPS = 20.0;
 
     // Client-side physics constants (vanilla-ish)
     private static final double GRAVITY_PER_TICK = -0.08; // blocks/tick^2
-    private static final double DRAG_AIR = 0.98;          // per tick
+    private static final double DRAG_AIR = 0.98; // per tick
 
     // PD correction tuning (visual)
-    private static final double KP_POS = 0.28;            // position stiffness per tick
-    private static final double KD_VEL = 0.55;            // velocity damping per tick
+    private static final double KP_POS = 0.28; // position stiffness per tick
+    private static final double KD_VEL = 0.55; // velocity damping per tick
     private static final double MAX_CORR_PER_TICK = 0.35; // clamp correction accel-like term (blocks/tick)
 
     // Hard snap thresholds (authority)
-    private static final double SNAP_POS_ERR = 6.0;       // blocks
+    private static final double SNAP_POS_ERR = 6.0; // blocks
 
     private ClientGhostBots() {
     }
@@ -68,7 +92,17 @@ public final class ClientGhostBots {
     public static void onBotState(S2CBotStatePacket s) {
         Minecraft mc = Minecraft.getInstance();
         ClientLevel level = mc.level;
-        if (level == null) return;
+        if (level == null)
+            return;
+
+        // DEBUG: detect duplicate tick deliveries for this bot
+        // (use your truth map OR last tick seen map; simplest is a standalone map)
+        Long prevTick = lastSeenTickByBot.put(s.botId(), s.serverTick());
+        if (prevTick != null && prevTick.longValue() == s.serverTick()) {
+            System.out.println("[AI-BOT][DBG][CL-DUP] bot=" + s.botId()
+                    + " serverTick=" + s.serverTick()
+                    + " (duplicate delivery)");
+        }
 
         // Clear cached ghosts when switching worlds/servers/dimensions
         if (lastLevel != level) {
@@ -89,14 +123,31 @@ public final class ClientGhostBots {
         Vec3 pos = new Vec3(s.x(), s.y(), s.z());
         Vec3 velTick = new Vec3(s.vx(), s.vy(), s.vz()).scale(1.0 / TPS);
 
+        if (s.onGround()) {
+            velTick = new Vec3(velTick.x, 0.0, velTick.z);
+        }
+
         ServerTruth truth = new ServerTruth(
                 s.serverTick(),
                 pos,
                 velTick,
                 s.yaw(),
                 s.pitch(),
-                s.onGround()
-        );
+                s.onGround());
+
+        DebugStats dbg = dbgByBot.computeIfAbsent(s.botId(), k -> new DebugStats());
+        dbg.packets++;
+
+        if (dbg.lastServerTick != -1) {
+            if (s.serverTick() < dbg.lastServerTick) {
+                System.out.println("[AI-BOT][DBG][PKT] bot=" + s.botId()
+                        + " NON_MONO_SERVER_TICK prev=" + dbg.lastServerTick + " now=" + s.serverTick());
+            } else if (s.serverTick() == dbg.lastServerTick) {
+                System.out.println("[AI-BOT][DBG][PKT] bot=" + s.botId()
+                        + " DUP_SERVER_TICK tick=" + s.serverTick());
+            }
+        }
+        dbg.lastServerTick = s.serverTick();
 
         truthByBot.put(s.botId(), truth);
 
@@ -104,6 +155,13 @@ public final class ClientGhostBots {
         GhostSim sim = simByBot.get(s.botId());
         if (sim == null) {
             sim = new GhostSim(truth);
+            dbg.snaps++;
+            System.out.println("[AI-BOT][DBG][INIT] bot=" + s.botId()
+                    + " snap-init tick=" + s.serverTick()
+                    + " pos=" + fmtVec(truth.pos)
+                    + " velTick=" + fmtVec(truth.velTick)
+                    + " yaw=" + truth.yawHead + " pitch=" + truth.pitch
+                    + " onGround=" + truth.onGround);
             simByBot.put(s.botId(), sim);
 
             // Apply immediately so the entity exists at correct place/rot before first tick
@@ -117,11 +175,15 @@ public final class ClientGhostBots {
     }
 
     public static void onClientTick(TickEvent.ClientTickEvent event) {
-        if (event.phase != TickEvent.Phase.END) return;
+
+        debugClientTickCounter++;
+        if (event.phase != TickEvent.Phase.END)
+            return;
 
         Minecraft mc = Minecraft.getInstance();
         ClientLevel level = mc.level;
-        if (level == null || mc.isPaused()) return;
+        if (level == null || mc.isPaused())
+            return;
 
         // Level swap safety
         if (lastLevel != level) {
@@ -135,11 +197,13 @@ public final class ClientGhostBots {
         for (Map.Entry<String, RemotePlayer> e : ghosts.entrySet()) {
             String botId = e.getKey();
             RemotePlayer ghost = e.getValue();
-            if (ghost == null) continue;
+            if (ghost == null)
+                continue;
 
             ServerTruth truth = truthByBot.get(botId);
             GhostSim sim = simByBot.get(botId);
-            if (truth == null || sim == null) continue;
+            if (truth == null || sim == null)
+                continue;
 
             // Save prev tick values for vanilla interpolation
             sim.prevPos = sim.pos;
@@ -149,6 +213,17 @@ public final class ClientGhostBots {
 
             // Authority discontinuity handling (teleports / big drift)
             double posErr = truth.pos.subtract(sim.pos).length();
+
+            DebugStats dbg = dbgByBot.computeIfAbsent(botId, k -> new DebugStats());
+            dbg.lastTruthGround = truth.onGround;
+            dbg.lastSimGround = sim.onGround;
+
+            // Pre-step error
+            Vec3 ePos0 = truth.pos.subtract(sim.pos);
+            Vec3 eVel0 = truth.velTick.subtract(sim.velTick);
+            double posErr0 = ePos0.length();
+            double velErr0 = eVel0.length();
+
             if (posErr > SNAP_POS_ERR) {
                 hardSnapToTruth(sim, truth);
                 applySimToEntity(ghost, sim);
@@ -159,13 +234,55 @@ public final class ClientGhostBots {
             predictOneTick(sim);
 
             // 2) Smoothly correct toward server truth (PD controller)
-            correctTowardTruth(sim, truth);
+            double corrMag = correctTowardTruth(sim, truth);
+            if (corrMag > MAX_CORR_PER_TICK)
+                dbg.bigCorrClamp++;
+            dbg.lastCorrMag = corrMag;
+
+            Vec3 ePos1 = truth.pos.subtract(sim.pos);
+            Vec3 eVel1 = truth.velTick.subtract(sim.velTick);
+            double posErr1 = ePos1.length();
+            double velErr1 = eVel1.length();
+
+            dbg.lastPosErr = posErr1;
+            dbg.lastVelErr = velErr1;
+
+            if (truth.onGround != sim.onGround)
+                dbg.groundMismatch++;
 
             // 3) Smooth yaw/head/body like vanilla-ish expectations
             updateYaw(sim, truth);
 
             // 4) Apply to entity with tick-delta fields for vanilla render interpolation
             applySimTickDeltaToEntity(ghost, sim);
+
+            if (DEBUG_GHOST && (debugClientTickCounter % DEBUG_EVERY_TICKS == 0)) {
+                // Only print once per N ticks per bot
+                if (dbg.lastPrintTick != debugClientTickCounter) {
+                    dbg.lastPrintTick = debugClientTickCounter;
+
+                    double dy = truth.pos.y - sim.pos.y;
+
+                    System.out.println("[AI-BOT][DBG][SIM] bot=" + botId
+                            + " st=" + truth.tick
+                            + " posErr=" + fmt(posErr1)
+                            + " velErr=" + fmt(velErr1)
+                            + " simPos=" + fmtVec(sim.pos)
+                            + " truthPos=" + fmtVec(truth.pos)
+                            + " simVel=" + fmtVec(sim.velTick)
+                            + " truthVel=" + fmtVec(truth.velTick)
+                            + " dy=" + fmt(dy)
+                            + " g(sim/truth)=" + sim.onGround + "/" + truth.onGround
+                            + " snaps=" + dbg.snaps
+                            + " pkt=" + dbg.packets
+                            + " gMis=" + dbg.groundMismatch
+                            + " clamp=" + dbg.bigCorrClamp);
+
+                    // reset rolling counters so each print is “per window”
+                    dbg.groundMismatch = 0;
+                    dbg.bigCorrClamp = 0;
+                }
+            }
         }
 
         if (DEBUG_GHOST) {
@@ -182,15 +299,24 @@ public final class ClientGhostBots {
         ghost.yRotO = sim.prevYawBody;
         ghost.xRotO = sim.prevPitch;
 
-        try { ghost.yHeadRotO = sim.prevYawHead; } catch (Throwable ignored) {}
-        try { ghost.yBodyRotO = sim.prevYawBody; } catch (Throwable ignored) {}
+        try {
+            ghost.yHeadRotO = sim.prevYawHead;
+        } catch (Throwable ignored) {
+        }
+        try {
+            ghost.yBodyRotO = sim.prevYawBody;
+        } catch (Throwable ignored) {
+        }
 
         // Current tick values
         ghost.setPos(sim.pos.x, sim.pos.y, sim.pos.z);
         ghost.setYRot(sim.yawBody);
         ghost.setXRot(sim.pitch);
         ghost.setYHeadRot(sim.yawHead);
-        try { ghost.yBodyRot = sim.yawBody; } catch (Throwable ignored) {}
+        try {
+            ghost.yBodyRot = sim.yawBody;
+        } catch (Throwable ignored) {
+        }
 
         ghost.setOnGround(sim.onGround);
         ghost.setDeltaMovement(sim.velTick); // helps animation/motion expectations
@@ -206,27 +332,30 @@ public final class ClientGhostBots {
         ghost.setYRot(sim.yawBody);
         ghost.setXRot(sim.pitch);
         ghost.setYHeadRot(sim.yawHead);
-        try { ghost.yBodyRot = sim.yawBody; } catch (Throwable ignored) {}
+        try {
+            ghost.yBodyRot = sim.yawBody;
+        } catch (Throwable ignored) {
+        }
 
         ghost.setOnGround(sim.onGround);
         ghost.setDeltaMovement(sim.velTick);
     }
 
     private static void predictOneTick(GhostSim sim) {
-        // Gravity + drag (air). You can later branch per onGround / block slipperiness.
         double vy = sim.velTick.y;
 
-        // If onGround, vanilla tends to keep small negative vy from accumulating.
-        if (sim.onGround && vy < 0.0) vy = 0.0;
-
-        // Apply drag + gravity (simple model)
-        double newVy = (vy * DRAG_AIR) + GRAVITY_PER_TICK;
+        if (sim.onGround) {
+            // Grounded: do not integrate gravity at all (until we add collision-based
+            // stepping).
+            vy = 0.0;
+        } else {
+            vy = (vy * DRAG_AIR) + GRAVITY_PER_TICK;
+        }
 
         sim.velTick = new Vec3(
                 sim.velTick.x * DRAG_AIR,
-                newVy,
-                sim.velTick.z * DRAG_AIR
-        );
+                vy,
+                sim.velTick.z * DRAG_AIR);
 
         // Integrate position (no collision resolution yet; you can upgrade later)
         sim.pos = sim.pos.add(sim.velTick);
@@ -235,7 +364,7 @@ public final class ClientGhostBots {
         // For now, bias onGround toward existing state; truth correction will fix it.
     }
 
-    private static void correctTowardTruth(GhostSim sim, ServerTruth truth) {
+    private static double correctTowardTruth(GhostSim sim, ServerTruth truth) {
         Vec3 ePos = truth.pos.subtract(sim.pos);
         Vec3 eVel = truth.velTick.subtract(sim.velTick);
 
@@ -248,21 +377,35 @@ public final class ClientGhostBots {
 
         sim.velTick = sim.velTick.add(corr);
 
-        // On-ground truth constraint (soft)
-        // If server says grounded and we're close in Y, bias downward velocity away.
+        // Ground manifold constraint:
+        // If server says grounded, we must not "float" below forever (no collision sim
+        // yet).
         if (truth.onGround) {
+            sim.onGround = true;
+
             double dy = truth.pos.y - sim.pos.y;
-            if (Math.abs(dy) < 0.35 && sim.velTick.y < -0.05) {
-                sim.velTick = new Vec3(sim.velTick.x, sim.velTick.y * 0.5, sim.velTick.z);
+
+            // Critically-damped positional projection in Y (no snap)
+            // 0.35 is aggressive enough to converge in a few ticks but not teleport.
+            sim.pos = new Vec3(sim.pos.x, sim.pos.y + dy * 0.35, sim.pos.z);
+
+            // Kill vertical velocity when grounded (server authority)
+            sim.velTick = new Vec3(sim.velTick.x, 0.0, sim.velTick.z);
+
+        } else {
+            // Airborne: allow sim to be airborne; don't instantly force onGround false
+            // unless close
+            // to prevent flutter at edges.
+            if (sim.onGround) {
+                double dy = Math.abs(truth.pos.y - sim.pos.y);
+                if (dy > 0.6)
+                    sim.onGround = false; // hysteresis band
+            } else {
+                sim.onGround = false;
             }
         }
 
-        // Blend onGround slowly to avoid toggle flutter
-        if (truth.onGround != sim.onGround) {
-            // One-tick hysteresis: accept truth if we’re close enough vertically
-            double dy = Math.abs(truth.pos.y - sim.pos.y);
-            if (dy < 0.25) sim.onGround = truth.onGround;
-        }
+        return mag;
     }
 
     private static void updateYaw(GhostSim sim, ServerTruth truth) {
@@ -342,8 +485,8 @@ public final class ClientGhostBots {
 
     private static final class ServerTruth {
         long tick;
-        Vec3 pos;        // blocks
-        Vec3 velTick;    // blocks/tick
+        Vec3 pos; // blocks
+        Vec3 velTick; // blocks/tick
         float yawHead;
         float pitch;
         boolean onGround;
@@ -359,13 +502,13 @@ public final class ClientGhostBots {
     }
 
     private static final class GhostSim {
-        Vec3 pos;        // blocks
-        Vec3 velTick;    // blocks/tick
+        Vec3 pos; // blocks
+        Vec3 velTick; // blocks/tick
         boolean onGround;
 
-        float yawHead;   // degrees
-        float yawBody;   // degrees
-        float pitch;     // degrees
+        float yawHead; // degrees
+        float yawBody; // degrees
+        float pitch; // degrees
 
         // prev tick values for vanilla interpolation
         Vec3 prevPos;
@@ -391,5 +534,13 @@ public final class ClientGhostBots {
 
             this.lastTruthTick = t.tick;
         }
+    }
+
+    private static String fmt(double v) {
+        return String.format(java.util.Locale.US, "%.3f", v);
+    }
+
+    private static String fmtVec(Vec3 v) {
+        return "(" + fmt(v.x) + "," + fmt(v.y) + "," + fmt(v.z) + ")";
     }
 }
