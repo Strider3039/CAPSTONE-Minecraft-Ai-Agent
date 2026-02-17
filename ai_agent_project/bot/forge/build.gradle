@@ -133,6 +133,10 @@ dependencies {
     jarJar("org.java-websocket:Java-WebSocket:1.5.6") {
         jarJar.ranged(it, "[1.5.6,)")
     }
+
+    // --- Unit tests (JUnit 5) ---
+    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.10.2'
+    testRuntimeOnly  'org.junit.jupiter:junit-jupiter-engine:5.10.2'
 }
 
 
@@ -190,6 +194,10 @@ publishing {
             url "file://${project.projectDir}/mcmodsrepo"
         }
     }
+}
+
+tasks.named('test', Test).configure {
+    useJUnitPlatform()
 }
 
 tasks.withType(JavaCompile).configureEach {
