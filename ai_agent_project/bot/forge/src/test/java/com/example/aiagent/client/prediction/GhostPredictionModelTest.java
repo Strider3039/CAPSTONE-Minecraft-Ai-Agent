@@ -48,6 +48,75 @@ public class GhostPredictionModelTest {
     }
 
     @Test
+    void report_fallAndLand_generatesArtifacts() throws Exception {
+        GhostPredictionModel m = new GhostPredictionModel();
+        GhostTrace trace = new GhostTrace();
+
+        // Start airborne, then land at y=0
+        Vec3 pos = new Vec3(0, 5, 0);
+        Vec3 vel = new Vec3(0.1, -0.06, 0.0);
+
+        m.resetFromTruth(truth(0, pos, vel, false, 0, 0, 0, false));
+
+        boolean landed = false;
+
+        for (int i = 1; i <= 80; i++) {
+            // simple scripted truth physics for the test:
+            // accelerate downward until y <= 0, then land
+            if (!landed) {
+                vel = new Vec3(vel.x, vel.y - 0.01, vel.z);
+                pos = pos.add(vel);
+
+                if (pos.y <= 0.0) {
+                    pos = new Vec3(pos.x, 0.0, pos.z);
+                    vel = new Vec3(vel.x, 0.0, vel.z);
+                    landed = true;
+                }
+            } else {
+                // after landing, keep moving flat
+                pos = pos.add(new Vec3(0.1, 0.0, 0.0));
+                vel = new Vec3(0.1, 0.0, 0.0);
+            }
+
+            boolean onGround = landed;
+
+            // rotate over time (so we can visualize yaw tracking)
+            float headYaw = i * 2.0f;
+            float bodyYaw = i * 1.0f;
+            float pitch = 10.0f;
+
+            boolean swingPulse = (i % 20 == 0);
+
+            GhostPredictionModel.Truth t = truth(i, pos, vel, onGround, headYaw, bodyYaw, pitch, swingPulse);
+
+            m.ingestTruth(t);
+            m.stepOneTick();
+            trace.add(i, t, m.sim);
+        }
+
+        String base = "fallAndLand_" + TestReportWriter.timestampTag();
+
+        // Write log + csv
+        TestReportWriter.writeLog(base, trace.toLogSummary("report_fallAndLand_generatesArtifacts"));
+        TestReportWriter.writeCsv(base, trace.toCsvLines());
+
+        // Write a quick PNG chart: posErr, yErr, simVy
+        TestReportWriter.writePngChart(
+                base,
+                "Ghost Prediction Report: Fall & Land",
+                1100,
+                550,
+                trace.seriesPosErr(), "posErr",
+                trace.seriesYErr(), "yErr (truth - sim)",
+                trace.seriesVy(), "simVy"
+        );
+
+        // This test can be "non-strict" initially. You can add asserts later.
+        assertTrue(true);
+    }
+
+
+    @Test
     void groundedY_doesNotClipIntoFloor_afterReconcile() {
         GhostPredictionModel m = new GhostPredictionModel();
 

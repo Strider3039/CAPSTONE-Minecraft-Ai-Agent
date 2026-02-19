@@ -46,6 +46,8 @@ public final class ClientGhostBots {
 
     // Debug telemetry
     private static final boolean DEBUG_GHOST = true;
+
+    private static final boolean DEBUG_NET = false;
     private static final int DEBUG_EVERY_TICKS = 10; // print once per bot every N client ticks
     private static long debugClientTickCounter = 0;
     private static final Map<String, Long> lastSeenTickByBot = new HashMap<>();
@@ -99,9 +101,11 @@ public final class ClientGhostBots {
         // (use your truth map OR last tick seen map; simplest is a standalone map)
         Long prevTick = lastSeenTickByBot.put(s.botId(), s.serverTick());
         if (prevTick != null && prevTick.longValue() == s.serverTick()) {
-            System.out.println("[AI-BOT][DBG][CL-DUP] bot=" + s.botId()
-                    + " serverTick=" + s.serverTick()
-                    + " (duplicate delivery)");
+            if (DEBUG_NET) {
+                System.out.println("[AI-BOT][DBG][CL-DUP] bot=" + s.botId()
+                        + " serverTick=" + s.serverTick()
+                        + " (duplicate delivery)");
+            }
         }
 
         // Clear cached ghosts when switching worlds/servers/dimensions
@@ -114,6 +118,14 @@ public final class ClientGhostBots {
         }
 
         RemotePlayer ghost = ghosts.get(s.botId());
+        if (ghost != null && ghost.getId() != s.entityId()) {
+            // entityId changed -> discard old ghost and respawn with new id
+            ghost.remove(RemovalReason.DISCARDED);
+            ghosts.remove(s.botId());
+            truthByBot.remove(s.botId());
+            simByBot.remove(s.botId());
+            ghost = null;
+        }
         if (ghost == null) {
             ghost = spawnGhost(level, s);
             ghosts.put(s.botId(), ghost);
@@ -123,28 +135,28 @@ public final class ClientGhostBots {
         Vec3 pos = new Vec3(s.x(), s.y(), s.z());
         Vec3 velTick = new Vec3(s.vx(), s.vy(), s.vz()).scale(1.0 / TPS);
 
-        if (s.onGround()) {
-            velTick = new Vec3(velTick.x, 0.0, velTick.z);
-        }
-
         ServerTruth truth = new ServerTruth(
-                s.serverTick(),
-                pos,
-                velTick,
-                s.yaw(),
-                s.pitch(),
-                s.onGround());
+            s.serverTick(),
+            pos,
+            velTick,
+            s.headYaw(),
+            s.bodyYaw(),
+            s.pitch(),
+            s.onGround());
 
         DebugStats dbg = dbgByBot.computeIfAbsent(s.botId(), k -> new DebugStats());
         dbg.packets++;
 
-        if (dbg.lastServerTick != -1) {
-            if (s.serverTick() < dbg.lastServerTick) {
-                System.out.println("[AI-BOT][DBG][PKT] bot=" + s.botId()
-                        + " NON_MONO_SERVER_TICK prev=" + dbg.lastServerTick + " now=" + s.serverTick());
-            } else if (s.serverTick() == dbg.lastServerTick) {
-                System.out.println("[AI-BOT][DBG][PKT] bot=" + s.botId()
-                        + " DUP_SERVER_TICK tick=" + s.serverTick());
+        if (DEBUG_NET) {
+            if (dbg.lastServerTick != -1) {
+                if (s.serverTick() < dbg.lastServerTick) {
+                    System.err.println("[AI-BOT][PKT] OUT_OF_ORDER bot=" + s.botId()
+                            + " prev=" + dbg.lastServerTick
+                            + " now=" + s.serverTick());
+                } else if (s.serverTick() == dbg.lastServerTick) {
+                    System.err.println("[AI-BOT][PKT] DUP_TICK bot=" + s.botId()
+                            + " tick=" + s.serverTick());
+                }
             }
         }
         dbg.lastServerTick = s.serverTick();
@@ -160,7 +172,7 @@ public final class ClientGhostBots {
                     + " snap-init tick=" + s.serverTick()
                     + " pos=" + fmtVec(truth.pos)
                     + " velTick=" + fmtVec(truth.velTick)
-                    + " yaw=" + truth.yawHead + " pitch=" + truth.pitch
+                    + " headYaw=" + truth.yawHead + " bodyYaw=" + truth.yawBody + " pitch=" + truth.pitch
                     + " onGround=" + truth.onGround);
             simByBot.put(s.botId(), sim);
 
@@ -284,10 +296,6 @@ public final class ClientGhostBots {
                 }
             }
         }
-
-        if (DEBUG_GHOST) {
-            // optional: print a single bot’s error, but don’t spam in production
-        }
     }
 
     private static void applySimTickDeltaToEntity(RemotePlayer ghost, GhostSim sim) {
@@ -387,7 +395,7 @@ public final class ClientGhostBots {
 
             // Critically-damped positional projection in Y (no snap)
             // 0.35 is aggressive enough to converge in a few ticks but not teleport.
-            sim.pos = new Vec3(sim.pos.x, sim.pos.y + dy * 0.35, sim.pos.z);
+            sim.pos = new Vec3(sim.pos.x, truth.pos.y, sim.pos.z);
 
             // Kill vertical velocity when grounded (server authority)
             sim.velTick = new Vec3(sim.velTick.x, 0.0, sim.velTick.z);
@@ -417,18 +425,17 @@ public final class ClientGhostBots {
         float pitchErr = truth.pitch - sim.pitch;
         sim.pitch = sim.pitch + pitchErr * 0.40f;
 
-        // Body follows head with clamp per tick (vanilla-ish)
-        float targetBody = sim.yawHead;
-
+        // Body tracks truth body (not head)
+        float bodyErr = Mth.wrapDegrees(truth.yawBody - sim.yawBody);
         float maxStep = 12.0f; // deg/tick
-        float d = Mth.wrapDegrees(targetBody - sim.yawBody);
-        d = Mth.clamp(d, -maxStep, maxStep);
-        sim.yawBody = sim.yawBody + d;
+        bodyErr = Mth.clamp(bodyErr, -maxStep, maxStep);
+        sim.yawBody = sim.yawBody + bodyErr;
 
-        // Clamp head relative to body (prevents exorcist turns)
+        // Optional clamp: keep head within +/- 75° of body so player model doesn’t look broken
         float headDelta = Mth.wrapDegrees(sim.yawHead - sim.yawBody);
         headDelta = Mth.clamp(headDelta, -75f, 75f);
         sim.yawHead = sim.yawBody + headDelta;
+
     }
 
     private static void hardSnapToTruth(GhostSim sim, ServerTruth truth) {
@@ -448,39 +455,46 @@ public final class ClientGhostBots {
     }
 
     private static RemotePlayer spawnGhost(ClientLevel level, S2CBotStatePacket s) {
-        UUID uuid = UUID.nameUUIDFromBytes(("bot:" + s.botId()).getBytes(StandardCharsets.UTF_8));
+        UUID uuid = s.uuid();
         GameProfile profile = new GameProfile(uuid, s.botId());
 
         RemotePlayer ghost = new RemotePlayer(level, profile);
 
-        int entityId = stableEntityId(s.botId());
+        int entityId = s.entityId();
         ghost.setId(entityId);
 
+        // Position first: avoids a 0,0,0 flash on initial render
         ghost.setPos(s.x(), s.y(), s.z());
-        ghost.setYRot(s.yaw());
-        ghost.setXRot(s.pitch());
-        ghost.setYHeadRot(s.yaw());
-        ghost.setDeltaMovement(new Vec3(s.vx(), s.vy(), s.vz()).scale(1.0 / TPS));
-        try {
-            ghost.yHeadRotO = s.yaw();
-        } catch (Throwable ignored) {
-        }
+        ghost.xo = s.x();
+        ghost.yo = s.y();
+        ghost.zo = s.z();
 
-        // If an entity with this ID already exists, remove it first (prevents
-        // duplicates)
+        // Rotation (body/head/pitch)
+        ghost.setYRot(s.bodyYaw());
+        ghost.setXRot(s.pitch());
+        ghost.setYHeadRot(s.headYaw());
+
+        ghost.yRotO = s.bodyYaw();
+        ghost.xRotO = s.pitch();
+        ghost.yHeadRotO = s.headYaw();
+
+        // Player model consistency
+        try { ghost.yBodyRot = s.bodyYaw(); } catch (Throwable ignored) {}
+        try { ghost.yBodyRotO = s.bodyYaw(); } catch (Throwable ignored) {}
+
+        // Packet velocity is blocks/sec → convert to blocks/tick
+        ghost.setDeltaMovement(new Vec3(s.vx(), s.vy(), s.vz()).scale(1.0 / TPS));
+
+        // If an entity with this ID already exists, remove it first
         Entity existing = level.getEntity(entityId);
         if (existing != null) {
             existing.remove(RemovalReason.DISCARDED);
         }
 
-        // IMPORTANT: Player entities must be added with addPlayer (not addEntity)
+        // Player entities must be added with addPlayer
         level.addPlayer(entityId, ghost);
 
         return ghost;
-    }
-
-    private static int stableEntityId(String botId) {
-        return 0x3FFF0000 ^ botId.hashCode();
     }
 
     private static final class ServerTruth {
@@ -488,14 +502,16 @@ public final class ClientGhostBots {
         Vec3 pos; // blocks
         Vec3 velTick; // blocks/tick
         float yawHead;
+        float yawBody;
         float pitch;
         boolean onGround;
 
-        ServerTruth(long tick, Vec3 pos, Vec3 velTick, float yawHead, float pitch, boolean onGround) {
+        ServerTruth(long tick, Vec3 pos, Vec3 velTick, float yawHead, float yawBody, float pitch, boolean onGround) {
             this.tick = tick;
             this.pos = pos;
             this.velTick = velTick;
             this.yawHead = yawHead;
+            this.yawBody = yawBody;
             this.pitch = pitch;
             this.onGround = onGround;
         }
@@ -524,7 +540,7 @@ public final class ClientGhostBots {
             this.onGround = t.onGround;
 
             this.yawHead = t.yawHead;
-            this.yawBody = t.yawHead;
+            this.yawBody = t.yawBody; 
             this.pitch = t.pitch;
 
             this.prevPos = t.pos;

@@ -33,6 +33,7 @@ public class ServerBotHooks {
     private final int instanceId = INSTANCES.incrementAndGet();
 
     private boolean spawned = false;
+    private boolean DEBUG_WS = false;
 
     public ServerBotHooks() {
         System.out.println("[AI-BOT] ServerBotHooks registered. instanceId=" + instanceId
@@ -75,9 +76,11 @@ public class ServerBotHooks {
         if (event.phase != TickEvent.Phase.END) return;
         if (!spawned) return;
 
-        System.out.println("[AI-BOT][DBG][HOOK] onServerTick instanceId=" + instanceId
-        + " this=" + System.identityHashCode(this)
-        + " phase=" + event.phase);
+        if (DEBUG_WS) {
+            System.out.println("[AI-BOT][DBG][HOOK] onServerTick instanceId=" + instanceId
+                    + " this=" + System.identityHashCode(this)
+                    + " phase=" + event.phase);
+        }
 
         MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
 

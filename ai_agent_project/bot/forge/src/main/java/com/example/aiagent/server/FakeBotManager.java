@@ -28,7 +28,6 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.Map;
 import java.util.Set;
-import java.util.HashMap;
 
 /**
  * FakeBotManager (SERVER SIDE)
@@ -185,48 +184,51 @@ public class FakeBotManager {
     }
 
     public boolean teleportBotToPlayer(ServerPlayer caller, String botId) {
-    FakeBot bot = bots.get(botId);
-    if (bot == null || bot.player == null) return false;
+        FakeBot bot = bots.get(botId);
+        if (bot == null || bot.player == null) return false;
 
-    // For now: only support same-dimension teleports (keeps it safe & deterministic)
-    if (bot.player.level() != caller.level()) {
-        System.out.println("[AI-BOT] Refusing teleport: bot and caller are in different dimensions.");
-        return false;
+        // For now: only support same-dimension teleports (keeps it safe & deterministic)
+        if (bot.player.level() != caller.level()) {
+            System.out.println("[AI-BOT] Refusing teleport: bot and caller are in different dimensions.");
+            return false;
+        }
+
+        final double x = caller.getX();
+        final double y = caller.getY();
+        final double z = caller.getZ();
+        final float yaw = caller.getYRot();
+        final float pitch = caller.getXRot();
+
+        // Stop motion/state that could fight the move
+        bot.player.stopRiding();
+        bot.player.setDeltaMovement(0, 0, 0);
+        bot.player.fallDistance = 0;
+
+        // IMPORTANT: raw position set bypasses ServerPlayer connection teleport logic
+        bot.player.setPosRaw(x, y, z);
+
+        // Rotation (set both current and "old" so it doesn't snap back)
+        bot.player.setYRot(yaw);
+        bot.player.setXRot(pitch);
+        bot.player.yRotO = yaw;
+        bot.player.xRotO = pitch;
+
+        // Head/body for rendering correctness
+        bot.player.setYHeadRot(yaw);
+        bot.player.yBodyRot = yaw;
+
+        // Mark dirty so tracking/clients update
+        bot.player.hasImpulse = true;
+        bot.player.hurtMarked = true;
+
+        System.out.println("[AI-BOT] Teleported " + botId + " to "
+                + bot.player.getX() + ", " + bot.player.getY() + ", " + bot.player.getZ());
+
+        bot.forceStateSync = true;
+        bot.swingMainHandPulse = false; // optional, avoid stray animation on teleport
+
+        return true;
     }
-
-    final double x = caller.getX();
-    final double y = caller.getY();
-    final double z = caller.getZ();
-    final float yaw = caller.getYRot();
-    final float pitch = caller.getXRot();
-
-    // Stop motion/state that could fight the move
-    bot.player.stopRiding();
-    bot.player.setDeltaMovement(0, 0, 0);
-    bot.player.fallDistance = 0;
-
-    // IMPORTANT: raw position set bypasses ServerPlayer connection teleport logic
-    bot.player.setPosRaw(x, y, z);
-
-    // Rotation (set both current and "old" so it doesn't snap back)
-    bot.player.setYRot(yaw);
-    bot.player.setXRot(pitch);
-    bot.player.yRotO = yaw;
-    bot.player.xRotO = pitch;
-
-    // Head/body for rendering correctness
-    bot.player.setYHeadRot(yaw);
-    bot.player.yBodyRot = yaw;
-
-    // Mark dirty so tracking/clients update
-    bot.player.hasImpulse = true;
-    bot.player.hurtMarked = true;
-
-    System.out.println("[AI-BOT] Teleported " + botId + " to "
-            + bot.player.getX() + ", " + bot.player.getY() + ", " + bot.player.getZ());
-
-    return true;
-}
 
     public JsonObject pollCompletedResult() {
         return completedStepResults.poll();
@@ -252,8 +254,7 @@ public class FakeBotManager {
 
     /** Spawn in provided level (recommended). */
     public void ensureDefaultBot(MinecraftServer server, ServerLevel level) {
-        if (server == null || level == null)
-            return;
+        if (server == null || level == null) return;
 
         FakeBot existing = getDefaultBot();
         if (existing != null && existing.player != null && existing.player.isAlive()) {
@@ -268,7 +269,7 @@ public class FakeBotManager {
         fp.setNoGravity(false);
         fp.noPhysics = false;
 
-        // Player-like behavior
+        // Make it damageable / player-like
         fp.setInvulnerable(false);
 
         fp.getAbilities().invulnerable = false;
@@ -277,9 +278,15 @@ public class FakeBotManager {
         fp.getAbilities().setWalkingSpeed(0.1f);
         fp.onUpdateAbilities();
 
-        fp.setGameMode(net.minecraft.world.level.GameType.SURVIVAL);
+        // IMPORTANT: use gameMode controller
+        fp.gameMode.changeGameModeForPlayer(net.minecraft.world.level.GameType.SURVIVAL);
 
-        // Place at spawn (one-time)
+        // Clear hit immunity window
+        fp.invulnerableTime = 0;
+        fp.hurtTime = 0;
+        fp.hurtMarked = true;
+
+        // Place at spawn
         BlockPos spawn = level.getSharedSpawnPos();
         fp.moveTo(spawn.getX() + 0.5, spawn.getY(), spawn.getZ() + 0.5, 0f, 0f);
 
@@ -288,7 +295,10 @@ public class FakeBotManager {
         FakeBot bot = new FakeBot(fp);
         bots.put(bot.botId, bot);
 
-        System.out.println("[AI-BOT] Default FakeBot spawned: " + DEFAULT_BOT_NAME + " at " + spawn
+        System.out.println("[AI-BOT] Default FakeBot spawned: " + DEFAULT_BOT_NAME
+                + " entityId=" + fp.getId()
+                + " uuid=" + fp.getUUID()
+                + " at " + spawn
                 + " in " + level.dimension().location());
     }
 
@@ -316,9 +326,11 @@ public class FakeBotManager {
                 dbgCallsThisServerTick++;
                 // Only print when it becomes > 1 to avoid noise
                 if (dbgCallsThisServerTick == 2 || dbgCallsThisServerTick == 3 || dbgCallsThisServerTick == 5) {
-                    System.out.println("[AI-BOT][DBG][SRV] FakeBotManager.tick() called multiple times in same serverTick="
+                    if (DEBUG_WS) {
+                        System.out.println("[AI-BOT][DBG][SRV] FakeBotManager.tick() called multiple times in same serverTick="
                             + gt + " callsSoFar=" + dbgCallsThisServerTick + " tickCounter=" + tickCounter
                             + " thread=" + Thread.currentThread().getName());
+                    }
                 }
             } else {
                 dbgLastServerGameTime = gt;
@@ -342,31 +354,42 @@ public class FakeBotManager {
 
             // --- State sync to clients for ghost rendering ---
             if (bot.forceStateSync || (tickCounter % STATE_SYNC_PERIOD_TICKS) == 0) {
+                final boolean wasForced = bot.forceStateSync;
                 bot.forceStateSync = false;
+
                 final boolean swingPulse = bot.swingMainHandPulse;
-                long serverTick = level.getGameTime(); // authoritative server tick
-                Vec3 v = bot.player.getDeltaMovement().scale(20.0); // blocks/tick -> blocks/second
+                final long serverTick = level.getGameTime();
+
+                // velocity encoded as blocks/sec (BPS)
+                final Vec3 velBps = bot.player.getDeltaMovement().scale(20.0);
+
+                // rotation: send head + body + pitch
+                final float headYaw = bot.player.getYHeadRot();
+                final float bodyYaw = bot.player.yBodyRot;   // IMPORTANT: torso yaw
+                final float pitch   = bot.player.getXRot();
 
                 S2CBotStatePacket msg = new S2CBotStatePacket(
-                        "agent0",
+                        bot.botId,
+                        bot.player.getId(),
+                        bot.player.getUUID(),
                         serverTick,
                         bot.player.getX(), bot.player.getY(), bot.player.getZ(),
-                        v.x, v.y, v.z,
-                        bot.player.getYRot(), bot.player.getXRot(),
+                        velBps.x, velBps.y, velBps.z,
+                        headYaw, bodyYaw, pitch,
                         bot.player.onGround(),
                         swingPulse
                 );
 
                 System.out.println("[AI-BOT][DBG][SRV-SEND] bot=" + bot.player.getGameProfile().getName()
-                + " serverTick=" + serverTick
-                + " tickCounter=" + tickCounter
-                + " period=" + STATE_SYNC_PERIOD_TICKS
-                + " force=" + bot.forceStateSync
-                + " pos=(" + bot.player.getX() + "," + bot.player.getY() + "," + bot.player.getZ() + ")"
-                + " velBPS=(" + v.x + "," + v.y + "," + v.z + ")"
-                + " onGround=" + bot.player.onGround()
-                + " dim=" + level.dimension().location()
-                + " thread=" + Thread.currentThread().getName());
+                        + " tick=" + serverTick
+                        + " force=" + wasForced
+                        + " headYaw=" + headYaw
+                        + " bodyYaw=" + bodyYaw
+                        + " pitch=" + pitch
+                        + " pos=(" + bot.player.getX() + "," + bot.player.getY() + "," + bot.player.getZ() + ")"
+                        + " velBPS=(" + velBps.x + "," + velBps.y + "," + velBps.z + ")"
+                        + " onGround=" + bot.player.onGround()
+                );
 
                 BotNet.CHANNEL.send(PacketDistributor.DIMENSION.with(() -> level.dimension()), msg);
                 bot.swingMainHandPulse = false;
@@ -443,14 +466,11 @@ public class FakeBotManager {
                         + " sneak=" + bot.sneak);
             }
 
-            // --- NEW: apply continuous controls from ctrl* with short TTL ---
             if (bot.ctrlHoldTicks > 0) {
-
                 // Apply look deltas deterministically
                 bot.yaw += bot.ctrlYawDelta;
                 bot.pitch += bot.ctrlPitchDelta;
-                if (bot.pitch > 89f) bot.pitch = 89f;
-                if (bot.pitch < -89f) bot.pitch = -89f;
+                bot.pitch = Mth.clamp(bot.pitch, -89f, 89f);
 
                 // Materialize movement controls for this tick
                 bot.forward = bot.ctrlForward;
@@ -460,17 +480,18 @@ public class FakeBotManager {
                 bot.sneak   = bot.ctrlSneak;
 
                 bot.ctrlHoldTicks--;
-
             } else {
-                // No recent control update -> decay to neutral
-                bot.forward = 0.0;
-                bot.strafe  = 0.0;
-                bot.jump    = false;
-                bot.sprint  = false;
-                bot.sneak   = false;
-
+                // No recent control update -> decay only the ctrl deltas.
+                // DO NOT wipe bot.forward/strafe/jump here if step payloads are expected to drive them.
                 bot.ctrlYawDelta = 0f;
                 bot.ctrlPitchDelta = 0f;
+
+                // Optional: if you want full stop when no control packets, uncomment:
+                // bot.forward = 0.0;
+                // bot.strafe  = 0.0;
+                // bot.jump    = false;
+                // bot.sprint  = false;
+                // bot.sneak   = false;
             }
 
             // 1) apply look/hotbar/attack/use
@@ -480,42 +501,57 @@ public class FakeBotManager {
             applyMovementTravel(bot);
 
             // Count down
+            // Count down (exactly once per tick)
             bot.stepTicksRemaining--;
 
             if (bot.stepTicksRemaining <= 0) {
-                int finishedSeq = bot.stepSeq;
-                String finishedActionId = bot.stepActionId;
+                final int finishedSeq = bot.stepSeq;
+                final String finishedActionId = bot.stepActionId;
 
+                // Always emit action_result for a valid seq/action_id (even if obs has issues)
                 if (finishedSeq < 0 || finishedActionId == null || finishedActionId.isBlank()) {
                     System.out.println("[AI-BOT] ERROR: invalid finishedSeq/actionId at finish; skipping emit. "
                             + "name=" + bot.player.getGameProfile().getName()
                             + " finishedSeq=" + finishedSeq
                             + " actionId=" + finishedActionId);
                 } else {
-                    // 1) OBSERVATION (full schema with defaults)
-                    JsonObject obsMsg = buildObservationEvent(finishedSeq, bot, level);
-                    completedStepResults.offer(obsMsg);
+                    // 1) OBSERVATION (best-effort: do not let an exception block action_result)
+                    try {
+                        JsonObject obsMsg = buildObservationEvent(finishedSeq, bot, level);
+                        completedStepResults.offer(obsMsg);
+                    } catch (Throwable t) {
+                        System.out.println("[AI-BOT] ERROR: buildObservationEvent failed seq=" + finishedSeq
+                                + " action_id=" + finishedActionId
+                                + " err=" + t);
+                    }
+
+                    // 2) ACTION_RESULT (ACK) - MUST happen for await_result=true actions
+                    try {
+                        JsonObject arMsg = buildActionResultEvent(finishedSeq, finishedActionId, "success", null);
+                        completedStepResults.offer(arMsg);
+                    } catch (Throwable t) {
+                        System.out.println("[AI-BOT] ERROR: buildActionResultEvent failed seq=" + finishedSeq
+                                + " action_id=" + finishedActionId
+                                + " err=" + t);
+                    }
 
                     if (DEBUG_MOVE) System.out.println("[AI-BOT] COMPLETE seq=" + finishedSeq + " action_id=" + finishedActionId);
-
-                    // 2) ACTION_RESULT (ack)
-                    JsonObject arMsg = buildActionResultEvent(finishedSeq, finishedActionId, "success", null);
-                    completedStepResults.offer(arMsg);
-
-                    if (DEBUG_WS) {
-                        System.out.println("[AI-BOT] ENQUEUE obs+action_result seq=" + finishedSeq + " action_id=" + finishedActionId);
-                    }
+                    if (DEBUG_WS) System.out.println("[AI-BOT] ENQUEUE obs+action_result seq=" + finishedSeq + " action_id=" + finishedActionId);
                 }
 
+                // Step is finished -> reset step state (IMPORTANT)
+                clearOneShotControls(bot);
+                bot.stepActive = false;
+                bot.stepTicksRemaining = 0;
+                bot.stepAction = null;
+                bot.stepSeq = -1;
+                bot.stepActionId = null;
+
+            } else {
+                // Step still active -> ONLY clear one-shot clicks
+                clearOneShotControls(bot);
             }
 
-            // Clear one-shot actions so clicks don't repeat; keep ctrl* for short persistence
-            clearOneShotControls(bot);
-            bot.stepActive = false;
-            bot.stepTicksRemaining = 0;
-            bot.stepAction = null;
-            bot.stepSeq = -1;
-            bot.stepActionId = null;
         }
 
     }
@@ -784,126 +820,131 @@ private JsonObject buildObservationEvent(int seq, FakeBot bot, ServerLevel level
 }
 
     private void applyPayloadToBot(JsonObject payload, FakeBot bot) {
-        if (payload == null || bot == null)
-            return;
+        if (payload == null || bot == null) return;
 
-        // LOOK (deltas)
-        if (payload.has("look")) {
+        // -----------------------------
+        // LOOK (deltas)  accept multiple key spellings
+        // -----------------------------
+        if (payload.has("look") && payload.get("look").isJsonObject()) {
             JsonObject look = payload.getAsJsonObject("look");
-            bot.ctrlYawDelta = look.has("dYaw") ? look.get("dYaw").getAsFloat() : 0f;
-            bot.ctrlPitchDelta = look.has("dPitch") ? look.get("dPitch").getAsFloat() : 0f;
-            bot.ctrlHoldTicks = 3;
 
-            if (bot.pitch > 89f)
-                bot.pitch = 89f;
-            if (bot.pitch < -89f)
-                bot.pitch = -89f;
-        }
+            float dyaw = 0f;
+            float dpitch = 0f;
 
-        // MOVE
-        if (payload.has("move") && payload.get("move").isJsonObject()) {
-            JsonObject move = payload.getAsJsonObject("move");
-            if (DEBUG_MOVE)
-                System.out.println("[PAYLOAD MOVE] keys=" + payload.keySet()
-                        + " move=" + move.toString());
-            bot.ctrlForward = move.has("forward") ? (float) move.get("forward").getAsDouble() : 0f;
-            bot.ctrlStrafe  = move.has("strafe")  ? (float) move.get("strafe").getAsDouble()  : 0f;
-            bot.ctrlHoldTicks = 3;
+            if (look.has("dYaw")) dyaw = look.get("dYaw").getAsFloat();
+            else if (look.has("yaw_delta")) dyaw = look.get("yaw_delta").getAsFloat();
+            else if (look.has("dyaw")) dyaw = look.get("dyaw").getAsFloat();
 
-            if (DEBUG_DEEP_MOVE)
-                System.out.println("[BOT INPUT] seq=" + bot.stepSeq
-                        + " f=" + bot.forward + " s=" + bot.strafe
-                        + " jump=" + bot.jump + " sprint=" + bot.sprint + " sneak=" + bot.sneak);
+            if (look.has("dPitch")) dpitch = look.get("dPitch").getAsFloat();
+            else if (look.has("pitch_delta")) dpitch = look.get("pitch_delta").getAsFloat();
+            else if (look.has("dpitch")) dpitch = look.get("dpitch").getAsFloat();
 
-        } else {
-            if (DEBUG_MOVE)
-                System.out.println("[PAYLOAD NO-MOVE] keys=" + payload.keySet());
-        }
+            bot.ctrlYawDelta = dyaw;
+            bot.ctrlPitchDelta = dpitch;
 
-        if (payload.has("jump") || payload.has("sprint") || payload.has("sneak")) {
-            bot.ctrlJump   = payload.has("jump")   && payload.get("jump").getAsBoolean();
-            bot.ctrlSprint = payload.has("sprint") && payload.get("sprint").getAsBoolean();
-            bot.ctrlSneak  = payload.has("sneak")  && payload.get("sneak").getAsBoolean();
             bot.ctrlHoldTicks = Math.max(bot.ctrlHoldTicks, 3);
         }
 
+        // -----------------------------
+        // MOVE (forward/strafe + optionally jump/sprint/sneak inside move)
+        // -----------------------------
+        if (payload.has("move") && payload.get("move").isJsonObject()) {
+            JsonObject move = payload.getAsJsonObject("move");
+
+            bot.ctrlForward = move.has("forward") ? (float) move.get("forward").getAsDouble() : 0f;
+            bot.ctrlStrafe  = move.has("strafe")  ? (float) move.get("strafe").getAsDouble()  : 0f;
+
+            // Some senders embed these inside move
+            if (move.has("jump"))   bot.ctrlJump   = move.get("jump").getAsBoolean();
+            if (move.has("sprint")) bot.ctrlSprint = move.get("sprint").getAsBoolean();
+            if (move.has("sneak"))  bot.ctrlSneak  = move.get("sneak").getAsBoolean();
+
+            bot.ctrlHoldTicks = Math.max(bot.ctrlHoldTicks, 3);
+
+            if (DEBUG_MOVE) {
+                System.out.println("[PAYLOAD MOVE] keys=" + payload.keySet()
+                        + " f=" + bot.ctrlForward + " s=" + bot.ctrlStrafe
+                        + " jump=" + bot.ctrlJump + " sprint=" + bot.ctrlSprint + " sneak=" + bot.ctrlSneak);
+            }
+        } else {
+            if (DEBUG_MOVE) System.out.println("[PAYLOAD NO-MOVE] keys=" + payload.keySet());
+        }
+
+        // -----------------------------
+        // FLAGS also allowed top-level
+        // -----------------------------
+        if (payload.has("jump")) {
+            bot.ctrlJump = payload.get("jump").getAsBoolean();
+            bot.ctrlHoldTicks = Math.max(bot.ctrlHoldTicks, 3);
+        }
+        if (payload.has("sprint")) {
+            bot.ctrlSprint = payload.get("sprint").getAsBoolean();
+            bot.ctrlHoldTicks = Math.max(bot.ctrlHoldTicks, 3);
+        }
+        if (payload.has("sneak")) {
+            bot.ctrlSneak = payload.get("sneak").getAsBoolean();
+            bot.ctrlHoldTicks = Math.max(bot.ctrlHoldTicks, 3);
+        }
+
+        // -----------------------------
+        // HOTBAR + DISCRETE ACTIONS
+        // -----------------------------
         if (payload.has("select_slot")) {
             bot.selectSlot = payload.get("select_slot").getAsInt();
         }
 
         bot.attack = payload.has("attack") && payload.get("attack").getAsBoolean();
-        bot.use = payload.has("use") && payload.get("use").getAsBoolean();
+        bot.use    = payload.has("use")    && payload.get("use").getAsBoolean();
     }
+
+
 
     private void applyMovementTravel(FakeBot bot) {
         ServerPlayer p = bot.player;
+        if (p == null) return;
 
         // Convert bot inputs to [-1..1]
         float forward = (float) bot.forward;
-        float strafe = (float) bot.strafe;
-
-        if (DEBUG_DEEP_MOVE)
-            System.out.println("[APPLYCONTROL] seq=" + bot.stepSeq
-                    + " f=" + bot.forward + " s=" + bot.strafe
-                    + " yRot=" + p.getYRot());
+        float strafe  = (float) bot.strafe;
 
         // deadzone + clamp
-        if (Math.abs(forward) < 0.2f)
-            forward = 0f;
-        if (Math.abs(strafe) < 0.2f)
-            strafe = 0f;
+        if (Math.abs(forward) < 0.2f) forward = 0f;
+        if (Math.abs(strafe)  < 0.2f) strafe  = 0f;
 
-        forward = Math.max(-1f, Math.min(1f, forward));
-        strafe = Math.max(-1f, Math.min(1f, strafe));
+        forward = Mth.clamp(forward, -1f, 1f);
+        strafe  = Mth.clamp(strafe,  -1f, 1f);
 
+        // Apply flags
         p.setSprinting(bot.sprint);
         p.setShiftKeyDown(bot.sneak);
-
-        // Jump input
         p.setJumping(bot.jump);
 
-        // Base speed. travel() uses p.getSpeed() internally.
-        // Tune these (they’re “player-like” but you can adjust)
+        // Optional: only set speed if you really want to override vanilla attribute behavior
+        // If you suspect this is interfering, comment this out and rely on Attributes.MOVEMENT_SPEED.
         p.setSpeed(bot.sprint ? 0.13f : 0.10f);
-
-        if ((tickCounter % 20) == 0) {
-            if (DEBUG_MOVE)
-                System.out.println("[MOVE] f=" + bot.forward + " s=" + bot.strafe
-                        + " sprint=" + bot.sprint + " sneak=" + bot.sneak
-                        + " speed=" + p.getSpeed()
-                        + " dV=" + p.getDeltaMovement());
-        }
 
         Vec3 pos0 = p.position();
         Vec3 v0 = p.getDeltaMovement();
 
+        // NOTE: travel expects (strafe, vertical, forward)
         p.travel(new Vec3(strafe, 0.0, forward));
 
         Vec3 pos1 = p.position();
         Vec3 v1 = p.getDeltaMovement();
 
-        if (DEBUG_DEEP_MOVE)
-            System.out.println("[VEL] before=" + v0 + " after=" + v1
-                    + " onGround=" + p.onGround()
-                    + " hColl=" + p.horizontalCollision
-                    + " vColl=" + p.verticalCollision);
-
         if (DEBUG_MOVE) {
-            System.out.println("[TRAVEL] f=" + forward + " s=" + strafe
+            System.out.println("[TRAVEL] seq=" + bot.stepSeq
+                    + " f=" + forward + " s=" + strafe
                     + " posΔ=(" + (pos1.x - pos0.x) + ", " + (pos1.y - pos0.y) + ", " + (pos1.z - pos0.z) + ")"
                     + " vel0=" + v0 + " vel1=" + v1
                     + " onGround=" + p.onGround()
                     + " hColl=" + p.horizontalCollision
                     + " vColl=" + p.verticalCollision);
         }
-
-        var attr = p.getAttribute(net.minecraft.world.entity.ai.attributes.Attributes.MOVEMENT_SPEED);
-        if (DEBUG_MOVE && attr != null) {
-            System.out.println("[ATTR] movement_speed base=" + attr.getBaseValue()
-                    + " value=" + attr.getValue());
-        }
-
     }
+
+
+
 
     private void applyLookAndHotbarAndActions(FakeBot bot, ServerLevel level) {
         ServerPlayer p = bot.player;
@@ -911,14 +952,17 @@ private JsonObject buildObservationEvent(int seq, FakeBot bot, ServerLevel level
         // -----------------------------
         // 1) LOOK
         // -----------------------------
-        // 1) LOOK
         bot.pitch = Mth.clamp(bot.pitch, -89f, 89f);
 
-        // Set current rotations
+        // Save previous rotations for smooth rendering
+        p.yRotO = p.getYRot();
+        p.xRotO = p.getXRot();
+        p.yBodyRotO = p.yBodyRot;
+        p.yHeadRotO = p.getYHeadRot();
+
+        // Apply current look (head)
         p.setYRot(bot.yaw);
         p.setXRot(bot.pitch);
-
-        // Head yaw (look direction)
         p.setYHeadRot(bot.yaw);
 
         // Make body follow head gradually (less robotic)
@@ -933,9 +977,6 @@ private JsonObject buildObservationEvent(int seq, FakeBot bot, ServerLevel level
         float headDelta = Mth.wrapDegrees(bot.yaw - p.yBodyRot);
         headDelta = Mth.clamp(headDelta, -75f, 75f);
         p.setYHeadRot(p.yBodyRot + headDelta);
-
-        // Body yaw (torso direction) — critical for player rendering
-        p.yBodyRot = bot.yaw;
 
         // -----------------------------
         // 2) HOTBAR
@@ -967,11 +1008,11 @@ private JsonObject buildObservationEvent(int seq, FakeBot bot, ServerLevel level
             p.swing(InteractionHand.MAIN_HAND, true);
             bot.swingMainHandPulse = true;
             // Later: real right-click use
-            // p.gameMode.useItem(p, level, p.getItemInHand(InteractionHand.MAIN_HAND),
-            // InteractionHand.MAIN_HAND);
+            // p.gameMode.useItem(p, level, p.getItemInHand(InteractionHand.MAIN_HAND), InteractionHand.MAIN_HAND);
         }
         bot.lastUse = bot.use;
     }
+
 
     private void doServerAttack(ServerLevel level, ServerPlayer p) {
         Vec3 from = p.getEyePosition();
