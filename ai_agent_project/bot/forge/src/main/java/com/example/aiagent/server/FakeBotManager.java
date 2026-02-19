@@ -264,7 +264,7 @@ public class FakeBotManager {
         }
 
         GameProfile profile = new GameProfile(DEFAULT_BOT_UUID, DEFAULT_BOT_NAME);
-        ServerPlayer fp = FakePlayerFactory.get(level, profile);
+        ServerPlayer fp = DamageableFakePlayerFactory.get(level, profile);
 
         // Physics
         fp.setNoGravity(false);
@@ -381,7 +381,7 @@ public class FakeBotManager {
                         swingPulse
                 );
 
-                System.out.println("[AI-BOT][DBG][SRV-SEND] bot=" + bot.player.getGameProfile().getName()
+                if (DEBUG_NET) System.out.println("[AI-BOT][DBG][SRV-SEND] bot=" + bot.player.getGameProfile().getName()
                         + " tick=" + serverTick
                         + " force=" + wasForced
                         + " headYaw=" + headYaw
