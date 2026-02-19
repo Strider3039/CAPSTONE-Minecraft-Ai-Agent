@@ -45,6 +45,7 @@ public class FakeBotManager {
 
     // Debug switches
     private static final boolean DEBUG_WS = false;
+    private static final boolean DEBUG_NET = false;
     private static final boolean DEBUG_MOVE = false;
     private static final boolean DEBUG_DEEP_MOVE = false;
 
@@ -326,7 +327,7 @@ public class FakeBotManager {
                 dbgCallsThisServerTick++;
                 // Only print when it becomes > 1 to avoid noise
                 if (dbgCallsThisServerTick == 2 || dbgCallsThisServerTick == 3 || dbgCallsThisServerTick == 5) {
-                    if (DEBUG_WS) {
+                    if (DEBUG_NET) {
                         System.out.println("[AI-BOT][DBG][SRV] FakeBotManager.tick() called multiple times in same serverTick="
                             + gt + " callsSoFar=" + dbgCallsThisServerTick + " tickCounter=" + tickCounter
                             + " thread=" + Thread.currentThread().getName());
