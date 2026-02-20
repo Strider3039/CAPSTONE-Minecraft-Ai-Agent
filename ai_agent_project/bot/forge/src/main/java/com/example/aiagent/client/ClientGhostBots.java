@@ -45,7 +45,7 @@ public final class ClientGhostBots {
     private static ClientLevel lastLevel;
 
     // Debug telemetry
-    private static final boolean DEBUG_GHOST = true;
+    private static final boolean DEBUG_GHOST = false;
 
     private static final boolean DEBUG_NET = false;
     private static final int DEBUG_EVERY_TICKS = 10; // print once per bot every N client ticks
@@ -184,6 +184,17 @@ public final class ClientGhostBots {
         if (s.swingMainHandPulse()) {
             ghost.swing(InteractionHand.MAIN_HAND);
         }
+
+        // Hurt flash/animation
+        if (s.hurtPulse()) {
+            // Vanilla-style trigger (more reliable than only setting timers)
+            ghost.handleEntityEvent((byte) 2);
+
+            ghost.hurtTime = 10;
+            ghost.hurtDuration = 10;
+            ghost.invulnerableTime = 20;
+            ghost.hurtMarked = true;
+        }
     }
 
     public static void onClientTick(TickEvent.ClientTickEvent event) {
@@ -242,14 +253,26 @@ public final class ClientGhostBots {
                 continue;
             }
 
-            // 1) Predict one tick locally
-            predictOneTick(sim);
+            // Follow truth directly (still server-authoritative).
+            if (truth.tick == sim.lastTruthTick + 1) {
+                sim.pos = truth.pos;
+                sim.velTick = truth.velTick;
+                sim.onGround = truth.onGround;
 
-            // 2) Smoothly correct toward server truth (PD controller)
-            double corrMag = correctTowardTruth(sim, truth);
-            if (corrMag > MAX_CORR_PER_TICK)
-                dbg.bigCorrClamp++;
-            dbg.lastCorrMag = corrMag;
+                dbg.lastCorrMag = 0.0;
+            } else {
+                // 1) Predict one tick locally
+                predictOneTick(sim);
+
+                // 2) Smoothly correct toward server truth (PD controller)
+                double corrMag = correctTowardTruth(sim, truth);
+                if (corrMag > MAX_CORR_PER_TICK)
+                    dbg.bigCorrClamp++;
+                dbg.lastCorrMag = corrMag;
+            }
+
+            // Update last truth tick after using it
+            sim.lastTruthTick = truth.tick;
 
             Vec3 ePos1 = truth.pos.subtract(sim.pos);
             Vec3 eVel1 = truth.velTick.subtract(sim.velTick);
@@ -360,10 +383,12 @@ public final class ClientGhostBots {
             vy = (vy * DRAG_AIR) + GRAVITY_PER_TICK;
         }
 
+        // When syncing every tick, extra X/Z drag makes impulses (knockback) look muted.
+        // Keep gravity on Y, but don't damp horizontal here.
         sim.velTick = new Vec3(
-                sim.velTick.x * DRAG_AIR,
+                sim.velTick.x,
                 vy,
-                sim.velTick.z * DRAG_AIR);
+                sim.velTick.z);
 
         // Integrate position (no collision resolution yet; you can upgrade later)
         sim.pos = sim.pos.add(sim.velTick);
@@ -379,8 +404,10 @@ public final class ClientGhostBots {
         Vec3 corr = ePos.scale(KP_POS).add(eVel.scale(KD_VEL));
 
         double mag = corr.length();
+        double appliedMag = mag;
         if (mag > MAX_CORR_PER_TICK) {
             corr = corr.scale(MAX_CORR_PER_TICK / mag);
+            appliedMag = MAX_CORR_PER_TICK;
         }
 
         sim.velTick = sim.velTick.add(corr);
@@ -413,7 +440,7 @@ public final class ClientGhostBots {
             }
         }
 
-        return mag;
+        return appliedMag;
     }
 
     private static void updateYaw(GhostSim sim, ServerTruth truth) {

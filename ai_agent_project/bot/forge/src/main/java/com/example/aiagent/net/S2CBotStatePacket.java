@@ -17,7 +17,8 @@ public record S2CBotStatePacket(
         double vx, double vy, double vz,
         float headYaw, float bodyYaw, float pitch,
         boolean onGround,
-        boolean swingMainHandPulse
+        boolean swingMainHandPulse,
+        boolean hurtPulse
 ) {
     public static void encode(S2CBotStatePacket msg, FriendlyByteBuf buf) {
         buf.writeUtf(msg.botId, 64);
@@ -39,6 +40,7 @@ public record S2CBotStatePacket(
 
         buf.writeBoolean(msg.onGround);
         buf.writeBoolean(msg.swingMainHandPulse);
+        buf.writeBoolean(msg.hurtPulse);
     }
 
 
@@ -62,6 +64,7 @@ public record S2CBotStatePacket(
 
         boolean onGround = buf.readBoolean();
         boolean swingMainHandPulse = buf.readBoolean();
+        boolean hurtPulse = buf.readBoolean();
 
         return new S2CBotStatePacket(
                 botId,
@@ -72,7 +75,8 @@ public record S2CBotStatePacket(
                 vx, vy, vz,
                 headYaw, bodyYaw, pitch,
                 onGround,
-                swingMainHandPulse
+                swingMainHandPulse,
+                hurtPulse
         );
     }
 
@@ -80,10 +84,10 @@ public record S2CBotStatePacket(
         NetworkEvent.Context ctx = ctxSup.get();
         ctx.enqueueWork(() -> {
             DistExecutor.unsafeRunWhenOn(Dist.CLIENT, () -> () -> {
-                System.out.println("[AI-BOT][DBG][CL-RECV] bot=" + msg.botId()
-                    + " serverTick=" + msg.serverTick()
-                    + " hash=" + System.identityHashCode(msg)
-                    + " thread=" + Thread.currentThread().getName());
+                // System.out.println("[AI-BOT][DBG][CL-RECV] bot=" + msg.botId()
+                //     + " serverTick=" + msg.serverTick()
+                //     + " hash=" + System.identityHashCode(msg)
+                //     + " thread=" + Thread.currentThread().getName());
                 com.example.aiagent.client.ClientGhostBots.onBotState(msg);
             });
         });

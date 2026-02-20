@@ -25,6 +25,10 @@ public class BotMod {
     private long episodeStartTick = 0L;
     private boolean episodeActive = false;
 
+    private FakeBotManager botManager;
+    public FakeBotManager getBotManager() { return botManager; }
+
+
     public long getEpisodeStartTick() { return episodeStartTick; }
     public boolean isEpisodeActive() { return episodeActive; }
 
@@ -41,13 +45,14 @@ public class BotMod {
         event.enqueueWork(BotNet::register);
         System.out.println("[AI-BOT] CommonSetup: BotNet.register enqueued.");
 
-        // Dedicated server only: start bot system + tick hooks + overworld spawn hook
         if (FMLEnvironment.dist == Dist.DEDICATED_SERVER) {
             event.enqueueWork(() -> {
-                System.out.println("[AI-BOT] CommonSetup: constructing ServerBotHooks (dedicated server).");
-                new ServerBotHooks();
+                System.out.println("[AI-BOT] CommonSetup: constructing FakeBotManager + ServerBotHooks (dedicated server).");
+                this.botManager = new FakeBotManager();
+                new ServerBotHooks(this.botManager);
             });
         }
+
     }
 
     public void markEpisodeStarted(long startTick) {

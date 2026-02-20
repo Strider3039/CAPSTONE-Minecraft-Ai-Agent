@@ -33,7 +33,7 @@ public class AIBotCommand {
                         .executes(ctx -> {
                             
                             showInfo(ctx.getSource());
-                            ctx.getSource().sendSuccess(() -> Component.literal("Bots: " + ServerBotHooks.BOTS.getBotIds()), 
+                            ctx.getSource().sendSuccess(() -> Component.literal("Bots: " + BotMod.getInstance().getBotManager().getBotIds()), 
                             false);
 
                             return 1;
@@ -46,7 +46,7 @@ public class AIBotCommand {
                         .executes(ctx -> {
                             ServerPlayer player = ctx.getSource().getPlayerOrException();
 
-                            boolean ok = ServerBotHooks.BOTS.teleportBotToPlayer(player, "agent0");
+                            boolean ok = BotMod.getInstance().getBotManager().teleportBotToPlayer(player, "agent0");
 
                             if (ok) {
                                 ctx.getSource().sendSuccess(() -> Component.literal("§a[AI-BOT] agent0 teleported to you."), false);
@@ -73,7 +73,7 @@ public class AIBotCommand {
             return 0;
         }
 
-       ServerBotHooks.BOTS.ensureDefaultBot(server, level);
+       BotMod.getInstance().getBotManager().ensureDefaultBot(server, level);
 
        source.sendSuccess(
             () -> Component.literal("[AI-BOT] Spawned AI Bot in overworld."),
@@ -83,7 +83,7 @@ public class AIBotCommand {
     }
 
     private static int showInfo(CommandSourceStack source) {
-        var bots = ServerBotHooks.BOTS.getAllBots();
+        var bots = BotMod.getInstance().getBotManager().getAllBots();
 
         if (bots == null || bots.isEmpty()) {
             source.sendFailure(Component.literal("§c[AI-BOT] No bots spawned."));

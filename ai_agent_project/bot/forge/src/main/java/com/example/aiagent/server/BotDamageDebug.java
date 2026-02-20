@@ -102,14 +102,6 @@ public final class BotDamageDebug {
                         + " sleeping=" + tp.isSleeping()
                         + " abilitiesInvuln=" + (tp instanceof net.minecraft.server.level.ServerPlayer sp ? sp.getAbilities().invulnerable : false));
             }
-
-
-            var ds = attacker.damageSources().playerAttack(attacker);
-            boolean applied = le.hurt(ds, 6.0f);
-            System.out.println("[BOT][DBG][FORCE_HURT] applied=" + applied
-                    + " newHealth=" + le.getHealth()
-                    + " invulnTimeAfter=" + le.invulnerableTime
-                    + " hurtTimeAfter=" + le.hurtTime);
         }
 
     }

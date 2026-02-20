@@ -1,5 +1,7 @@
 package com.example.aiagent.server;
 
+import com.example.aiagent.BotMod;
+
 import net.minecraft.server.level.ServerLevel;
 
 /**
@@ -17,7 +19,7 @@ public final class NpcBotController {
 
     public static void enqueueActionJson(String json) {
         if (json == null || json.isBlank()) return;
-        ServerBotHooks.BOTS.enqueueActionJson(json);
+        BotMod.getInstance().getBotManager().enqueueActionJson(json);
     }
 
     public static void tick(ServerLevel level) {

@@ -22,7 +22,8 @@ import com.example.aiagent.server.tests.BotTestSuite;
  */
 public class ServerBotHooks {
 
-    public static final FakeBotManager BOTS = new FakeBotManager();
+    private final FakeBotManager bots;
+
 
     private static final String WS_URI = "ws://127.0.0.1:8765";
     private final ServerBridgeWebSocketClient ws = new ServerBridgeWebSocketClient(WS_URI);
@@ -35,7 +36,11 @@ public class ServerBotHooks {
     private boolean spawned = false;
     private boolean DEBUG_WS = false;
 
-    public ServerBotHooks() {
+    public ServerBotHooks(FakeBotManager bots) {
+        this.bots = bots;
+
+        MinecraftForge.EVENT_BUS.register(this);
+
         System.out.println("[AI-BOT] ServerBotHooks registered. instanceId=" + instanceId
                 + " this=" + System.identityHashCode(this));
         System.out.println("[AI-BOT][SERVER-WS] Will connect to " + WS_URI + " (dedicated servers only)");
@@ -57,7 +62,7 @@ public class ServerBotHooks {
         if (!level.dimension().location().toString().equals("minecraft:overworld")) return;
 
         System.out.println("[AI-BOT] Dedicated server overworld loaded. Spawning FakePlayer bot...");
-        BOTS.ensureDefaultBot(server, level);
+        bots.ensureDefaultBot(server, level);
 
         spawned = true;
     }
@@ -67,7 +72,7 @@ public class ServerBotHooks {
         System.out.println("[AI-BOT] Server stopping. Clearing bots...");
         try { ws.closeBlockingSafe(); } catch (Exception ignored) {}
 
-        BOTS.despawnAll();
+        bots.despawnAll();
         spawned = false;
     }
 
@@ -100,11 +105,11 @@ public class ServerBotHooks {
         // BotTestSuite.runOnce(level, BOTS);
 
         // Pull WS actions (from python) and enqueue into FakeBotManager
-        ws.drainActionsAndApply(level, BOTS);
+        ws.drainActionsAndApply(level, bots);
 
         // Apply queued actions
-        BOTS.tick();
-        ws.drainCompletedResultsAndSend(BOTS);
+        bots.tick();
+        ws.drainCompletedResultsAndSend(bots);
 
     }
 
