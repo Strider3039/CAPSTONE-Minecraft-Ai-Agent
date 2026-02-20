@@ -11,6 +11,8 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.Entity.RemovalReason;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.event.TickEvent;
+import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.registries.ForgeRegistry.Snapshot;
 
 import java.nio.charset.StandardCharsets;
@@ -130,6 +132,23 @@ public final class ClientGhostBots {
             ghost = spawnGhost(level, s);
             ghosts.put(s.botId(), ghost);
         }
+
+        // ===== Equipment / inventory render sync =====
+        try {
+            ghost.getInventory().selected = s.selectedSlot();
+        } catch (Throwable ignored) {}
+
+        try {
+            ghost.setItemInHand(InteractionHand.MAIN_HAND, s.mainHand());
+            ghost.setItemInHand(InteractionHand.OFF_HAND,  s.offHand());
+        } catch (Throwable ignored) {}
+
+        try {
+            ghost.setItemSlot(EquipmentSlot.HEAD,  s.helmet());
+            ghost.setItemSlot(EquipmentSlot.CHEST, s.chestplate());
+            ghost.setItemSlot(EquipmentSlot.LEGS,  s.leggings());
+            ghost.setItemSlot(EquipmentSlot.FEET,  s.boots());
+        } catch (Throwable ignored) {}
 
         // Packet velocities appear to be blocks/sec currently -> convert to blocks/tick
         Vec3 pos = new Vec3(s.x(), s.y(), s.z());

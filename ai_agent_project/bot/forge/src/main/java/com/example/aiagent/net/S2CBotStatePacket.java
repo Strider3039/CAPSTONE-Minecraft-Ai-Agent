@@ -1,6 +1,7 @@
 package com.example.aiagent.net;
 
 import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.fml.DistExecutor;
 import net.minecraftforge.network.NetworkEvent;
@@ -18,7 +19,16 @@ public record S2CBotStatePacket(
         float headYaw, float bodyYaw, float pitch,
         boolean onGround,
         boolean swingMainHandPulse,
-        boolean hurtPulse
+        boolean hurtPulse,
+
+        // NEW: equipment/inventory render sync
+        int selectedSlot,
+        ItemStack mainHand,
+        ItemStack offHand,
+        ItemStack helmet,
+        ItemStack chestplate,
+        ItemStack leggings,
+        ItemStack boots
 ) {
     public static void encode(S2CBotStatePacket msg, FriendlyByteBuf buf) {
         buf.writeUtf(msg.botId, 64);
@@ -41,6 +51,16 @@ public record S2CBotStatePacket(
         buf.writeBoolean(msg.onGround);
         buf.writeBoolean(msg.swingMainHandPulse);
         buf.writeBoolean(msg.hurtPulse);
+
+        buf.writeVarInt(msg.selectedSlot);
+
+        buf.writeItem(msg.mainHand);
+        buf.writeItem(msg.offHand);
+
+        buf.writeItem(msg.helmet);
+        buf.writeItem(msg.chestplate);
+        buf.writeItem(msg.leggings);
+        buf.writeItem(msg.boots);
     }
 
 
@@ -66,6 +86,16 @@ public record S2CBotStatePacket(
         boolean swingMainHandPulse = buf.readBoolean();
         boolean hurtPulse = buf.readBoolean();
 
+        int selectedSlot = buf.readVarInt();
+
+        ItemStack mainHand = buf.readItem();
+        ItemStack offHand  = buf.readItem();
+
+        ItemStack helmet     = buf.readItem();
+        ItemStack chestplate = buf.readItem();
+        ItemStack leggings   = buf.readItem();
+        ItemStack boots      = buf.readItem();
+
         return new S2CBotStatePacket(
                 botId,
                 entityId,
@@ -76,7 +106,15 @@ public record S2CBotStatePacket(
                 headYaw, bodyYaw, pitch,
                 onGround,
                 swingMainHandPulse,
-                hurtPulse
+                hurtPulse,
+
+                selectedSlot,
+                mainHand,
+                offHand,
+                helmet,
+                chestplate,
+                leggings,
+                boots
         );
     }
 

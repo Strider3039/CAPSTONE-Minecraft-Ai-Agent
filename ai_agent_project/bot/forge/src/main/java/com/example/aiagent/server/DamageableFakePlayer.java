@@ -58,68 +58,42 @@ public class DamageableFakePlayer extends FakePlayer {
         }
     }
 
+    @SuppressWarnings("null")
     @Override
     public boolean hurt(DamageSource source, float amount) {
-        System.out.println("[BOT][DBG][OVERRIDE_HURT] called src=" + source.getMsgId() + " amt=" + amount);
-
-        // Server-only
-        if (this.level().isClientSide) {
-            System.out.println("[BOT][DBG][OVERRIDE_HURT] reject: clientside");
-            return false;
-        }
-        if (!this.isAlive()) {
-            System.out.println("[BOT][DBG][OVERRIDE_HURT] reject: !alive");
-            return false;
-        }
+        // Server-only + basic validity
+        if (this.level().isClientSide) return false;
+        if (!this.isAlive()) return false;
 
         // Respect invulnerability semantics (your isInvulnerableTo override controls this)
-        if (this.isInvulnerableTo(source)) {
-            System.out.println("[BOT][DBG][OVERRIDE_HURT] reject: isInvulnerableTo");
-            return false;
-        }
-        if (this.getAbilities().invulnerable) {
-            System.out.println("[BOT][DBG][OVERRIDE_HURT] reject: abilities.invulnerable");
-            return false;
-        }
-        if (this.isSpectator()) {
-            System.out.println("[BOT][DBG][OVERRIDE_HURT] reject: spectator");
-            return false;
-        }
+        if (this.isInvulnerableTo(source)) return false;
+        if (this.getAbilities().invulnerable) return false;
+        if (this.isSpectator()) return false;
 
-        // Player-only PvP gates (mobs bypass this block and can still hurt you)
+        // Player-only PvP gates (non-player sources like fall/fire should still work)
         Entity atk = source.getEntity();
         if (atk instanceof Player p) {
-            if (this.server != null && !this.server.isPvpAllowed()) {
-                System.out.println("[BOT][DBG][OVERRIDE_HURT] reject: server pvp");
-                return false;
-            }
-            if (!p.canHarmPlayer(this)) {
-                System.out.println("[BOT][DBG][OVERRIDE_HURT] reject: attacker-side canHarmPlayer=false");
-                return false;
-            }
+            if (this.server != null && !this.server.isPvpAllowed()) return false;
+            if (!p.canHarmPlayer(this)) return false;
         }
 
-        // Optional: keep vanilla-ish i-frames (uncomment if desired)
-        if (this.invulnerableTime > 0) {
-            System.out.println("[BOT][DBG][OVERRIDE_HURT] reject: invulnerableTime=" + this.invulnerableTime);
-            return false;
-        }
+        // Vanilla-ish i-frames (keep if you want hit immunity)
+        if (this.invulnerableTime > 0) return false;
 
-        // Apply damage + hurt state
+        // Apply hurt timers (client ghost uses these + your pulse)
         this.invulnerableTime = 20;
         this.hurtTime = 10;
         this.hurtDuration = 10;
         this.hurtMarked = true;
 
-        System.out.println("[BOT][DBG][HURT_TIMERS] invulnTime=" + this.invulnerableTime + " hurtTime=" + this.hurtTime);
-
+        // Apply damage (handles armor/effects/etc depending on source)
         this.actuallyHurt(source, amount);
+
+        // One-shot pulse for client-side red flash/animation
         this.hurtPulseLatch = true;
 
-        if (source.getEntity() instanceof LivingEntity attacker) {
-            Vec3 vBeforeKB = this.getDeltaMovement();
-
-            // Store impulse instead of relying on vanilla knockback deltaMovement surviving the tick
+        // Deterministic knockback impulse only when there is a living attacker
+        if (atk instanceof LivingEntity attacker) {
             double dx = attacker.getX() - this.getX();
             double dz = attacker.getZ() - this.getZ();
 
@@ -127,7 +101,7 @@ public class DamageableFakePlayer extends FakePlayer {
             Vec3 dir = new Vec3(-dx, 0.0, -dz);
             if (dir.lengthSqr() > 1.0e-8) dir = dir.normalize();
 
-            // Tune to taste (these match the feel you were logging)
+            // Tune to taste
             double kbH = 0.40;  // horizontal strength
             double kbY = 0.35;  // vertical pop
 
@@ -138,30 +112,14 @@ public class DamageableFakePlayer extends FakePlayer {
                 this.pendingKnockbackTick = sl.getGameTime();
             }
 
-            System.out.println("[BOT][DBG][KB-PENDING] tick=" + this.pendingKnockbackTick
-                    + " impulse=" + impulse
-                    + " pendingSum=" + this.pendingKnockbackImpulse);
-            this.knockbackLockTicks = 2; // 1–2 ticks is enough; 2 is safer visually
+            // Prevent RL travel from clobbering the impulse for a couple ticks
+            this.knockbackLockTicks = 2;
 
-            Vec3 vNow = this.getDeltaMovement();
-            Vec3 vWouldBe = vNow.add(impulse);
-
-            if (this.level() instanceof ServerLevel sl) {
-                this.lastKnockbackServerTick = sl.getGameTime();
-            }
-            this.lastKnockbackVelAfter = vWouldBe;
-
-            System.out.println("[BOT][DBG][KB-STAMP] tick=" + this.lastKnockbackServerTick
-                    + " dmNow=" + vNow
-                    + " impulse=" + impulse
-                    + " dmWouldBe=" + vWouldBe);
+            this.setLastHurtByMob(attacker);
         }
 
-        this.level().broadcastEntityEvent(this, (byte)2);
-
-        if (atk instanceof LivingEntity le) {
-            this.setLastHurtByMob(le);
-        }
+        // Vanilla hurt event (plays sounds/particles and supports client-side animation handling)
+        this.level().broadcastEntityEvent(this, (byte) 2);
 
         System.out.println("[BOT][DBG][OVERRIDE_HURT] applied newHealth=" + this.getHealth());
         return true;

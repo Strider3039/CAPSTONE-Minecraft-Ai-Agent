@@ -7,6 +7,7 @@ import com.example.aiagent.net.BotNet;
 import com.example.aiagent.net.S2CBotStatePacket;
 import com.google.gson.JsonObject;
 import com.mojang.authlib.GameProfile;
+
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -14,6 +15,9 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.projectile.ProjectileUtil;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.phys.*;
@@ -76,7 +80,10 @@ public class FakeBotManager {
         bot.attack = false;
         bot.use = false;
         bot.selectSlot = -1;
-        // if you have "swapHands", "pickBlock", etc. put them here
+        bot.equipArmorFromSlot = -1;
+        bot.swapMainhandFromSlot = -1;
+        bot.dropFromSlot = -1;
+        bot.dropCount = 1;
     }
 
     private static void clearAllControls(FakeBot bot) {
@@ -159,6 +166,22 @@ public class FakeBotManager {
 
         // one-tick pulse for client ghost animation
         public boolean swingMainHandPulse = false;
+
+        // Fall damage tracking (deterministic, since we don't run vanilla player tick)
+        public boolean wasOnGround = true;
+        public double lastY = 0.0;
+        public float fallDistanceAcc = 0.0f;
+
+        public ItemStack[] savedInv = new ItemStack[36];
+        public ItemStack savedOffhand = ItemStack.EMPTY;
+        public ItemStack[] savedArmor = new ItemStack[4]; // FEET, LEGS, CHEST, HEAD
+        public int savedSelected = 0;
+
+        // One-shot inventory actions (cleared every tick)
+        public int equipArmorFromSlot = -1;      // 0..35
+        public int swapMainhandFromSlot = -1;    // 0..35
+        public int dropFromSlot = -1;            // 0..35
+        public int dropCount = 1;
 
         public FakeBot(ServerPlayer player, UUID uuid, String name) {
             this.player = player;
@@ -313,15 +336,18 @@ public class FakeBotManager {
 
         fp.moveTo(pos.x, pos.y, pos.z, 0f, 0f);
         ensureAddedToWorld(level, fp);
+        settleSpawnPhysicsOnce(level, fp);
 
-        // Reuse existing bot record if present, else create it
         if (bot == null) {
             bot = new FakeBot(fp, DEFAULT_BOT_UUID, DEFAULT_BOT_NAME);
             bots.put(bot.botId, bot);
         } else {
             bot.player = fp;
-            bot.forceStateSync = true;
         }
+
+        // IMPORTANT: always publish immediately after spawn settle (for BOTH branches)
+        bot.forceStateSync = true;          // guarantees sendBotState won't early return
+        sendBotState(level, bot);
 
         System.out.println("[AI-BOT] Default FakeBot spawned: " + DEFAULT_BOT_NAME
                 + " entityId=" + fp.getId()
@@ -487,9 +513,12 @@ public class FakeBotManager {
 
                 // Advance physics once (gravity, knockback integration) — ONLY once per actual server tick
                 if (isNewServerTick) {
-                    bot.player.travel(Vec3.ZERO);
+                    double prevY = bot.player.getY();
+                    boolean prevOnGround = bot.player.onGround();
 
-                    // IMPORTANT: snapshot AFTER physics so knockback displacement is visible
+                    bot.player.travel(Vec3.ZERO);
+                    collectNearbyItems(bot, level);
+                    updateFallDamage(bot, level, prevY, prevOnGround);
                     sendBotState(level, bot);
                 }
 
@@ -582,6 +611,8 @@ public class FakeBotManager {
                     }
                 } else {
                     applyMovementTravel(bot);
+                    collectNearbyItems(bot, level);
+                    sendBotState(level, bot);
                 }
 
                 Vec3 postMove = bot.player.getDeltaMovement();
@@ -667,6 +698,27 @@ public class FakeBotManager {
 
     }
 
+    // One-time settle so a newly spawned bot starts falling immediately (no "hover tick")
+    private void settleSpawnPhysicsOnce(ServerLevel level, ServerPlayer fp) {
+        if (fp == null) return;
+
+        // Make sure physics is enabled
+        fp.setNoGravity(false);
+        fp.noPhysics = false;
+
+        // Clear any weird carry
+        fp.setDeltaMovement(Vec3.ZERO);
+
+        // Force "airborne" so gravity integrates on this settle step if needed
+        fp.setOnGround(false);
+
+        // Run exactly one vanilla integration step (NO full tick, no baseTick)
+        fp.travel(Vec3.ZERO);
+
+        // Make sure the engine treats this as a real motion update
+        fp.hasImpulse = true;
+    }
+
     private void applyPendingKnockback(ServerPlayer p, ServerLevel level) {
         if (!(p instanceof DamageableFakePlayer dfp)) return;
 
@@ -687,6 +739,40 @@ public class FakeBotManager {
 
         // clear
         dfp.pendingKnockbackImpulse = Vec3.ZERO;
+    }
+
+    private void updateFallDamage(FakeBot bot, ServerLevel level, double prevY, boolean prevOnGround) {
+        ServerPlayer p = bot.player;
+        if (p == null) return;
+
+        boolean onGroundNow = p.onGround();
+        double yNow = p.getY();
+        double dy = yNow - prevY;
+
+        // Reset fall accumulation in water / lava / powder snow etc (matches vanilla spirit)
+        if (p.isInWaterOrBubble() || p.isInLava()) {
+            bot.fallDistanceAcc = 0.0f;
+            bot.wasOnGround = onGroundNow;
+            bot.lastY = yNow;
+            return;
+        }
+
+        // Accumulate only when airborne and moving downward
+        if (!onGroundNow && dy < 0.0) {
+            bot.fallDistanceAcc += (float)(-dy);
+        }
+
+        // Landing transition: airborne -> grounded
+        if (onGroundNow && !prevOnGround) {
+            if (bot.fallDistanceAcc > 0.0f) {
+                // Let vanilla compute actual damage (boots, effects, etc.)
+                p.causeFallDamage(bot.fallDistanceAcc, 1.0F, level.damageSources().fall());
+            }
+            bot.fallDistanceAcc = 0.0f;
+        }
+
+        bot.wasOnGround = onGroundNow;
+        bot.lastY = yNow;
     }
 
     private void sendBotState(ServerLevel level, FakeBot bot) {
@@ -716,6 +802,16 @@ public class FakeBotManager {
         final float bodyYaw = bot.player.yBodyRot;
         final float pitch = bot.player.getXRot();
 
+        final int selectedSlot = bot.player.getInventory().selected;
+
+        final ItemStack mainHand = bot.player.getMainHandItem().copy();
+        final ItemStack offHand  = bot.player.getOffhandItem().copy();
+
+        final ItemStack helmet     = bot.player.getItemBySlot(EquipmentSlot.HEAD).copy();
+        final ItemStack chestplate = bot.player.getItemBySlot(EquipmentSlot.CHEST).copy();
+        final ItemStack leggings   = bot.player.getItemBySlot(EquipmentSlot.LEGS).copy();
+        final ItemStack boots      = bot.player.getItemBySlot(EquipmentSlot.FEET).copy();
+
         S2CBotStatePacket msg = new S2CBotStatePacket(
                 bot.botId,
                 bot.player.getId(),
@@ -726,7 +822,15 @@ public class FakeBotManager {
                 headYaw, bodyYaw, pitch,
                 bot.player.onGround(),
                 swingPulse,
-                hurtPulse
+                hurtPulse,
+
+                selectedSlot,
+                mainHand,
+                offHand,
+                helmet,
+                chestplate,
+                leggings,
+                boots
         );
 
         if (DEBUG_NET) {
@@ -907,6 +1011,20 @@ public class FakeBotManager {
 
         // If an old entity reference exists, discard it
         if (bot.player != null) {
+
+            // Save inventory/equipment before discarding old instance
+            bot.savedSelected = bot.player.getInventory().selected;
+            for (int i = 0; i < 36; i++) {
+                bot.savedInv[i] = bot.player.getInventory().getItem(i).copy();
+            }
+            bot.savedOffhand = bot.player.getOffhandItem().copy();
+
+            // Armor order: FEET, LEGS, CHEST, HEAD
+            bot.savedArmor[0] = bot.player.getItemBySlot(EquipmentSlot.FEET).copy();
+            bot.savedArmor[1] = bot.player.getItemBySlot(EquipmentSlot.LEGS).copy();
+            bot.savedArmor[2] = bot.player.getItemBySlot(EquipmentSlot.CHEST).copy();
+            bot.savedArmor[3] = bot.player.getItemBySlot(EquipmentSlot.HEAD).copy();
+
             bot.player.remove(Entity.RemovalReason.DISCARDED);
             bot.player = null;
         }
@@ -935,9 +1053,13 @@ public class FakeBotManager {
 
         fp.moveTo(pos.x, pos.y, pos.z, 0f, 0f);
         ensureAddedToWorld(level, fp);
+        settleSpawnPhysicsOnce(level, fp);
 
         bot.player = fp;
+
+        // Force and immediately publish state so ghost doesn't hover / desync
         bot.forceStateSync = true;
+        sendBotState(level, bot);
 
         clearAllControls(bot);
         bot.stepActive = false;
@@ -1082,6 +1204,75 @@ public class FakeBotManager {
         return root;
     }
 
+    private boolean equipArmorFromInventoryIndex(ServerPlayer p, int invIndex) {
+        if (p == null) return false;
+
+        // Inventory indices: 0..35 (player main inventory+hotbar)
+        if (invIndex < 0 || invIndex >= 36) return false;
+
+        ItemStack src = p.getInventory().getItem(invIndex);
+        if (src.isEmpty()) return false;
+
+        EquipmentSlot slot = Mob.getEquipmentSlotForItem(src);
+        if (slot.getType() != EquipmentSlot.Type.ARMOR) return false;
+
+        ItemStack dst = p.getItemBySlot(slot);
+
+        // Policy: only equip if empty (safe for RL). If you want replace/swap, tell me.
+        if (!dst.isEmpty()) return false;
+
+        // Move exactly 1 item
+        ItemStack one = src.copy();
+        one.setCount(1);
+
+        p.setItemSlot(slot, one);
+        src.shrink(1);
+
+        // mark inventory dirty for safety
+        p.getInventory().setChanged();
+        return true;
+    }
+
+    private boolean swapWithSelectedHotbar(ServerPlayer p, int invIndex) {
+        if (p == null) return false;
+
+        if (invIndex < 0 || invIndex >= 36) return false;
+
+        int hotbarIndex = p.getInventory().selected; // 0..8
+        if (hotbarIndex < 0 || hotbarIndex > 8) return false;
+
+        ItemStack a = p.getInventory().getItem(invIndex);
+        ItemStack b = p.getInventory().getItem(hotbarIndex);
+
+        p.getInventory().setItem(invIndex, b);
+        p.getInventory().setItem(hotbarIndex, a);
+        p.getInventory().setChanged();
+        return true;
+    }
+
+    private boolean dropFromInventory(ServerPlayer p, ServerLevel level, int invIndex, int count) {
+        if (p == null || level == null) return false;
+        if (invIndex < 0 || invIndex >= 36) return false;
+
+        ItemStack stack = p.getInventory().getItem(invIndex);
+        if (stack.isEmpty()) return false;
+
+        int n = Math.max(1, Math.min(count, stack.getCount()));
+        ItemStack drop = stack.copy();
+        drop.setCount(n);
+
+        // remove from inv
+        stack.shrink(n);
+        p.getInventory().setChanged();
+
+        // spawn drop in front of player
+        ItemEntity ent = new ItemEntity(level, p.getX(), p.getY() + 0.5, p.getZ(), drop);
+        ent.setPickUpDelay(20);
+        ent.setDeltaMovement(p.getLookAngle().scale(0.2));
+        level.addFreshEntity(ent);
+        return true;
+    }
+
     private void applyPayloadToBot(JsonObject payload, FakeBot bot) {
         if (payload == null || bot == null)
             return;
@@ -1169,6 +1360,25 @@ public class FakeBotManager {
 
         bot.attack = payload.has("attack") && payload.get("attack").getAsBoolean();
         bot.use = payload.has("use") && payload.get("use").getAsBoolean();
+
+        // -----------------------------
+        // INVENTORY / EQUIP ACTIONS (one-shot)
+        // -----------------------------
+        if (payload.has("equip_armor_from_slot")) {
+            bot.equipArmorFromSlot = payload.get("equip_armor_from_slot").getAsInt();
+        }
+
+        if (payload.has("swap_selected_from_slot")) {
+            bot.swapMainhandFromSlot = payload.get("swap_selected_from_slot").getAsInt();
+        }
+
+        if (payload.has("drop_slot") && payload.get("drop_slot").isJsonObject()) {
+            JsonObject d = payload.getAsJsonObject("drop_slot");
+            bot.dropFromSlot = d.has("slot") ? d.get("slot").getAsInt() : -1;
+            bot.dropCount = d.has("count") ? d.get("count").getAsInt() : 1;
+        }
+
+        
     }
 
     private void applyMovementTravel(FakeBot bot) {
@@ -1196,9 +1406,15 @@ public class FakeBotManager {
 
         Vec3 pos0 = p.position();
         Vec3 v0 = p.getDeltaMovement();
+        double prevY = p.getY();
+        boolean prevOnGround = p.onGround();
 
-        // NOTE: travel expects (strafe, vertical, forward)
         p.travel(new Vec3(strafe, 0.0, forward));
+
+        // Apply deterministic fall damage on landing
+        if (p.level() instanceof ServerLevel sl) {
+            updateFallDamage(bot, sl, prevY, prevOnGround);
+        }
 
         Vec3 pos1 = p.position();
         Vec3 v1 = p.getDeltaMovement();
@@ -1265,6 +1481,21 @@ public class FakeBotManager {
         }
 
         // -----------------------------
+        // 2.5) INVENTORY / EQUIP (one-shot)
+        // -----------------------------
+        if (bot.equipArmorFromSlot >= 0) {
+            equipArmorFromInventoryIndex(p, bot.equipArmorFromSlot);
+        }
+
+        if (bot.swapMainhandFromSlot >= 0) {
+            swapWithSelectedHotbar(p, bot.swapMainhandFromSlot);
+        }
+
+        if (bot.dropFromSlot >= 0) {
+            dropFromInventory(p, level, bot.dropFromSlot, bot.dropCount);
+        }
+
+        // -----------------------------
         // 3) FLAGS
         // -----------------------------
         p.setSprinting(bot.sprint);
@@ -1320,6 +1551,47 @@ public class FakeBotManager {
         p.swing(InteractionHand.MAIN_HAND);
     }
 
+    private boolean tryEquipArmor(ServerPlayer p, ItemStack stack) {
+        if (stack.isEmpty()) return false;
+        EquipmentSlot slot = Mob.getEquipmentSlotForItem(stack);
+        if (slot.getType() != EquipmentSlot.Type.ARMOR) return false;
+
+        ItemStack currently = p.getItemBySlot(slot);
+        if (!currently.isEmpty()) return false; // decide your policy: replace or not
+
+        p.setItemSlot(slot, stack.copyWithCount(1));
+        stack.shrink(1);
+        return true;
+    }
+
+    private void collectNearbyItems(FakeBot bot, ServerLevel level) {
+        ServerPlayer p = bot.player;
+        if (p == null) return;
+
+        // Small radius like vanilla pickup range
+        double r = 1.5;
+        AABB box = p.getBoundingBox().inflate(r, 0.5, r);
+
+        List<ItemEntity> items = level.getEntitiesOfClass(ItemEntity.class, box, e -> !e.isRemoved() && e.isAlive());
+        if (items.isEmpty()) return;
+
+        for (ItemEntity it : items) {
+            ItemStack stack = it.getItem();
+            if (stack.isEmpty()) continue;
+
+            // Try to add to inventory (vanilla behavior-ish)
+            ItemStack leftover = p.getInventory().add(stack) ? ItemStack.EMPTY : stack;
+
+            if (leftover.isEmpty()) {
+                it.discard(); // picked up fully
+                // Optional: play pickup sound/event
+                // level.playSound(null, p.getX(), p.getY(), p.getZ(), SoundEvents.ITEM_PICKUP, SoundSource.PLAYERS, 0.2F, 1.0F);
+            } else {
+                it.setItem(leftover); // partially picked up
+            }
+        }
+    }
+
     private static void tickHurtIFrames(ServerPlayer p) {
         if (p == null) return;
 
@@ -1338,14 +1610,24 @@ public class FakeBotManager {
      * If it's already there, do nothing.
      */
     private void ensureAddedToWorld(ServerLevel level, ServerPlayer fp) {
-        if (level == null || fp == null)
-            return;
-        if (fp.isRemoved())
-            return;
+        if (level == null || fp == null) return;
 
-        if (level.getEntity(fp.getId()) == null) {
-            level.addFreshEntity(fp);
+        // If it was removed, it can't be re-added; caller must respawn a fresh instance.
+        if (fp.isRemoved()) {
+            System.out.println("[AI-BOT][WARN] ensureAddedToWorld called with removed player id=" + fp.getId()
+                    + " name=" + fp.getGameProfile().getName() + " — need respawn.");
+            return;
         }
+
+        Entity existing = level.getEntity(fp.getId());
+        if (existing == fp) return;
+
+        // If something else is using this ID, discard it (prevents duplicates)
+        if (existing != null && existing != fp) {
+            existing.remove(Entity.RemovalReason.DISCARDED);
+        }
+
+        level.addFreshEntity(fp);
     }
 
     public void despawnAll() {
