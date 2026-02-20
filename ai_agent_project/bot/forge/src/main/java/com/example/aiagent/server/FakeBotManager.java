@@ -159,7 +159,6 @@ public class FakeBotManager {
 
         // one-tick pulse for client ghost animation
         public boolean swingMainHandPulse = false;
-        public int knockbackLockTicks = 0; // when >0, we let vanilla physics carry knockback
 
         public FakeBot(ServerPlayer player, UUID uuid, String name) {
             this.player = player;
@@ -421,6 +420,7 @@ public class FakeBotManager {
                 continue;
 
             if (isNewServerTick) {
+                applyPendingKnockback(bot.player, level);
                 tickHurtIFrames(bot.player);
             }
 
@@ -596,9 +596,13 @@ public class FakeBotManager {
 
                 if (isKbWindow) {
                     System.out.println("[BOT][DBG][KB-MOVE] tick=" + level.getGameTime()
-                            + " kbTick=" + kbTick
-                            + " preVel=" + preMove + " postVel=" + postMove
-                            + " prePos=" + prePos + " postPos=" + postPos);
+                        + " kbTick=" + kbTick
+                        + " preVel=" + preMove + " postVel=" + postMove
+                        + " prePos=" + prePos + " postPos=" + postPos
+                        + " onGround=" + bot.player.onGround()
+                        + " hColl=" + bot.player.horizontalCollision
+                        + " vColl=" + bot.player.verticalCollision
+                        + " noPhys=" + bot.player.noPhysics);
                 }
 
                 // IMPORTANT: snapshot AFTER movement so knockback displacement is visible
@@ -661,6 +665,28 @@ public class FakeBotManager {
 
         }
 
+    }
+
+    private void applyPendingKnockback(ServerPlayer p, ServerLevel level) {
+        if (!(p instanceof DamageableFakePlayer dfp)) return;
+
+        Vec3 imp = dfp.pendingKnockbackImpulse;
+        if (imp == null || imp.lengthSqr() <= 1.0e-10) return;
+
+        Vec3 v0 = p.getDeltaMovement();
+        Vec3 v1 = v0.add(imp);
+
+        p.setDeltaMovement(v1);
+        p.hasImpulse = true;
+
+        System.out.println("[BOT][DBG][KB-APPLY] now=" + level.getGameTime()
+                + " kbTick=" + dfp.pendingKnockbackTick
+                + " add=" + imp
+                + " v0=" + v0
+                + " v1=" + v1);
+
+        // clear
+        dfp.pendingKnockbackImpulse = Vec3.ZERO;
     }
 
     private void sendBotState(ServerLevel level, FakeBot bot) {

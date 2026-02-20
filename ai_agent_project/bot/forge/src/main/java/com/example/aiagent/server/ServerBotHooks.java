@@ -7,8 +7,6 @@ import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.level.LevelEvent;
 import net.minecraftforge.event.server.ServerStoppingEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
-import net.minecraftforge.server.ServerLifecycleHooks;
-import com.example.aiagent.server.tests.BotTestSuite;
 
 /**
  * ServerBotHooks (SERVER SIDE)
@@ -77,40 +75,32 @@ public class ServerBotHooks {
     }
 
     @SubscribeEvent
-    public void onServerTick(TickEvent.ServerTickEvent event) {
-        if (event.phase != TickEvent.Phase.END) return;
+    public void onLevelTick(TickEvent.LevelTickEvent event) {
+        if (event.phase != TickEvent.Phase.START) return;
         if (!spawned) return;
+        if (!(event.level instanceof ServerLevel level)) return;
 
-        if (DEBUG_WS) {
-            System.out.println("[AI-BOT][DBG][HOOK] onServerTick instanceId=" + instanceId
-                    + " this=" + System.identityHashCode(this)
-                    + " phase=" + event.phase);
-        }
-
-        MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
-
-        // If this is an integrated server (singleplayer), don't run server-side bot obs.
-        // In singleplayer we want client-side obs controlling the local player instead.
-        if (!server.isDedicatedServer()) {
-            return;
-        }
-
+        MinecraftServer server = level.getServer();
         if (!shouldRun(server)) return;
 
-        ServerLevel level = server.overworld();
-        if (level == null) return;
+        // Only overworld (match spawn rule)
+        if (!level.dimension().location().toString().equals("minecraft:overworld")) return;
 
-        // Run tests once (server-only, opt-in)
-        // BotTestSuite.enable();
-        // BotTestSuite.runOnce(level, BOTS);
+        if (DEBUG_WS) {
+            System.out.println("[AI-BOT][DBG][HOOK] onLevelTick(START) instanceId=" + instanceId
+                    + " this=" + System.identityHashCode(this)
+                    + " gt=" + level.getGameTime()
+                    + " thread=" + Thread.currentThread().getName());
+        }
 
         // Pull WS actions (from python) and enqueue into FakeBotManager
         ws.drainActionsAndApply(level, bots);
 
-        // Apply queued actions
+        // Apply queued actions + physics at the correct tick phase
         bots.tick();
-        ws.drainCompletedResultsAndSend(bots);
 
+        // Send results back
+        ws.drainCompletedResultsAndSend(bots);
     }
 
 }

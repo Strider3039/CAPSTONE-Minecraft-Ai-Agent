@@ -22,6 +22,8 @@ public class DamageableFakePlayer extends FakePlayer {
     public int knockbackLockTicks = 0;
     public long lastKnockbackServerTick = -1;
     public Vec3 lastKnockbackVelAfter = Vec3.ZERO;
+    public Vec3 pendingKnockbackImpulse = Vec3.ZERO;
+    public long pendingKnockbackTick = -1;
 
     @Override
     public boolean isInvulnerableTo(DamageSource src) {
@@ -117,24 +119,42 @@ public class DamageableFakePlayer extends FakePlayer {
         if (source.getEntity() instanceof LivingEntity attacker) {
             Vec3 vBeforeKB = this.getDeltaMovement();
 
+            // Store impulse instead of relying on vanilla knockback deltaMovement surviving the tick
             double dx = attacker.getX() - this.getX();
             double dz = attacker.getZ() - this.getZ();
 
-            System.out.println("[BOT][DBG][KB] before vel=" + vBeforeKB + " dx=" + dx + " dz=" + dz);
+            // Direction away from attacker
+            Vec3 dir = new Vec3(-dx, 0.0, -dz);
+            if (dir.lengthSqr() > 1.0e-8) dir = dir.normalize();
 
-            this.knockback(0.4F, dx, dz);
+            // Tune to taste (these match the feel you were logging)
+            double kbH = 0.40;  // horizontal strength
+            double kbY = 0.35;  // vertical pop
+
+            Vec3 impulse = dir.scale(kbH).add(0.0, kbY, 0.0);
+            this.pendingKnockbackImpulse = this.pendingKnockbackImpulse.add(impulse);
+
+            if (this.level() instanceof ServerLevel sl) {
+                this.pendingKnockbackTick = sl.getGameTime();
+            }
+
+            System.out.println("[BOT][DBG][KB-PENDING] tick=" + this.pendingKnockbackTick
+                    + " impulse=" + impulse
+                    + " pendingSum=" + this.pendingKnockbackImpulse);
             this.knockbackLockTicks = 2; // 1–2 ticks is enough; 2 is safer visually
+
+            Vec3 vNow = this.getDeltaMovement();
+            Vec3 vWouldBe = vNow.add(impulse);
 
             if (this.level() instanceof ServerLevel sl) {
                 this.lastKnockbackServerTick = sl.getGameTime();
             }
-            this.lastKnockbackVelAfter = this.getDeltaMovement();
+            this.lastKnockbackVelAfter = vWouldBe;
 
             System.out.println("[BOT][DBG][KB-STAMP] tick=" + this.lastKnockbackServerTick
-                    + " afterVel=" + this.lastKnockbackVelAfter);
-
-            Vec3 vAfterKB = this.getDeltaMovement();
-            System.out.println("[BOT][DBG][KB] after  vel=" + vAfterKB);
+                    + " dmNow=" + vNow
+                    + " impulse=" + impulse
+                    + " dmWouldBe=" + vWouldBe);
         }
 
         this.level().broadcastEntityEvent(this, (byte)2);
@@ -146,7 +166,5 @@ public class DamageableFakePlayer extends FakePlayer {
         System.out.println("[BOT][DBG][OVERRIDE_HURT] applied newHealth=" + this.getHealth());
         return true;
     }
-
-
 
 }
