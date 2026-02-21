@@ -55,6 +55,7 @@ public class FakeBotManager {
     private static final boolean DEBUG_MOVE = false;
     private static final boolean DEBUG_HIT = false;
     private static final boolean DEBUG_KNOCK = true;
+    private static final boolean DEBUG_JUMP = false;
 
     private long dbgLastServerGameTime = Long.MIN_VALUE;
     private int dbgCallsThisServerTick = 0;
@@ -311,6 +312,7 @@ public class FakeBotManager {
         // Physics
         fp.setNoGravity(false);
         fp.noPhysics = false;
+        fp.setMaxUpStep(0.6f);
 
         // Damageable / player-like
         fp.setInvulnerable(false);
@@ -1402,14 +1404,49 @@ public class FakeBotManager {
         // Apply flags
         p.setSprinting(bot.sprint);
         p.setShiftKeyDown(bot.sneak);
+
+        // Keep this if you want (harmless), but it doesn't guarantee an actual jump impulse
         p.setJumping(bot.jump);
+
+        // IMPORTANT: explicitly trigger the jump impulse in our travel-driven tick loop
+        tryDoJump(p, bot);
 
         Vec3 pos0 = p.position();
         Vec3 v0 = p.getDeltaMovement();
         double prevY = p.getY();
         boolean prevOnGround = p.onGround();
 
+        boolean preHColl = p.horizontalCollision;
+        boolean preVColl = p.verticalCollision;
+        boolean preOnGround = p.onGround();
+        Vec3 preVel = p.getDeltaMovement();
+        double preY = p.getY();
+
         p.travel(new Vec3(strafe, 0.0, forward));
+
+        boolean postHColl = p.horizontalCollision;
+        boolean postVColl = p.verticalCollision;
+        boolean postOnGround = p.onGround();
+        Vec3 postVel = p.getDeltaMovement();
+        double postY = p.getY();
+
+        double dY = postY - preY;
+        double vY0 = preVel.y;
+        double vY1 = postVel.y;
+
+        if (DEBUG_JUMP && (Math.abs(dY) > 0.02 || Math.abs(vY1) > 0.02)) {
+            System.out.printf(
+                "[BOT-MOVE] tick=%d id=%d jumpReq=%s onG:%s->%s hColl:%s->%s dY=%.3f vY:%.3f->%.3f posY:%.3f->%.3f%n",
+                p.level().getGameTime(),
+                p.getId(),
+                bot.jump,
+                preOnGround, postOnGround,
+                preHColl, postHColl,
+                dY,
+                vY0, vY1,
+                preY, postY
+            );
+        }
 
         // Apply deterministic fall damage on landing
         if (p.level() instanceof ServerLevel sl) {
@@ -1551,17 +1588,35 @@ public class FakeBotManager {
         p.swing(InteractionHand.MAIN_HAND);
     }
 
-    private boolean tryEquipArmor(ServerPlayer p, ItemStack stack) {
-        if (stack.isEmpty()) return false;
-        EquipmentSlot slot = Mob.getEquipmentSlotForItem(stack);
-        if (slot.getType() != EquipmentSlot.Type.ARMOR) return false;
+    private static void tryDoJump(ServerPlayer p, FakeBot bot) {
+        if (p == null || bot == null) return;
 
-        ItemStack currently = p.getItemBySlot(slot);
-        if (!currently.isEmpty()) return false; // decide your policy: replace or not
+        // If bot requests jump and we're grounded, explicitly apply the vanilla jump impulse.
+        // This is necessary because our tick loop calls travel() directly and doesn't rely on the
+        // normal player input pipeline to fire jumpFromGround().
+        if (bot.jump
+                && p.onGround()
+                && !p.isInWaterOrBubble()
+                && !p.isInLava()
+                && !p.isPassenger()) {
 
-        p.setItemSlot(slot, stack.copyWithCount(1));
-        stack.shrink(1);
-        return true;
+            p.jumpFromGround();
+        }
+
+        // OPTIONAL "autojump" for 1-block obstacles:
+        // If we're moving, grounded, and hit a wall, do a jump to clear typical 1-block steps.
+        // This mirrors human behavior but changes the action semantics.
+        boolean wantsMove = (Math.abs(bot.forward) > 0.2f) || (Math.abs(bot.strafe) > 0.2f);
+        if (!bot.jump
+                && wantsMove
+                && p.onGround()
+                && p.horizontalCollision
+                && !p.isInWaterOrBubble()
+                && !p.isInLava()
+                && !p.isPassenger()) {
+
+            p.jumpFromGround();
+        }
     }
 
     private void collectNearbyItems(FakeBot bot, ServerLevel level) {

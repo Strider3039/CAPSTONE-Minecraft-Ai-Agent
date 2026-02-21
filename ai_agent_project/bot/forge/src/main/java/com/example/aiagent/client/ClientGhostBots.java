@@ -85,6 +85,12 @@ public final class ClientGhostBots {
     private static final double KD_VEL = 0.55; // velocity damping per tick
     private static final double MAX_CORR_PER_TICK = 0.35; // clamp correction accel-like term (blocks/tick)
 
+    // How fast we allow grounded Y to converge toward server truth (blocks per tick).
+    // 0.35 means a 1-block step-up takes ~3 ticks to visually settle.
+    private static final double MAX_GROUNDED_Y_ADJUST_PER_TICK = 0.35;
+    // If we're *way* off in Y, treat it as a teleport/desync and snap.
+    private static final double GROUNDED_Y_SNAP_THRESHOLD = 2.5;
+
     // Hard snap thresholds (authority)
     private static final double SNAP_POS_ERR = 6.0; // blocks
 
@@ -434,25 +440,31 @@ public final class ClientGhostBots {
         // Ground manifold constraint:
         // If server says grounded, we must not "float" below forever (no collision sim
         // yet).
+        // Ground manifold constraint:
         if (truth.onGround) {
             sim.onGround = true;
 
             double dy = truth.pos.y - sim.pos.y;
 
-            // Critically-damped positional projection in Y (no snap)
-            // 0.35 is aggressive enough to converge in a few ticks but not teleport.
-            sim.pos = new Vec3(sim.pos.x, truth.pos.y, sim.pos.z);
+            // If we're massively desynced, snap (true teleport).
+            if (Math.abs(dy) > GROUNDED_Y_SNAP_THRESHOLD) {
+                sim.pos = new Vec3(sim.pos.x, truth.pos.y, sim.pos.z);
+            } else {
+                // Smooth grounded vertical convergence:
+                // This prevents 1-block step-ups from looking like a teleport.
+                double step = Mth.clamp(dy, -MAX_GROUNDED_Y_ADJUST_PER_TICK, MAX_GROUNDED_Y_ADJUST_PER_TICK);
+                sim.pos = new Vec3(sim.pos.x, sim.pos.y + step, sim.pos.z);
+            }
 
-            // Kill vertical velocity when grounded (server authority)
+            // When grounded, vertical velocity should not accumulate
             sim.velTick = new Vec3(sim.velTick.x, 0.0, sim.velTick.z);
 
         } else {
-            // Airborne: allow sim to be airborne; don't instantly force onGround false
-            // unless close
+            // Airborne: allow sim to be airborne; don't instantly force onGround false unless close
             // to prevent flutter at edges.
             if (sim.onGround) {
-                double dy = Math.abs(truth.pos.y - sim.pos.y);
-                if (dy > 0.6)
+                double ady = Math.abs(truth.pos.y - sim.pos.y);
+                if (ady > 0.6)
                     sim.onGround = false; // hysteresis band
             } else {
                 sim.onGround = false;
