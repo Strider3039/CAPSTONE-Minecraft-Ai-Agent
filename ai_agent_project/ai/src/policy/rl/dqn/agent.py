@@ -1,4 +1,7 @@
+# ai/src/policy/rl/dqn/agent.py
+
 from __future__ import annotations
+
 import json
 import time
 import pathlib as _pathlib
@@ -9,10 +12,9 @@ import torch.nn as nn
 import torch.optim as optim
 
 from ai.src.policy.base import Policy
-from ai.src.policy.rl.dqn.model import QNetwork
 from ai.src.policy.action_space import NUM_ACTIONS, ToMinecraftControls
 from ai.src.policy.obs_encoding import OBS_DIM, EncodeObservation
-from .model import QNetwork  # keep for relative imports
+from .model import QNetwork  # relative import
 from .replay import ReplayBuffer
 from .reward_engine import RewardEngine
 
@@ -64,7 +66,7 @@ class DQNAgent:
         self.minReplaySize = minReplaySize
         self.targetUpdateFreq = targetUpdateFreq
 
-        # Epsilon Schedule
+        # Epsilon schedule
         self.epsilonStart = epsilonStart
         self.epsilonEnd = epsilonEnd
         self.epsilonDecay = epsilonDecay
@@ -79,7 +81,7 @@ class DQNAgent:
         # Optimizer
         self.optimizer = optim.Adam(self.qNet.parameters(), lr=lr)
 
-        # Replay Buffer
+        # Replay buffer
         self.replayBuffer = ReplayBuffer(bufferCapacity)
 
     def CurrentEpsilon(self) -> float:
@@ -88,8 +90,7 @@ class DQNAgent:
 
     def SelectAction(self, obsVec: np.ndarray) -> int:
         eps = self.CurrentEpsilon()
-        actionIdx = EpsilonGreedyAction(self.qNet, obsVec, eps, self.device)
-        return actionIdx
+        return EpsilonGreedyAction(self.qNet, obsVec, eps, self.device)
 
     def StoreTransition(
         self,
@@ -105,9 +106,7 @@ class DQNAgent:
         if len(self.replayBuffer) < self.minReplaySize:
             return None
 
-        states, actions, rewards, nextStates, dones = self.replayBuffer.Sample(
-            self.batchSize
-        )
+        states, actions, rewards, nextStates, dones = self.replayBuffer.Sample(self.batchSize)
 
         statesTensor = torch.from_numpy(states).to(self.device)
         actionTensor = torch.from_numpy(actions).long().to(self.device)
@@ -132,7 +131,7 @@ class DQNAgent:
         loss.backward()
         self.optimizer.step()
 
-        return loss.item()
+        return float(loss.item())
 
     def UpdateTargetNetwork(self) -> None:
         if self.totalSteps % self.targetUpdateFreq == 0:
@@ -157,7 +156,7 @@ class DQNAgent:
         self.qNet.load_state_dict(checkpoint["qNet"])
         self.targetNet.load_state_dict(checkpoint["qTargetNet"])
         self.optimizer.load_state_dict(checkpoint["optimizer"])
-        self.totalSteps = checkpoint["totalSteps"]
+        self.totalSteps = int(checkpoint.get("totalSteps", 0))
 
 
 class DQNPolicy(Policy):
@@ -175,8 +174,7 @@ class DQNPolicy(Policy):
         self.model.eval()
         self.max_ray_dist = max_ray_dist
         self.device = device
-
-        self.seq = 0  # for Forge
+        self.seq = 0  # for Forge/bridge
 
     @classmethod
     def FromCheckpoint(
@@ -210,13 +208,10 @@ class OnlineDQNPolicy(Policy):
     """
     Online RL policy that learns in Minecraft using DQNAgent and a RewardEngine.
 
-    - Computes reward from consecutive observations via RewardEngine.
-    - Logs episodic return + current phase when an episode ends.
-    - Stores transitions into replay buffer and trains the DQN.
-    - Logs:
-        * episode_state.json       (latest step snapshot)
-        * episode_history.json     (per-episode summary list)
-        * step_history.jsonl       (per-transition log, one JSON line per step)
+    Notes:
+      - The server enqueues synthetic "episode_start" and forwards "episode_end" into obs_q.
+      - We MUST handle those kinds here to avoid trying to EncodeObservation() on them.
+      - Checkpoints are saved periodically so learning persists across restarts/worlds.
     """
 
     def __init__(
@@ -244,13 +239,19 @@ class OnlineDQNPolicy(Policy):
         self.episode_idx = 0
         self.episode_step = 0  # step index within current episode
 
-        # Resolve shared paths (shared/episode_state.json, etc.)
+        # Resolve shared paths (shared/Data/episode_state.json, etc.)
         (
             self._shared_dir,
             self._episode_state_path,
             self._episode_history_path,
             self._step_history_path,
         ) = self._resolve_paths()
+
+        # ---- checkpointing (global persistence across all worlds) ----
+        self.save_every_steps = 10_000  # adjust as you like
+        self.ckpt_latest_path = str((self._shared_dir / "Data" / "online_dqn_latest.pt").resolve())
+        self.ckpt_dir = (self._shared_dir / "Data" / "checkpoints")
+        self.ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     @classmethod
     def FromCheckpoint(
@@ -260,25 +261,16 @@ class OnlineDQNPolicy(Policy):
         device: str = "cpu",
         hidden_sizes=(128, 128),
     ) -> "OnlineDQNPolicy":
-        """
-        Build an OnlineDQNPolicy with a training-capable DQNAgent.
-
-        If checkpoint_path is provided and exists, warm-start from it.
-        Otherwise start from scratch.
-        """
-        agent = DQNAgent(
-            device=device,
-            hiddenDims=hidden_sizes,
-        )
+        agent = DQNAgent(device=device, hiddenDims=hidden_sizes)
 
         if checkpoint_path:
             try:
                 agent.Load(checkpoint_path, mapLocation=device)
                 print(f"[OnlineDQNPolicy] Loaded checkpoint: {checkpoint_path}")
             except FileNotFoundError:
-                print(
-                    f"[OnlineDQNPolicy] checkpoint not found: {checkpoint_path}, training from scratch"
-                )
+                print(f"[OnlineDQNPolicy] checkpoint not found: {checkpoint_path}, training from scratch")
+            except Exception as e:
+                print(f"[OnlineDQNPolicy] failed to load checkpoint ({checkpoint_path}): {e}")
 
         return cls(agent, max_ray_dist, device)
 
@@ -311,13 +303,7 @@ class OnlineDQNPolicy(Policy):
 
         return shared_dir, episode_state_path, episode_history_path, step_history_path
 
-
     def _write_episode_state(self, reward: float, done: bool, obsMsg: dict) -> None:
-        """
-        Debug/monitoring only: write the latest RL state to episode_state.json.
-
-        This does NOT affect learning; it just makes it visible to you.
-        """
         body = obsMsg.get("payload", {})
         pose = body.get("pose", {})
         world = body.get("world", {})
@@ -330,7 +316,6 @@ class OnlineDQNPolicy(Policy):
             "last_reward": float(reward),
             "episode_return": float(getattr(self.reward_engine, "episode_return", 0.0)),
             "done": bool(done),
-
             "pose": {
                 "x": pose.get("x"),
                 "y": pose.get("y"),
@@ -338,19 +323,16 @@ class OnlineDQNPolicy(Policy):
                 "yaw": pose.get("yaw"),
                 "pitch": pose.get("pitch"),
             },
-
             "world": {
                 "time_of_day": world.get("time_of_day"),
                 "weather": world.get("weather"),
                 "biome": world.get("biome"),
             },
-
             "collision": {
                 "is_grounded": collision.get("is_grounded"),
                 "is_colliding": collision.get("is_colliding"),
                 "no_progress": collision.get("no_progress"),
             },
-
             "obs_timestamp": float(obsMsg.get("timestamp", 0.0)),
             "logged_at_unix": float(time.time()),
         }
@@ -367,9 +349,6 @@ class OnlineDQNPolicy(Policy):
         action_idx: int,
         obsMsg: dict,
     ) -> None:
-        """
-        Append one line to step_history.jsonl describing the transition.
-        """
         body = obsMsg.get("payload", {})
         pose = body.get("pose", {})
         world = body.get("world", {})
@@ -381,18 +360,8 @@ class OnlineDQNPolicy(Policy):
             "action": int(action_idx),
             "reward": float(reward),
             "done": bool(done),
-
-            "pose": {
-                "x": pose.get("x"),
-                "y": pose.get("y"),
-                "z": pose.get("z"),
-            },
-
-            "world": {
-                "time_of_day": world.get("time_of_day"),
-                "weather": world.get("weather"),
-            },
-
+            "pose": {"x": pose.get("x"), "y": pose.get("y"), "z": pose.get("z")},
+            "world": {"time_of_day": world.get("time_of_day"), "weather": world.get("weather")},
             "collision": {
                 "is_grounded": collision.get("is_grounded"),
                 "is_colliding": collision.get("is_colliding"),
@@ -407,18 +376,9 @@ class OnlineDQNPolicy(Policy):
             print(f"[OnlineDQN] failed to append step_history.jsonl: {e}")
 
     def _append_episode_history(self, last_obs: dict, done_reason: str = "done_true") -> None:
-        """
-        Append a summary entry for the just-finished episode.
-        Stores:
-          - episode index
-          - steps in episode
-          - total return
-          - avg reward
-          - final pose/world snapshot
-        """
-        body = last_obs.get("payload", {})
-        pose = body.get("pose", {})
-        world = body.get("world", {})
+        body = last_obs.get("payload", {}) if isinstance(last_obs, dict) else {}
+        pose = body.get("pose", {}) if isinstance(body, dict) else {}
+        world = body.get("world", {}) if isinstance(body, dict) else {}
 
         ep_return = float(getattr(self.reward_engine, "episode_return", 0.0))
         steps = int(self.episode_step) if self.episode_step > 0 else 0
@@ -429,20 +389,13 @@ class OnlineDQNPolicy(Policy):
             "steps": steps,
             "return": ep_return,
             "avg_reward": float(avg_reward),
-            "end_pose": {
-                "x": pose.get("x"),
-                "y": pose.get("y"),
-                "z": pose.get("z"),
-            },
-            "end_time_of_day": body.get("world", {}).get("time_of_day")
-            if isinstance(body.get("world", {}), dict)
-            else None,
+            "end_pose": {"x": pose.get("x"), "y": pose.get("y"), "z": pose.get("z")},
+            "end_time_of_day": world.get("time_of_day") if isinstance(world, dict) else None,
             "reason": done_reason,
             "logged_at_unix": float(time.time()),
         }
 
         try:
-            # Load existing history list if present
             if self._episode_history_path.exists():
                 try:
                     existing = json.loads(self._episode_history_path.read_text("utf-8"))
@@ -458,47 +411,75 @@ class OnlineDQNPolicy(Policy):
         except Exception as e:
             print(f"[OnlineDQN] failed to append episode_history.json: {e}")
 
-    # ----- reward shaping utility -----
-
-    def _compute_reward(
-        self,
-        prev_obs: dict | None,
-        curr_obs: dict,
-    ) -> tuple[float, bool]:
-        """
-        Delegate reward computation to RewardEngine.
-        """
+    def _compute_reward(self, prev_obs: dict | None, curr_obs: dict) -> tuple[float, bool]:
         return self.reward_engine.compute(prev_obs, curr_obs)
+
+    def _reset_episode_state(self) -> None:
+        """Reset Python-side episode bookkeeping and transition memory."""
+        self.episode_step = 0
+        self.reward_engine.reset_episode()
+        self._last_obs_vec = None
+        self._last_action_idx = None
+        self._last_obs_msg = None
+
+    def _maybe_checkpoint(self) -> None:
+        if self.save_every_steps <= 0:
+            return
+        if self.agent.totalSteps % self.save_every_steps != 0:
+            return
+
+        try:
+            self.agent.Save(self.ckpt_latest_path)
+            snap = self.ckpt_dir / f"online_dqn_step{self.agent.totalSteps:09d}.pt"
+            self.agent.Save(str(snap))
+            print(f"[OnlineDQN] checkpoint saved: {self.ckpt_latest_path}")
+        except Exception as e:
+            print(f"[OnlineDQN] checkpoint save failed: {e}")
 
     def act(self, obsMsg: dict) -> dict:
         """
-        Main hook called by PolicyWorker every tick.
+        Called by PolicyWorker every tick.
 
-        Flow:
-          1. Encode current observation → obs_vec.
-          2. If we have a previous (s, a), compute reward and store transition.
-          3. Train DQNAgent from replay (if enough samples).
-          4. If episode ended (done=True), log episode summary and reset.
-          5. Select next action via epsilon-greedy.
-          6. Return Minecraft controls dict (with seq id).
+        Handles:
+          - kind == "episode_start" / "episode_end" (events injected into obs_q)
+          - kind == "observation" (normal RL step)
         """
+        kind = obsMsg.get("kind")
+
+        # ---- handle injected episode boundary events safely ----
+        if kind == "episode_start":
+            self._reset_episode_state()
+            self.seq += 1
+            return ToMinecraftControls(0, self.seq)  # noop
+
+        if kind == "episode_end":
+            try:
+                self._append_episode_history(last_obs=self._last_obs_msg or obsMsg, done_reason="client_episode_end")
+            except Exception as e:
+                print(f"[OnlineDQN] failed to log episode_history on client end: {e}")
+
+            self.episode_idx += 1
+            self._reset_episode_state()
+            self.seq += 1
+            return ToMinecraftControls(0, self.seq)  # noop
+
+        # If some other unexpected kind shows up, just noop safely.
+        if kind is not None and kind != "observation":
+            self.seq += 1
+            return ToMinecraftControls(0, self.seq)
+
         # 1) Encode current observation
         obs_vec = EncodeObservation(obsMsg, self.max_ray_dist)
 
         # 2) If we have a previous step, compute reward & train
         if self._last_obs_vec is not None and self._last_action_idx is not None:
-            reward, done = self._compute_reward(
-                prev_obs=self._last_obs_msg,
-                curr_obs=obsMsg,
-            )
+            reward, done = self._compute_reward(prev_obs=self._last_obs_msg, curr_obs=obsMsg)
 
-            # Log latest state (overwritten each step)
+            # Logging
             self._write_episode_state(reward, done, obsMsg)
-
-            # Log this transition as a step in step_history.jsonl
             self._append_step_history(reward, done, self._last_action_idx, obsMsg)
 
-            # This step counts toward episode_step
+            # Episode step bookkeeping
             self.episode_step += 1
 
             # Store transition in replay
@@ -510,12 +491,12 @@ class OnlineDQNPolicy(Policy):
                 done=done,
             )
 
-            # One gradient update (if enough data)
+            # One gradient update
             loss = self.agent.TrainStep()
             if loss is not None:
                 self.agent.UpdateTargetNetwork()
 
-            # Episode end handling (from RewardEngine's "done")
+            # Episode end handling (RewardEngine done)
             if done:
                 phase = getattr(self.reward_engine, "phase", None)
                 episode_return = getattr(self.reward_engine, "episode_return", None)
@@ -527,31 +508,26 @@ class OnlineDQNPolicy(Policy):
                     msg += f" phase={phase}"
                 print(msg)
 
-                # Append summary entry to episode_history.json
                 try:
-                    self._append_episode_history(last_obs=obsMsg, done_reason="done_true")
+                    self._append_episode_history(last_obs=obsMsg, done_reason="reward_engine_done")
                 except Exception as e:
                     print(f"[OnlineDQN] failed to log episode_history: {e}")
 
-                # Prepare for next episode
                 self.episode_idx += 1
-                self.episode_step = 0
-                self.reward_engine.reset_episode()
+                self._reset_episode_state()
 
-                # Clear transition memory so next call starts fresh
-                self._last_obs_vec = None
-                self._last_action_idx = None
-                self._last_obs_msg = None
-
-        # 3) Select action for *current* state
+        # 3) Select action for current state
         action_idx = self.agent.SelectAction(obs_vec)
-        self.agent.IncrementStep()
 
-        # 4) Remember this (s, a) for the next tick's (s', r, done)
+        # 4) Step count + target net update cadence is based on totalSteps
+        self.agent.IncrementStep()
+        self._maybe_checkpoint()
+
+        # 5) Remember (s, a) for the next tick
         self._last_obs_vec = obs_vec
         self._last_action_idx = action_idx
         self._last_obs_msg = obsMsg
 
-        # 5) Wrap into Minecraft controls with sequential id
+        # 6) Wrap into Minecraft controls with sequential id
         self.seq += 1
         return ToMinecraftControls(action_idx, self.seq)
