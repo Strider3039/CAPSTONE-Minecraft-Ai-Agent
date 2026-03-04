@@ -1,3 +1,5 @@
+# ai/src/policy/rl/dqn/reward_engine.py
+
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
@@ -9,16 +11,17 @@ class RewardEngine:
     """
     Reward engine matching your observation schema.
 
-    Observation payload:
-      - pose: x, y, z, yaw, pitch
-      - rays: [{hit, dist, angle_deg}, ...]
+    Observation payload (expected keys):
+      - pose: {x, y, z, yaw, pitch}
+      - rays: [{hit, distance, angle_deg}, ...]   (your encoder uses 'distance')
       - front_clear: bool
       - world: {time_of_day, weather, biome}
       - inventory: {selected_slot, hotbar: [{id, count}, ...]}
       - collision: {is_grounded, is_colliding, no_progress}
 
-    Rewards:
+    Rewards (starter shaping):
       - Small survival reward every step
+      - Small step penalty to avoid "do nothing" solutions
       - Reward for movement in XZ (exploration)
       - Penalty when 'no_progress' is true (stuck)
       - Small bonus when 'front_clear' is true (open space)
@@ -26,12 +29,16 @@ class RewardEngine:
       - Episode termination based on max steps per episode
     """
 
-    # Tunable weights
-    survival_reward: float = 0.01
+    # Tunable weights (recommended starter values)
+    survival_reward: float = 0.001
+    step_penalty: float = -0.001
+
     move_scale: float = 1.0
     max_move_reward: float = 0.1
+
     no_progress_penalty: float = -0.02
     front_clear_bonus: float = 0.005
+
     item_pickup_reward: float = 0.05
 
     # Episode bookkeeping
@@ -49,7 +56,7 @@ class RewardEngine:
     # ---------- Public API ----------
 
     def reset_episode(self) -> None:
-        """Called when an episode ends (from OnlineDQNPolicy)."""
+        """Called when an episode ends."""
         self.episode_return = 0.0
         self.steps = 0
         self._last_pos = None
@@ -72,8 +79,9 @@ class RewardEngine:
         body_prev = self._extract_body(prev_obs) if prev_obs is not None else None
         body_curr = self._extract_body(curr_obs)
 
-        # 1) Survival reward
+        # 1) Survival reward (tiny) + step penalty (tiny)
         reward += self.survival_reward
+        reward += self.step_penalty
 
         # 2) Movement reward in XZ
         reward += self._movement_reward(body_prev, body_curr)
@@ -113,8 +121,7 @@ class RewardEngine:
         body_curr: Dict[str, Any],
     ) -> float:
         """
-        Reward forward movement / exploration in the XZ plane.
-        Uses payload.pose.x/z.
+        Reward exploration in the XZ plane, based on payload.pose.x/z.
         """
         pos_curr = self._extract_pos(body_curr)
         pos_prev = self._extract_pos(body_prev) if body_prev else self._last_pos
@@ -123,14 +130,12 @@ class RewardEngine:
             return 0.0
 
         move_reward = 0.0
-
         if pos_prev is not None:
             dx = pos_curr["x"] - pos_prev["x"]
             dz = pos_curr["z"] - pos_prev["z"]
             dist = math.sqrt(dx * dx + dz * dz)
             move_reward = min(dist * self.move_scale, self.max_move_reward)
 
-        # Update stored position
         self._last_pos = pos_curr
         return move_reward
 
@@ -162,11 +167,11 @@ class RewardEngine:
             collision = {}
 
         # Penalty for 'no_progress' – likely stuck against a wall
-        if collision.get("no_progress", False):
+        if bool(collision.get("no_progress", False)):
             reward += self.no_progress_penalty
 
         # Bonus if front is clear (encourages moving into open space)
-        if body_curr.get("front_clear", False):
+        if bool(body_curr.get("front_clear", False)):
             reward += self.front_clear_bonus
 
         return reward
@@ -177,7 +182,7 @@ class RewardEngine:
         body_curr: Dict[str, Any],
     ) -> float:
         """
-        Reward increases in hotbar item counts (pickup / crafting etc.).
+        Reward increases in hotbar item counts (pickup/crafting etc.).
         Uses payload.inventory.hotbar entries with {id, count}.
         """
         inv_curr = self._extract_hotbar(body_curr)
@@ -190,6 +195,8 @@ class RewardEngine:
 
         if inv_prev is not None and len(inv_curr) == len(inv_prev):
             for prev_slot, curr_slot in zip(inv_prev, inv_curr):
+                if not isinstance(prev_slot, dict) or not isinstance(curr_slot, dict):
+                    continue
                 try:
                     prev_count = int(prev_slot.get("count", 0))
                     curr_count = int(curr_slot.get("count", 0))
@@ -199,7 +206,6 @@ class RewardEngine:
                 if curr_count > prev_count:
                     reward += self.item_pickup_reward
 
-        # Update stored inventory
         self._last_hotbar = inv_curr
         return reward
 
