@@ -175,11 +175,6 @@ public class ForgeWebSocketClient extends WebSocketClient {
         hello.addProperty("role", "client");
         send(hello.toString());
 
-        // IMPORTANT: do not close here; just refuse to execute actions when disabled
-        if (!shouldClientWebSocketBeEnabled()) {
-            System.out.println("[WS] CLIENT WS is disabled in this environment; will ignore actions.");
-        }
-
         emitBridgeHealth("info", "connected");
         sendBridgeReady();
 
@@ -260,15 +255,6 @@ public class ForgeWebSocketClient extends WebSocketClient {
             JsonObject payload = json.getAsJsonObject("payload");
             boolean needsAck = actionNeedsAck(json, payload);
 
-            // NEW: refuse control if client WS is disabled in this environment
-            if (!shouldClientWebSocketBeEnabled()) {
-                System.out.println("[WS] Dropping action: client WS disabled in multiplayer/dedicated. seq=" + seq);
-                if (needsAck) {
-                    emitActionResult(seq, actionId, "fail", "client_ws_disabled_in_multiplayer");
-                }
-                return;
-            }
-
             if (payload == null) return;
 
             if (!isAiEnabled()) {
@@ -286,6 +272,18 @@ public class ForgeWebSocketClient extends WebSocketClient {
 
             // Route based on mode
             ControlMode mode = getControlMode();
+
+            // Mode-aware gating:
+            // - PLAYER mode is allowed in both singleplayer and multiplayer.
+            // - SERVER_BOT mode is only allowed in integrated singleplayer.
+            if (!isWsControlAllowedForMode(mode)) {
+                System.out.println("[WS] Dropping action: ws control not allowed for mode=" + mode + " seq=" + seq);
+                if (needsAck) {
+                    emitActionResult(seq, actionId, "fail", "ws_control_not_allowed_for_mode");
+                }
+                return;
+            }
+
             if (mode == ControlMode.SERVER_BOT) {
                 mc.execute(() -> {
                     try {
@@ -293,9 +291,10 @@ public class ForgeWebSocketClient extends WebSocketClient {
                         int deadlineMs = json.has("deadline_ms") ? json.get("deadline_ms").getAsInt() : 50;
                         forwardActionToServer(seq, actionId, deadlineMs, payload);
 
-                        // IMPORTANT:
-                        // Do NOT emit action_result on success in SERVER_BOT mode.
-                        // The dedicated server mod will emit the real action_result for the seq.
+                        // Locally acknowledge forwarding so the Python bridge doesn't hang
+                        if (needsAck) {
+                            emitActionResult(seq, actionId, "success", "forwarded_to_server");
+                        }
                     } catch (Exception e) {
                         // If forwarding fails, respond so Python doesn't hang.
                         if (needsAck) {
@@ -307,11 +306,11 @@ public class ForgeWebSocketClient extends WebSocketClient {
             } else {
                 mc.execute(() -> {
                     try {
-                        handleStructuredAction(seq, actionId, payload, mc);
+                        ActionExecResult r = handleStructuredAction(payload, mc);
 
-                        // ACK discrete actions to prevent Python timeouts
+                        // ACK only when requested (await_result==true)
                         if (needsAck) {
-                            emitActionResult(seq, actionId, "success", "client_player");
+                            emitActionResult(seq, actionId, r.status, r.reason);
                         }
                     } catch (Exception e) {
                         if (needsAck) {
@@ -327,13 +326,28 @@ public class ForgeWebSocketClient extends WebSocketClient {
         }
     }
 
-    private static boolean shouldClientWebSocketBeEnabled() {
+    /**
+     * We allow WS-driven control in PLAYER mode even in multiplayer, because vanilla input replication
+     * will send movement/attacks to the server normally.
+     *
+     * We only forbid WS control in SERVER_BOT mode unless we're in singleplayer/integrated-server,
+     * to avoid a multiplayer client attempting to directly drive a server-side bot.
+     */
+    private static boolean isWsControlAllowedForMode(ControlMode mode) {
         Minecraft mc = Minecraft.getInstance();
+        if (mc == null) return false;
+
+        if (mode == ControlMode.PLAYER) {
+            return true;
+        }
+
         return mc.hasSingleplayerServer();
     }
 
     private boolean canClientSendToBridge() {
-        return shouldClientWebSocketBeEnabled() && bridgeReady.get() && this.isOpen();
+        // IMPORTANT: We must be able to ACK actions back to the Python bridge in multiplayer
+        // when operating in PLAYER mode.
+        return bridgeReady.get() && this.isOpen();
     }
 
     // ───────────────────────────────────────────────
@@ -382,23 +396,29 @@ public class ForgeWebSocketClient extends WebSocketClient {
         };
     }
 
-
     // ───────────────────────────────────────────────
     // Mode A: local execution on LocalPlayer
     // ───────────────────────────────────────────────
 
-    private void handleStructuredAction(int actionSeq, String actionId, JsonObject payload, Minecraft mc) {
+    private static final class ActionExecResult {
+        final String status;
+        final String reason;
+        ActionExecResult(String status, String reason) {
+            this.status = status;
+            this.reason = reason;
+        }
+    }
+
+    private ActionExecResult handleStructuredAction(JsonObject payload, Minecraft mc) {
 
         if (!isAiEnabled()) {
             releaseAllKeys(mc);
-            emitActionResult(actionSeq, actionId, "blocked", "ai_disabled");
-            return;
+            return new ActionExecResult("blocked", "ai_disabled");
         }
 
         LocalPlayer p = mc.player;
         if (p == null) {
-            emitActionResult(actionSeq, actionId, "fail", "no_player");
-            return;
+            return new ActionExecResult("fail", "no_player");
         }
 
         String status = "success";
@@ -408,8 +428,25 @@ public class ForgeWebSocketClient extends WebSocketClient {
             // 1) LOOK (clamped deltas)
             if (payload.has("look")) {
                 JsonObject look = payload.getAsJsonObject("look");
-                float dYaw = look.has("dYaw") ? look.get("dYaw").getAsFloat() : 0f;
-                float dPitch = look.has("dPitch") ? look.get("dPitch").getAsFloat() : 0f;
+                float dYaw = 0f;
+                float dPitch = 0f;
+
+                // Prefer v2 schema fields (yaw_delta / pitch_delta), fallback to legacy dYaw / dPitch
+                if (look.has("yaw_delta") || look.has("pitch_delta")) {
+                    if (look.has("yaw_delta")) {
+                        dYaw = look.get("yaw_delta").getAsFloat();
+                    }
+                    if (look.has("pitch_delta")) {
+                        dPitch = look.get("pitch_delta").getAsFloat();
+                    }
+                } else {
+                    if (look.has("dYaw")) {
+                        dYaw = look.get("dYaw").getAsFloat();
+                    }
+                    if (look.has("dPitch")) {
+                        dPitch = look.get("dPitch").getAsFloat();
+                    }
+                }
 
                 dYaw = clamp(dYaw, -MAX_YAW_PER_TICK, MAX_YAW_PER_TICK);
                 dPitch = clamp(dPitch, -MAX_PITCH_PER_TICK, MAX_PITCH_PER_TICK);
@@ -423,36 +460,48 @@ public class ForgeWebSocketClient extends WebSocketClient {
                 p.xRotO = newPitch;
             }
 
-            // 2) MOVE (analog -> key states)
+            // 2) MOVE + JUMP / SPRINT / SNEAK (v2 schema and legacy support)
+            double forward = 0.0;
+            double strafe  = 0.0;
+            boolean jump   = false;
+            boolean sprint = false;
+            boolean sneak  = false;
+
             if (payload.has("move")) {
                 JsonObject move = payload.getAsJsonObject("move");
-                double forward = move.has("forward") ? move.get("forward").getAsDouble() : 0.0;
-                double strafe  = move.has("strafe") ? move.get("strafe").getAsDouble() : 0.0;
+                if (move.has("forward")) forward = move.get("forward").getAsDouble();
+                if (move.has("strafe"))  strafe  = move.get("strafe").getAsDouble();
 
-                boolean w = forward > 0.2;
-                boolean s = forward < -0.2;
-                boolean d = strafe  > 0.2;
-                boolean a = strafe  < -0.2;
-
-                Options opt = mc.options;
-                opt.keyUp.setDown(w);
-                opt.keyDown.setDown(s);
-                opt.keyRight.setDown(d);
-                opt.keyLeft.setDown(a);
-            } else {
-                Options opt = mc.options;
-                opt.keyUp.setDown(false);
-                opt.keyDown.setDown(false);
-                opt.keyRight.setDown(false);
-                opt.keyLeft.setDown(false);
+                if (move.has("jump"))   jump   = move.get("jump").getAsBoolean();
+                if (move.has("sprint")) sprint = move.get("sprint").getAsBoolean();
+                if (move.has("sneak"))  sneak  = move.get("sneak").getAsBoolean();
             }
 
-            // 3) JUMP
-            mc.options.keyJump.setDown(payload.has("jump") && payload.get("jump").getAsBoolean());
+            // Legacy top-level flags override move.* when present
+            if (payload.has("jump")) {
+                jump = payload.get("jump").getAsBoolean();
+            }
+            if (payload.has("sprint")) {
+                sprint = payload.get("sprint").getAsBoolean();
+            }
+            if (payload.has("sneak")) {
+                sneak = payload.get("sneak").getAsBoolean();
+            }
 
-            // 4) SPRINT / SNEAK
-            mc.options.keySprint.setDown(payload.has("sprint") && payload.get("sprint").getAsBoolean());
-            mc.options.keyShift.setDown(payload.has("sneak") && payload.get("sneak").getAsBoolean());
+            boolean w = forward > 0.2;
+            boolean s = forward < -0.2;
+            boolean d = strafe  > 0.2;
+            boolean a = strafe  < -0.2;
+
+            Options opt = mc.options;
+            opt.keyUp.setDown(w);
+            opt.keyDown.setDown(s);
+            opt.keyRight.setDown(d);
+            opt.keyLeft.setDown(a);
+
+            opt.keyJump.setDown(jump);
+            opt.keySprint.setDown(sprint);
+            opt.keyShift.setDown(sneak);
 
             // 5) HOTBAR SELECT
             if (payload.has("select_slot")) {
@@ -471,9 +520,6 @@ public class ForgeWebSocketClient extends WebSocketClient {
                     doAttack(mc);
                 }
                 lastAttackDown = down;
-            } else {
-                mc.options.keyAttack.setDown(false);
-                lastAttackDown = false;
             }
 
             // 7) USE (right click)
@@ -487,9 +533,6 @@ public class ForgeWebSocketClient extends WebSocketClient {
                     }
                 }
                 lastUseDown = down;
-            } else {
-                mc.options.keyUse.setDown(false);
-                lastUseDown = false;
             }
 
         } catch (Exception e) {
@@ -498,7 +541,7 @@ public class ForgeWebSocketClient extends WebSocketClient {
             System.err.println("[WS] Action exec error: " + e.getMessage());
         }
 
-        emitActionResult(actionSeq, actionId, status, reason);
+        return new ActionExecResult(status, reason);
     }
 
     private static void doAttack(Minecraft mc) {

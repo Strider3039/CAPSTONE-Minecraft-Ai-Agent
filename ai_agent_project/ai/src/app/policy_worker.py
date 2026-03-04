@@ -14,7 +14,9 @@ if str(SRC) not in sys.path:
     sys.path.append(str(SRC))
 
 
-async def QueueAdd(q: asyncio.Queue, item: Any, put_timeout_s: Optional[float], log, emit_event=None) -> None:
+async def QueueAdd(
+    q: asyncio.Queue, item: Any, put_timeout_s: Optional[float], log, emit_event=None
+) -> None:
     if not put_timeout_s or put_timeout_s <= 0:
         await q.put(item)
         return
@@ -23,7 +25,9 @@ async def QueueAdd(q: asyncio.Queue, item: Any, put_timeout_s: Optional[float], 
     except asyncio.TimeoutError:
         log.warning("act_q put timeout", extra={"qsize": q.qsize()})
         if emit_event:
-            await emit_event("bridge_health", {"level": "warn", "detail": "act_q_put_timeout"})
+            await emit_event(
+                "bridge_health", {"level": "warn", "detail": "act_q_put_timeout"}
+            )
         # still block to preserve "never drop"
         await q.put(item)
 
@@ -34,7 +38,10 @@ def Percentile(sortedVals, p: float) -> float:
     k = max(0, min(len(sortedVals) - 1, int(round(p * (len(sortedVals) - 1)))))
     return float(sortedVals[k])
 
-def normalize_action(action_msg: dict, default_deadline_ms: int, seq_hint: Optional[int] = None) -> dict:
+
+def normalize_action(
+    action_msg: dict, default_deadline_ms: int, seq_hint: Optional[int] = None
+) -> dict:
     action_msg = dict(action_msg)  # shallow copy
 
     action_msg.setdefault("proto", "1")
@@ -43,7 +50,6 @@ def normalize_action(action_msg: dict, default_deadline_ms: int, seq_hint: Optio
 
     # Ensure payload exists
     payload = action_msg.get("payload")
-    log.debug("policy_payload_keys", extra={"keys": list(payload.keys()) if isinstance(payload, dict) else [], "await_result": action_needs_ack(action_msg)})
     if not isinstance(payload, dict):
         payload = {}
         action_msg["payload"] = payload
@@ -62,15 +68,30 @@ def normalize_action(action_msg: dict, default_deadline_ms: int, seq_hint: Optio
     if seq_hint is not None and "seq" not in action_msg:
         action_msg["seq"] = int(seq_hint)
 
+    # Now that the envelope is normalized, compute whether this action needs an ack
+    log.debug(
+        "policy_payload_keys",
+        extra={
+            "keys": list(payload.keys()),
+            "await_result": action_needs_ack(action_msg),
+        },
+    )
+
     return action_msg
 
-DISCRETE_KEYS = {"attack", "use", "select_slot"}  # add more later (place_block, break_block, etc.)
+
+DISCRETE_KEYS = {
+    "attack",
+    "use",
+    "select_slot",
+}  # add more later (place_block, break_block, etc.)
+
 
 def action_needs_ack(action_msg: dict) -> bool:
     action_id = str(action_msg.get("action_id") or "").strip()
     if action_id in DISCRETE_KEYS:
         return True
-    payload = (action_msg.get("payload") or {})
+    payload = action_msg.get("payload") or {}
     return any(k in payload for k in DISCRETE_KEYS)
 
 
@@ -78,13 +99,13 @@ async def PolicyWorker(
     obs_q: asyncio.Queue,
     act_q: asyncio.Queue,
     runtime_cfg: dict,
-    queues_cfg: dict,          # NEW: unified runtime config
+    queues_cfg: dict,  # NEW: unified runtime config
     act_schema: dict,
     log,
     emit_event=None,
     policy_step=None,
-    drop_policy: str = "block", # keep for compat but don’t use
-    on_drop=None,               # keep for compat
+    drop_policy: str = "block",  # keep for compat but don’t use
+    on_drop=None,  # keep for compat
 ):
     """
     Main RL loop:
@@ -103,8 +124,12 @@ async def PolicyWorker(
     RESEND_INTERVAL_S = float(runtime_cfg.get("continuous_resend_interval_s", 0.05))
     RESEND_INTERVAL_S = max(0.0, RESEND_INTERVAL_S)
 
-    coalesce_cfg = (queues_cfg.get("coalesce") or {}) if isinstance(queues_cfg.get("coalesce"), dict) else {}
-    coalesce_enabled = coalesce_enabled = bool(coalesce_cfg.get("enabled", True))
+    coalesce_cfg = (
+        (queues_cfg.get("coalesce") or {})
+        if isinstance(queues_cfg.get("coalesce"), dict)
+        else {}
+    )
+    coalesce_enabled = bool(coalesce_cfg.get("enabled", True))
     coalesce_kinds = set(coalesce_cfg.get("kinds", ["look", "move"]))
 
     def is_control_action(msg: dict) -> bool:
@@ -127,10 +152,9 @@ async def PolicyWorker(
                 latestObs = item
                 drained = True
         return drained
-    
+
     last_payload = None
     last_send_ts = 0.0
-
 
     while True:
         now = time.time()
@@ -160,7 +184,9 @@ async def PolicyWorker(
                 },
             )
 
-            action_msg = normalize_action(action_msg, int(runtime_cfg.get("default_deadline_ms", 50)))
+            action_msg = normalize_action(
+                action_msg, int(runtime_cfg.get("default_deadline_ms", 50))
+            )
 
             needs_ack = action_needs_ack(action_msg)
             action_msg["await_result"] = needs_ack
@@ -179,19 +205,35 @@ async def PolicyWorker(
                 try:
                     validate(instance=action_msg, schema=act_schema)
                 except ValidationError as ve:
-                    log.warning("action failed schema", extra={"error": ve.message, "path": list(ve.path)})
+                    log.warning(
+                        "action failed schema",
+                        extra={"error": ve.message, "path": list(ve.path)},
+                    )
                     if emit_event:
-                        await emit_event("bridge_health", {"level": "warn", "detail": f"action_schema_error:{ve.message}"})
+                        await emit_event(
+                            "bridge_health",
+                            {
+                                "level": "warn",
+                                "detail": f"action_schema_error:{ve.message}",
+                            },
+                        )
                     continue
 
             payload = action_msg.get("payload") or {}
 
             if not needs_ack:
                 now2 = time.time()
-                if payload == last_payload and (now2 - last_send_ts) < RESEND_INTERVAL_S:
+                if (
+                    payload == last_payload
+                    and (now2 - last_send_ts) < RESEND_INTERVAL_S
+                ):
                     log.debug(
                         "suppress_duplicate_control",
-                        extra={"age_s": (now2 - last_send_ts), "resend_s": RESEND_INTERVAL_S, "payload_keys": list((payload or {}).keys())},
+                        extra={
+                            "age_s": (now2 - last_send_ts),
+                            "resend_s": RESEND_INTERVAL_S,
+                            "payload_keys": list((payload or {}).keys()),
+                        },
                     )
                     continue
                 last_payload = payload
@@ -199,7 +241,11 @@ async def PolicyWorker(
 
             # 3) Coalesce controls ONLY when the queue is actually backing up.
             # Keep the newest control, preserve ACK actions.
-            if coalesce_enabled and (not action_msg["await_result"]) and is_control_action(action_msg):
+            if (
+                coalesce_enabled
+                and (not action_msg["await_result"])
+                and is_control_action(action_msg)
+            ):
                 # Only coalesce if queue is above a threshold (prevents dropping in steady-state)
                 threshold = int(coalesce_cfg.get("threshold", 10))
                 if act_q.qsize() >= threshold:
@@ -211,7 +257,11 @@ async def PolicyWorker(
                         while True:
                             it = act_q.get_nowait()
                             # Anything that isn't a droppable control is preserved
-                            if not (isinstance(it, dict) and (not it.get("await_result", False)) and is_control_action(it)):
+                            if not (
+                                isinstance(it, dict)
+                                and (not it.get("await_result", False))
+                                and is_control_action(it)
+                            ):
                                 kept.append(it)
                             else:
                                 newest_control = it  # keep overwriting; last one wins
@@ -229,12 +279,20 @@ async def PolicyWorker(
                         await act_q.put(newest_control)
 
                     if dropped and emit_event:
-                        await emit_event("bridge_health", {"level": "info", "detail": f"coalesced_controls dropped={dropped}"})
+                        await emit_event(
+                            "bridge_health",
+                            {
+                                "level": "info",
+                                "detail": f"coalesced_controls dropped={dropped}",
+                            },
+                        )
 
             put_timeout_s = float(queues_cfg.get("act_put_timeout_s", 0) or 0)
-            log.debug("policy_payload", extra={"keys": list(payload.keys()), "payload": payload})
+            log.debug(
+                "policy_payload",
+                extra={"keys": list(payload.keys()), "payload": payload},
+            )
             await QueueAdd(act_q, action_msg, put_timeout_s, log, emit_event)
-
 
         except Exception as e:
             log.warning("policy_step failed", extra={"error": str(e)})

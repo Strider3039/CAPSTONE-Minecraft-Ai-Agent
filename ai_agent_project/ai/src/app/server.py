@@ -563,8 +563,14 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
                 continue
 
             if kind == "action_result":
-                # NOTE: action_result is NOT EVT. Do not validate with EVT.
-                # Perform minimal sanity checks and resolve pending future.
+                # Validate against the unified event schema (EVT) and then
+                # perform minimal sanity checks before resolving the pending future.
+                try:
+                    validate(instance=msg, schema=EVT)
+                except ValidationError as ve:
+                    log.warning("action_result failed schema", extra={"error": str(ve), "raw": msg})
+                    continue
+
                 if "seq" not in msg:
                     log.warning("action_result missing seq", extra={"raw": msg})
                     continue
