@@ -4,7 +4,19 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime, timezone, timedelta
 import pathlib as _pathlib
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None  # Python < 3.9
+
+# Pacific (PST/PDT); fallback to fixed UTC-8 if zoneinfo unavailable
+def _pacific_now():
+    if ZoneInfo is not None:
+        return datetime.now(ZoneInfo("America/Los_Angeles"))
+    return datetime.now(timezone(timedelta(hours=-8)))
 
 import numpy as np
 import torch
@@ -219,6 +231,7 @@ class OnlineDQNPolicy(Policy):
         agent: DQNAgent,
         max_ray_dist: float,
         device: str = "cpu",
+        save_every_steps: int | None = None,
     ) -> None:
         self.agent = agent
         self.max_ray_dist = max_ray_dist
@@ -248,7 +261,8 @@ class OnlineDQNPolicy(Policy):
         ) = self._resolve_paths()
 
         # ---- checkpointing (global persistence across all worlds) ----
-        self.save_every_steps = 10_000  # adjust as you like
+        # Default ~5 min at 20 Hz (5*60*20 = 6000); config can override via save_every_steps
+        self.save_every_steps = int(save_every_steps) if save_every_steps is not None else 6_000
         self.ckpt_latest_path = str((self._shared_dir / "Data" / "online_dqn_latest.pt").resolve())
         self.ckpt_dir = (self._shared_dir / "Data" / "checkpoints")
         self.ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -260,6 +274,7 @@ class OnlineDQNPolicy(Policy):
         max_ray_dist: float,
         device: str = "cpu",
         hidden_sizes=(128, 128),
+        save_every_steps: int | None = None,
     ) -> "OnlineDQNPolicy":
         agent = DQNAgent(device=device, hiddenDims=hidden_sizes)
 
@@ -272,7 +287,7 @@ class OnlineDQNPolicy(Policy):
             except Exception as e:
                 print(f"[OnlineDQNPolicy] failed to load checkpoint ({checkpoint_path}): {e}")
 
-        return cls(agent, max_ray_dist, device)
+        return cls(agent, max_ray_dist, device, save_every_steps=save_every_steps)
 
     # ----- filesystem helpers for logs -----
 
@@ -425,14 +440,21 @@ class OnlineDQNPolicy(Policy):
     def _maybe_checkpoint(self) -> None:
         if self.save_every_steps <= 0:
             return
-        if self.agent.totalSteps % self.save_every_steps != 0:
+        # Save on first step (so a file exists after any learning) and every save_every_steps
+        n = self.agent.totalSteps
+        if n == 0:
+            return
+        if n != 1 and n % self.save_every_steps != 0:
             return
 
         try:
             self.agent.Save(self.ckpt_latest_path)
-            snap = self.ckpt_dir / f"online_dqn_step{self.agent.totalSteps:09d}.pt"
+            snap = self.ckpt_dir / f"online_dqn_step{n:09d}.pt"
             self.agent.Save(str(snap))
-            print(f"[OnlineDQN] checkpoint saved: {self.ckpt_latest_path}")
+            dt = _pacific_now()
+            z = dt.strftime("%Z") or "PST"
+            ts = dt.strftime("%Y-%m-%d %H:%M:%S") + f" {z}"
+            print(f"[OnlineDQN] checkpoint saved at {ts} | step={n} | latest={self.ckpt_latest_path} | snapshot={snap.name}")
         except Exception as e:
             print(f"[OnlineDQN] checkpoint save failed: {e}")
 

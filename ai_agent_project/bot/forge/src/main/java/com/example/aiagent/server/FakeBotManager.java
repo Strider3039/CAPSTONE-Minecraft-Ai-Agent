@@ -208,6 +208,8 @@ public class FakeBotManager {
     private final java.util.concurrent.ConcurrentLinkedQueue<com.google.gson.JsonObject> completedStepResults = new java.util.concurrent.ConcurrentLinkedQueue<>();
 
     private int tickCounter = 0;
+    /** Seq for idle observations sent when no step is active (so Python gets obs and can send first action). */
+    private int idleObsSeq = 0;
 
     public java.util.concurrent.ConcurrentLinkedQueue<com.google.gson.JsonObject> getCompletedStepResultsQueue() {
         return completedStepResults;
@@ -522,6 +524,16 @@ public class FakeBotManager {
                     collectNearbyItems(bot, level);
                     updateFallDamage(bot, level, prevY, prevOnGround);
                     sendBotState(level, bot);
+
+                    // Send an idle observation every ~1s so the Python bridge gets observations and can send actions (bootstrap SERVER_BOT).
+                    if (tickCounter % 20 == 0) {
+                        try {
+                            JsonObject obs = buildObservationEvent(idleObsSeq++, bot, level);
+                            completedStepResults.offer(obs);
+                        } catch (Throwable t) {
+                            System.out.println("[AI-BOT] idle observation failed: " + t.getMessage());
+                        }
+                    }
                 }
 
                 continue;

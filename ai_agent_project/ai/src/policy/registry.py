@@ -18,6 +18,7 @@ def build_policy_from_config(runtime_cfg: Dict[str, Any]):
 
     dqn_cfg = pol_cfg.get("dqn", {})
     ckpt = _resolve_checkpoint_path(dqn_cfg.get("checkpoint_path"))
+    save_every_steps = dqn_cfg.get("save_every_steps")  # e.g. 6000 = ~5 min at 20 Hz
 
     ray_cfg = runtime_cfg.get("raycasts", {})
     max_ray = ray_cfg.get("max_dist", pol_cfg.get("max_ray_dist", 20.0))
@@ -28,7 +29,8 @@ def build_policy_from_config(runtime_cfg: Dict[str, Any]):
         return OnlineDQNPolicy.FromCheckpoint(
             ckpt,
             max_ray_dist=max_ray,
-            device=device
+            device=device,
+            save_every_steps=save_every_steps,
         )
 
     if ptype == "dqn":

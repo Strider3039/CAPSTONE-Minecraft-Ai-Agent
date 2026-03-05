@@ -72,12 +72,17 @@ def EncodeObservation(obsMsg: Dict[str, Any], maxRayDist: float) -> np.ndarray:
 
     if not isinstance(rays, list):
         raise ValueError("'rays' field must be a list.")
-    
+
     for i in range(min(len(rays), MAX_RAYS)):
         ray = rays[i] or {}
         hit = bool(ray.get("hit", False))
-        dist = float(ray.get("distance", 0.0))
-        
+
+        # Observation schema uses 'dist'; accept legacy 'distance' as fallback.
+        if "dist" in ray:
+            dist = float(ray.get("dist", 0.0))
+        else:
+            dist = float(ray.get("distance", 0.0))
+
         # Clamp distance
         dist_clamped = min(max(dist, 0.0), maxRayDist)
         dist_norm = dist_clamped / maxRayDist
