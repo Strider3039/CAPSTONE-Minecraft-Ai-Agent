@@ -3,14 +3,20 @@ package com.example.aiagent;
 import com.example.aiagent.net.BotNet;
 import com.example.aiagent.server.ServerBotHooks;
 import com.example.aiagent.server.FakeBotManager;
+import com.example.aiagent.client.gui.AiBotConfigScreen;
+
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+
 import net.minecraftforge.eventbus.api.IEventBus;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
 import net.minecraftforge.fml.loading.FMLEnvironment;
 import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.fml.ModLoadingContext;
+import net.minecraftforge.fml.IExtensionPoint;
+import net.minecraftforge.client.ConfigScreenHandler;
 
 @Mod(BotMod.MODID)
 public class BotMod {
@@ -37,6 +43,15 @@ public class BotMod {
 
         IEventBus modBus = FMLJavaModLoadingContext.get().getModEventBus();
         modBus.addListener(this::onCommonSetup);
+
+        if (FMLEnvironment.dist == Dist.CLIENT) {
+            ModLoadingContext.get().registerExtensionPoint(
+                ConfigScreenHandler.ConfigScreenFactory.class,
+                () -> new ConfigScreenHandler.ConfigScreenFactory(
+                    (mc, parent) -> new AiBotConfigScreen(parent)
+                )
+            );
+        }
 
         System.out.println("[AI-BOT] BotMod constructed (common).");
     }
