@@ -83,8 +83,9 @@ def normalize_action(
 DISCRETE_KEYS = {
     "attack",
     "use",
+    "place",
     "select_slot",
-}  # add more later (place_block, break_block, etc.)
+}  # actions that require await_result from server
 
 
 def action_needs_ack(action_msg: dict) -> bool:
@@ -174,6 +175,12 @@ async def PolicyWorker(
 
             # policy_step expects the full observation message
             action_msg = policy_step(latestObs)
+            if not isinstance(action_msg, dict):
+                log.debug(
+                    "policy_step returned non-dict, skipping",
+                    extra={"type": type(action_msg).__name__},
+                )
+                continue
 
             raw_payload = (action_msg or {}).get("payload") or {}
             log.debug(

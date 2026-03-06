@@ -75,7 +75,8 @@ async def test_start_new_episode(tmp_path, monkeypatch):
 
     ws = DummyWS([])
 
-    await server.start_new_episode(ws)
+    # obs_q/obs_state=None so synthetic episode_start is not enqueued; obs_drop_policy unused
+    await server.start_new_episode(ws, None, None, "oldest")
 
     assert server.episode == 1
 

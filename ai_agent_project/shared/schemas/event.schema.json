@@ -30,7 +30,7 @@
             "action_id": { "type": "string" },
             "status": {
               "type": "string",
-              "enum": ["success", "fail", "cooldown", "blocked", "timeout"]
+              "enum": ["success", "fail", "cooldown", "blocked", "timeout", "forwarded"]
             },
             "reason": { "type": "string" },
             "server_tick": { "type": "integer", "minimum": 0 },

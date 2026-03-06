@@ -22,9 +22,14 @@ public class ServerBotHooks {
 
     private final FakeBotManager bots;
 
+    /** Bridge WebSocket URI. Override with JVM arg: -Dai_agent.bridge_uri=ws://host:port */
+    private static final String DEFAULT_WS_URI = "ws://127.0.0.1:8765";
+    private static String getBridgeUri() {
+        String u = System.getProperty("ai_agent.bridge_uri");
+        return (u != null && !u.isBlank()) ? u.trim() : DEFAULT_WS_URI;
+    }
 
-    private static final String WS_URI = "ws://127.0.0.1:8765";
-    private final ServerBridgeWebSocketClient ws = new ServerBridgeWebSocketClient(WS_URI);
+    private final ServerBridgeWebSocketClient ws = new ServerBridgeWebSocketClient(getBridgeUri());
 
     private static final java.util.concurrent.atomic.AtomicInteger INSTANCES =
         new java.util.concurrent.atomic.AtomicInteger(0);
@@ -40,9 +45,10 @@ public class ServerBotHooks {
 
         MinecraftForge.EVENT_BUS.register(this);
 
+        String uri = getBridgeUri();
         System.out.println("[AI-BOT] ServerBotHooks registered. instanceId=" + instanceId
                 + " this=" + System.identityHashCode(this));
-        System.out.println("[AI-BOT][SERVER-WS] Will connect to " + WS_URI + " (dedicated servers only)");
+        System.out.println("[AI-BOT][SERVER-WS] Will connect to " + uri + " (dedicated servers only)");
     }
 
     private static boolean shouldRun(MinecraftServer server) {
