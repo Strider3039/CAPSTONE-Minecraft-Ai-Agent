@@ -26,7 +26,15 @@ def LoadYaml(path: pathlib.Path) -> Dict[str, Any]:
         return {}
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
-    
+
+
+def SaveYaml(path: pathlib.Path, data: Dict[str, Any]) -> None:
+    """Write a dict to a YAML file (e.g. runtime overlay for persistence)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+
 def LoadConfig(env: str | None = None) -> Config:
     env = env or os.getenv("APP_ENV", "prod")
 

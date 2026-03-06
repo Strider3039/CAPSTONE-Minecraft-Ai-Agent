@@ -19,7 +19,7 @@ from jsonschema import validate, ValidationError
 
 # from ai/src/app to ai
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[3]))
-from ai.src.utils.config import LoadConfig
+from ai.src.utils.config import LoadConfig, DeepMerge, LoadYaml, SaveYaml
 from ai.src.utils.logging import SetupLogging, WriteMetric
 
 from ai.src.policy.registry import build_policy_from_config
@@ -71,6 +71,42 @@ EVT = _json.loads(EVT)
 # ---------- Episode persistence ----------
 EPISODE_SAVE_PATH = dataDir / "episode_state.json"
 episode = 0
+
+# ---------- Runtime overlay persistence (hot-reload values: control_mode, policy.reward, policy.dqn) ----------
+RUNTIME_OVERLAY_PATH = dataDir / "runtime_overrides.yaml"
+
+
+def load_runtime_overlay() -> Dict[str, Any]:
+    """Load persisted runtime overlay from disk. Returns empty dict if missing or invalid."""
+    try:
+        raw = LoadYaml(RUNTIME_OVERLAY_PATH)
+        return dict(raw) if isinstance(raw, dict) else {}
+    except Exception as e:
+        stdlog.getLogger("bridge.server").warning(
+            "failed to load runtime overlay",
+            extra={"path": str(RUNTIME_OVERLAY_PATH), "error": str(e)},
+        )
+        return {}
+
+
+def save_runtime_overlay(overlay: Dict[str, Any]) -> None:
+    """Persist runtime overlay to disk so next bridge start uses the same values."""
+    if not isinstance(overlay, dict):
+        return
+    try:
+        SaveYaml(RUNTIME_OVERLAY_PATH, overlay)
+        stdlog.getLogger("bridge.server").debug(
+            "saved runtime overlay",
+            extra={"path": str(RUNTIME_OVERLAY_PATH), "keys": list(overlay.keys())},
+        )
+    except Exception as e:
+        stdlog.getLogger("bridge.server").warning(
+            "failed to save runtime overlay",
+            extra={"path": str(RUNTIME_OVERLAY_PATH), "error": str(e)},
+        )
+
+
+# ---------- Episode counter (continued) ----------
 episode_start_time: Optional[float] = None
 MC_DAY_SECONDS = 1200  # 20 min
 
@@ -241,7 +277,17 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
     if not isinstance(runtime_cfg, dict):
         raise TypeError(f"cfg.runtime must be dict, got {type(runtime_cfg)}")
 
-    hello_timeout_s = float(runtime_cfg.get("hello_timeout_s", 2.0))
+    # Mutable overlay for hot-reload; merged with runtime_cfg for "current" config.
+    # Load persisted overlay from disk so last Apply (e.g. control_mode) is restored.
+    runtime_overlay: Dict[str, Any] = dict(load_runtime_overlay())
+    current_runtime: Dict[str, Any] = {}
+
+    def refresh_current_runtime() -> None:
+        current_runtime.clear()
+        current_runtime.update(DeepMerge(dict(runtime_cfg), dict(runtime_overlay)))
+
+    refresh_current_runtime()
+    hello_timeout_s = float(current_runtime.get("hello_timeout_s", 2.0))
 
     stopEvt = asyncio.Event()
     tasks: list[asyncio.Task] = []
@@ -309,7 +355,7 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
 
         # Extend control deadline based on YAML hold ticks (smoothing)
         if is_control:
-            hold_ticks = int(runtime_cfg.get("continuous_hold_ticks", 3))
+            hold_ticks = int(current_runtime.get("continuous_hold_ticks", 3))
             hold_ms = max(1, hold_ticks) * 50
             actionMsg["deadline_ms"] = max(int(actionMsg.get("deadline_ms", 0) or 0), hold_ms)
 
@@ -383,12 +429,12 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
         return sleep_exact
 
     async def ActionSenderLoop(stopEvt: asyncio.Event) -> None:
-        resend_s = float(runtime_cfg.get("continuous_resend_interval_s", 0.05))
+        resend_s = float(current_runtime.get("continuous_resend_interval_s", 0.05))
         hz = int(round(1.0 / max(0.01, resend_s)))
         sleep_exact = _exact_scheduler(hz)
 
         while not stopEvt.is_set():
-            maxPerTick = int(runtime_cfg.get("policy", {}).get("max_actions_per_tick", 2))
+            maxPerTick = int(current_runtime.get("policy", {}).get("max_actions_per_tick", 2))
             sent = 0
 
             while sent < maxPerTick:
@@ -450,7 +496,7 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
 
                 await_result = bool(item.get("await_result", False))
 
-                default_disc_ms = int(float(runtime_cfg.get("discrete_action_timeout_s", 2.0)) * 1000)
+                default_disc_ms = int(float(current_runtime.get("discrete_action_timeout_s", 2.0)) * 1000)
                 timeout_ms = int(item.get("timeout_ms", default_disc_ms if await_result else 0))
 
                 # If ACK action is pending, don't create more in-flight; avoid head-of-line deadlocks.
@@ -494,7 +540,7 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
                 ws_role = msg.get("role")
                 log.info("ws hello", extra={"ws_id": id(ws), "role": ws_role})
 
-                control_mode_raw = str(runtime_cfg.get("control_mode", "SERVER_BOT")).strip()
+                control_mode_raw = str(current_runtime.get("control_mode", "SERVER_BOT")).strip()
                 control_mode = control_mode_raw.replace("-", "_").upper()
 
                 if control_mode == "SERVER_BOT" and ws_role != "server":
@@ -508,8 +554,10 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
                 if not started:
                     started = True
 
-                    # Load policy ONLY for accepted server ws
-                    policy = build_policy_from_config(runtime_cfg)
+                    # Load policy ONLY for accepted server ws (use current_runtime so overlay is applied)
+                    policy = build_policy_from_config(current_runtime)
+                    if hasattr(policy, "apply_runtime_config"):
+                        policy.apply_runtime_config(current_runtime)
 
                     log.info(
                         "policy_loaded",
@@ -536,7 +584,7 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
                             PolicyWorker(
                                 obs_q=obsQueue,
                                 act_q=actQueue,
-                                runtime_cfg=runtime_cfg,
+                                runtime_cfg=current_runtime,
                                 queues_cfg=queuesCfg,
                                 act_schema=ACT,
                                 log=stdlog.getLogger("bridge.policy"),
@@ -639,6 +687,29 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
                 except ValidationError as ve:
                     log.warning("event failed schema", extra={"error": str(ve), "kind": kind})
                 log.info("episode_start from client ignored")
+                continue
+
+            if kind == "config_update":
+                # Hot-reload: merge payload into overlay, refresh current_runtime, apply to policy, persist to disk.
+                payload = msg.get("payload")
+                if isinstance(payload, dict):
+                    new_overlay = DeepMerge(dict(runtime_overlay), dict(payload))
+                    runtime_overlay.clear()
+                    runtime_overlay.update(new_overlay)
+                    refresh_current_runtime()
+                    if policy is not None and hasattr(policy, "apply_runtime_config"):
+                        try:
+                            policy.apply_runtime_config(current_runtime)
+                            log.info(
+                                "config_update applied",
+                                extra={"ws_id": id(ws), "keys": list(payload.keys())},
+                            )
+                        except Exception as e:
+                            log.warning(
+                                "config_update apply failed",
+                                extra={"error": str(e), "trace": traceback.format_exc()},
+                            )
+                    save_runtime_overlay(runtime_overlay)
                 continue
 
             log.warning("unknown kind", extra={"kind": kind})

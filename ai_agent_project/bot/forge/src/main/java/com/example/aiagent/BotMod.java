@@ -2,6 +2,7 @@ package com.example.aiagent;
 
 import com.example.aiagent.net.BotNet;
 import com.example.aiagent.server.ServerBotHooks;
+import com.example.aiagent.server.ServerBridgeWebSocketClient;
 import com.example.aiagent.server.FakeBotManager;
 import com.example.aiagent.client.gui.AiBotConfigScreen;
 
@@ -32,9 +33,12 @@ public class BotMod {
     private boolean episodeActive = false;
 
     private FakeBotManager botManager;
+    /** Set on dedicated server when ServerBotHooks is created; used to forward config_update to the bridge. */
+    private ServerBridgeWebSocketClient bridgeClient;
+
     public FakeBotManager getBotManager() { return botManager; }
-
-
+    public void setBridgeClient(ServerBridgeWebSocketClient c) { this.bridgeClient = c; }
+    public ServerBridgeWebSocketClient getBridgeClient() { return bridgeClient; }
     public long getEpisodeStartTick() { return episodeStartTick; }
     public boolean isEpisodeActive() { return episodeActive; }
 

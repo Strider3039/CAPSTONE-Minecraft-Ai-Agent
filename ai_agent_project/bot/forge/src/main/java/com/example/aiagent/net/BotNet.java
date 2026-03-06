@@ -38,6 +38,12 @@ public final class BotNet {
             .consumerMainThread(S2CBotStatePacket::handle)
             .add();
 
+        CHANNEL.messageBuilder(C2SRuntimeConfigPacket.class, id++, NetworkDirection.PLAY_TO_SERVER)
+            .encoder(C2SRuntimeConfigPacket::encode)
+            .decoder(C2SRuntimeConfigPacket::decode)
+            .consumerMainThread(C2SRuntimeConfigPacket::handle)
+            .add();
+
         System.out.println("[AI-BOT] BotNet registered packets.");
 
     }

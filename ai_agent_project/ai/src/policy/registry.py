@@ -25,12 +25,17 @@ def build_policy_from_config(runtime_cfg: Dict[str, Any]):
 
     device = pol_cfg.get("device", "cpu")
 
+    reward_cfg = pol_cfg.get("reward")
+    dqn_cfg = pol_cfg.get("dqn")
+
     if ptype == "online_dqn":
         return OnlineDQNPolicy.FromCheckpoint(
             ckpt,
             max_ray_dist=max_ray,
             device=device,
             save_every_steps=save_every_steps,
+            reward_cfg=reward_cfg if isinstance(reward_cfg, dict) else None,
+            dqn_cfg=dqn_cfg if isinstance(dqn_cfg, dict) else None,
         )
 
     if ptype == "dqn":

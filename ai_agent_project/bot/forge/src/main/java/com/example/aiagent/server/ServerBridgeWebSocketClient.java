@@ -209,6 +209,19 @@ public class ServerBridgeWebSocketClient {
         client.send(s);
     }
 
+    /**
+     * Send a config_update message to the bridge for hot-reload (DQN/reward params, etc.).
+     * Payload should be the runtime overlay (e.g. control_mode, policy.reward, policy.dqn).
+     */
+    public void sendConfigUpdate(JsonObject payload) {
+        if (payload == null) return;
+        JsonObject msg = new JsonObject();
+        msg.addProperty("proto", "1");
+        msg.addProperty("kind", "config_update");
+        msg.add("payload", payload);
+        sendJson(msg);
+    }
+
 
 
 

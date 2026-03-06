@@ -161,8 +161,11 @@ public class ForgeWebSocketClient extends WebSocketClient {
     // WebSocket lifecycle
     // ───────────────────────────────────────────────
 
+    private static volatile ForgeWebSocketClient currentInstance;
+
     @Override
     public void onOpen(ServerHandshake handshake) {
+        currentInstance = this;
         System.out.println("[WS] Connected to AI bridge");
         bridgeReady.set(true);
 
@@ -183,6 +186,7 @@ public class ForgeWebSocketClient extends WebSocketClient {
 
     @Override
     public void onClose(int code, String reason, boolean remote) {
+        currentInstance = null;
         System.out.println("[WS] Connection closed: " + reason + " (code=" + code + ", remote=" + remote + ")");
         bridgeReady.set(false);
 
@@ -668,5 +672,19 @@ public class ForgeWebSocketClient extends WebSocketClient {
         if (canClientSendToBridge()) {
             send(evt.toString());
         }
+    }
+
+    /**
+     * Send config_update to the bridge for hot-reload (e.g. from GUI).
+     * No-op if not connected. Payload is the runtime overlay (control_mode, policy.reward, policy.dqn).
+     */
+    public static void sendConfigUpdate(JsonObject payload) {
+        ForgeWebSocketClient c = currentInstance;
+        if (c == null || !c.isOpen() || payload == null) return;
+        JsonObject msg = new JsonObject();
+        msg.addProperty("proto", "1");
+        msg.addProperty("kind", "config_update");
+        msg.add("payload", payload);
+        c.send(BotMod.GSON.toJson(msg));
     }
 }

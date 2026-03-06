@@ -100,6 +100,27 @@ class DQNAgent:
         frac = min(float(self.totalSteps) / self.epsilonDecay, 1.0)
         return self.epsilonStart + frac * (self.epsilonEnd - self.epsilonStart)
 
+    def apply_config(self, cfg: dict) -> None:
+        """Update exploration/training params from config (e.g. runtime.policy.dqn). Hot-reload safe."""
+        if not isinstance(cfg, dict):
+            return
+        mapping = {
+            "epsilon_start": ("epsilonStart", float),
+            "epsilon_end": ("epsilonEnd", float),
+            "epsilon_decay": ("epsilonDecay", int),
+            "gamma": ("gamma", float),
+            "lr": ("lr", float),
+            "batch_size": ("batchSize", int),
+            "min_replay_size": ("minReplaySize", int),
+            "target_update_freq": ("targetUpdateFreq", int),
+        }
+        for cfg_key, (attr, cast_fn) in mapping.items():
+            if cfg_key in cfg and cfg[cfg_key] is not None:
+                try:
+                    setattr(self, attr, cast_fn(cfg[cfg_key]))
+                except (TypeError, ValueError):
+                    pass
+
     def SelectAction(self, obsVec: np.ndarray) -> int:
         eps = self.CurrentEpsilon()
         return EpsilonGreedyAction(self.qNet, obsVec, eps, self.device)
@@ -232,6 +253,7 @@ class OnlineDQNPolicy(Policy):
         max_ray_dist: float,
         device: str = "cpu",
         save_every_steps: int | None = None,
+        reward_cfg: dict | None = None,
     ) -> None:
         self.agent = agent
         self.max_ray_dist = max_ray_dist
@@ -245,8 +267,10 @@ class OnlineDQNPolicy(Policy):
         self._last_action_idx: int | None = None
         self._last_obs_msg: dict | None = None
 
-        # Reward engine
+        # Reward engine (initialized from YAML if reward_cfg provided, else code defaults)
         self.reward_engine = RewardEngine()
+        if isinstance(reward_cfg, dict):
+            self.reward_engine.apply_config(reward_cfg)
 
         # Episode tracking (Python-side)
         self.episode_idx = 0
@@ -275,8 +299,12 @@ class OnlineDQNPolicy(Policy):
         device: str = "cpu",
         hidden_sizes=(128, 128),
         save_every_steps: int | None = None,
+        reward_cfg: dict | None = None,
+        dqn_cfg: dict | None = None,
     ) -> "OnlineDQNPolicy":
         agent = DQNAgent(device=device, hiddenDims=hidden_sizes)
+        if isinstance(dqn_cfg, dict):
+            agent.apply_config(dqn_cfg)
 
         if checkpoint_path:
             try:
@@ -287,7 +315,19 @@ class OnlineDQNPolicy(Policy):
             except Exception as e:
                 print(f"[OnlineDQNPolicy] failed to load checkpoint ({checkpoint_path}): {e}")
 
-        return cls(agent, max_ray_dist, device, save_every_steps=save_every_steps)
+        return cls(agent, max_ray_dist, device, save_every_steps=save_every_steps, reward_cfg=reward_cfg)
+
+    def apply_runtime_config(self, runtime_cfg: dict) -> None:
+        """Hot-reload: apply runtime.policy.reward and runtime.policy.dqn to live policy."""
+        if not isinstance(runtime_cfg, dict):
+            return
+        policy_cfg = runtime_cfg.get("policy") or {}
+        reward_cfg = policy_cfg.get("reward")
+        if isinstance(reward_cfg, dict):
+            self.reward_engine.apply_config(reward_cfg)
+        dqn_cfg = policy_cfg.get("dqn")
+        if isinstance(dqn_cfg, dict):
+            self.agent.apply_config(dqn_cfg)
 
     # ----- filesystem helpers for logs -----
 

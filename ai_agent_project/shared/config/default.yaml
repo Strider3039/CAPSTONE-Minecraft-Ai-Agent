@@ -93,6 +93,32 @@ runtime:
 
     dqn:
       checkpoint_path: "policy/runs/checkpoints/dqn_initial.pt"
+      # Hot-reload (GUI / config_update) overrides; defaults match DQNAgent
+      epsilon_start: 1.0
+      epsilon_end: 0.1
+      epsilon_decay: 100000
+      gamma: 0.99
+      lr: 0.001
+      batch_size: 64
+      min_replay_size: 1000
+      target_update_freq: 1000
+    # Hot-reload (GUI / config_update) overrides; modular components (generic + blocks + mobs)
+    reward:
+      # Generic (survival, movement, collision, inventory)
+      survival_reward: 0.001
+      step_penalty: -0.001
+      move_scale: 1.0
+      max_move_reward: 0.1
+      no_progress_penalty: -0.02
+      front_clear_bonus: 0.005
+      item_pickup_reward: 0.05
+      max_steps_per_episode: 2000
+      # Custom rewards per block (when obs includes last_block_broken / recent_events)
+      blocks: {}
+      # e.g. "minecraft:diamond_ore": 1.0, "minecraft:log": 0.1
+      # Custom rewards per mob (when obs includes last_mob_killed / recent_events)
+      mobs: {}
+      # e.g. "minecraft:zombie": 0.5, "minecraft:skeleton": 0.5
 
   obs:
     rate_hz: 12

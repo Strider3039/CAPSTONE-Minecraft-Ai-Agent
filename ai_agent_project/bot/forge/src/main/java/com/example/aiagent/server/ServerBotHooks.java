@@ -36,6 +36,7 @@ public class ServerBotHooks {
 
     public ServerBotHooks(FakeBotManager bots) {
         this.bots = bots;
+        com.example.aiagent.BotMod.getInstance().setBridgeClient(this.ws);
 
         MinecraftForge.EVENT_BUS.register(this);
 
