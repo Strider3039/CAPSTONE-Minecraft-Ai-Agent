@@ -176,6 +176,7 @@ public class ForgeWebSocketClient extends WebSocketClient {
         hello.addProperty("proto", "1");
         hello.addProperty("kind", "hello");
         hello.addProperty("role", "client");
+        hello.addProperty("control_mode", controlMode.name());
         send(hello.toString());
 
         emitBridgeHealth("info", "connected");

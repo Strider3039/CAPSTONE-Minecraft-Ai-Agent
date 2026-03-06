@@ -540,12 +540,36 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
                 ws_role = msg.get("role")
                 log.info("ws hello", extra={"ws_id": id(ws), "role": ws_role})
 
+                # If client sends control_mode in hello, apply it so server accepts client in PLAYER mode
+                # (UI may have set PLAYER before connection; overlay wasn't updated yet.)
+                if ws_role == "client" and "control_mode" in msg:
+                    client_mode = str(msg.get("control_mode", "")).strip()
+                    if client_mode:
+                        overlay_update = {"control_mode": client_mode}
+                        new_overlay = DeepMerge(dict(runtime_overlay), overlay_update)
+                        runtime_overlay.clear()
+                        runtime_overlay.update(new_overlay)
+                        refresh_current_runtime()
+                        save_runtime_overlay(runtime_overlay)
+                        log.info(
+                            "control_mode from client hello",
+                            extra={"ws_id": id(ws), "control_mode": client_mode},
+                        )
+
                 control_mode_raw = str(current_runtime.get("control_mode", "SERVER_BOT")).strip()
                 control_mode = control_mode_raw.replace("-", "_").upper()
 
                 if control_mode == "SERVER_BOT" and ws_role != "server":
                     log.warning(
                         "rejecting non-server ws in SERVER_BOT",
+                        extra={"ws_id": id(ws), "role": ws_role},
+                    )
+                    await ws.close(code=1008, reason="wrong_role")
+                    return
+
+                if control_mode == "PLAYER" and ws_role != "client":
+                    log.warning(
+                        "rejecting non-client ws in PLAYER",
                         extra={"ws_id": id(ws), "role": ws_role},
                     )
                     await ws.close(code=1008, reason="wrong_role")
@@ -725,6 +749,14 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
 
     finally:
         stopEvt.set()
+
+        # Save DQN checkpoint on disconnect so latest state is persisted (in addition to periodic saves)
+        if policy is not None and hasattr(policy, "agent") and hasattr(policy, "ckpt_latest_path"):
+            try:
+                policy.agent.Save(policy.ckpt_latest_path)
+                log.info("checkpoint saved on disconnect", extra={"path": policy.ckpt_latest_path})
+            except Exception as e:
+                log.warning("checkpoint save on disconnect failed", extra={"error": str(e)})
 
         # Fail pending on any exit path
         for seq, fut in list(pending.items()):

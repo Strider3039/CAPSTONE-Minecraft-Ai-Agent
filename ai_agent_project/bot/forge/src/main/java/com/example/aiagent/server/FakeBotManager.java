@@ -199,6 +199,9 @@ public class FakeBotManager {
     // updates/sec.
     private static final int STATE_SYNC_PERIOD_TICKS = 1;
 
+    /** Idle observation period (server ticks). First 3 ticks send every tick for fast bootstrap; then every N ticks. */
+    private static final int IDLE_OBS_PERIOD_TICKS = 4;
+
     private final Map<String, FakeBot> bots = new HashMap<>();
     private final ConcurrentLinkedQueue<String> pendingActionJson = new ConcurrentLinkedQueue<>();
 
@@ -525,8 +528,10 @@ public class FakeBotManager {
                     updateFallDamage(bot, level, prevY, prevOnGround);
                     sendBotState(level, bot);
 
-                    // Send an idle observation every ~1s so the Python bridge gets observations and can send actions (bootstrap SERVER_BOT).
-                    if (tickCounter % 20 == 0) {
+                    // Send idle observations so the Python bridge gets obs and can send actions (bootstrap SERVER_BOT).
+                    // First few ticks: send every tick for fast bootstrap; then every IDLE_OBS_PERIOD_TICKS.
+                    boolean sendIdle = tickCounter <= 3 || (tickCounter % IDLE_OBS_PERIOD_TICKS == 0);
+                    if (sendIdle) {
                         try {
                             JsonObject obs = buildObservationEvent(idleObsSeq++, bot, level);
                             completedStepResults.offer(obs);
