@@ -14,6 +14,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.Mob;
@@ -1565,14 +1566,11 @@ public class FakeBotManager {
         bot.lastAttack = bot.attack;
 
         // -----------------------------
-        // 5) USE (edge-trigger)
+        // 5) USE (edge-trigger) - place block / interact
         // -----------------------------
         if (bot.use && !bot.lastUse) {
-            p.swing(InteractionHand.MAIN_HAND, true);
+            doServerUse(level, p);
             bot.swingMainHandPulse = true;
-            // Later: real right-click use
-            // p.gameMode.useItem(p, level, p.getItemInHand(InteractionHand.MAIN_HAND),
-            // InteractionHand.MAIN_HAND);
         }
         bot.lastUse = bot.use;
     }
@@ -1598,6 +1596,39 @@ public class FakeBotManager {
         }
 
         if (bhr != null && bhr.getType() == HitResult.Type.BLOCK) {
+            BlockPos pos = bhr.getBlockPos();
+            if (p.gameMode.destroyBlock(pos)) {
+                p.swing(InteractionHand.MAIN_HAND);
+                return;
+            }
+            p.swing(InteractionHand.MAIN_HAND);
+            return;
+        }
+
+        p.swing(InteractionHand.MAIN_HAND);
+    }
+
+    private void doServerUse(ServerLevel level, ServerPlayer p) {
+        Vec3 from = p.getEyePosition();
+        Vec3 look = p.getLookAngle();
+        double maxDist = 5.0;
+        Vec3 to = from.add(look.scale(maxDist));
+
+        ClipContext ctx = new ClipContext(from, to, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, p);
+        BlockHitResult bhr = level.clip(ctx);
+
+        ItemStack stack = p.getItemInHand(InteractionHand.MAIN_HAND);
+
+        if (bhr != null && bhr.getType() == HitResult.Type.BLOCK) {
+            InteractionResult result = p.gameMode.useItemOn(p, level, stack, InteractionHand.MAIN_HAND, bhr);
+            if (result.consumesAction()) {
+                p.swing(InteractionHand.MAIN_HAND);
+                return;
+            }
+        }
+
+        InteractionResult result = p.gameMode.useItem(p, level, stack, InteractionHand.MAIN_HAND);
+        if (result.consumesAction()) {
             p.swing(InteractionHand.MAIN_HAND);
             return;
         }
