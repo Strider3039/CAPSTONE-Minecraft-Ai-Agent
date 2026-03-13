@@ -59,9 +59,16 @@ public class ClientBridgeHooks {
     // WebSocket / Bridge
     // ----------------------------
     private static final String BRIDGE_URI = "ws://127.0.0.1:8765";
-    private ForgeWebSocketClient wsClient;
+    private volatile ForgeWebSocketClient wsClient;
     private long reconnectCount = 0;
     private long droppedCount = 0;
+
+    // Reconnect with backoff (aligned with default.yaml: 250, 1000, 2000, 5000 ms + jitter)
+    private static final long[] BACKOFF_MS = { 500, 1000, 2000, 5000 };
+    private static final long JITTER_MS = 150;
+    private volatile long nextReconnectMs = 0;
+    private volatile int reconnectAttemptIndex = 0;
+    private volatile boolean connecting = false;
 
     // ----------------------------
     // Telemetry
@@ -118,40 +125,79 @@ public class ClientBridgeHooks {
     private boolean wasAlive = true;
 
     // -------------------------------------------------------------------------
-    // Bridge connection (ONLY on login)
+    // Bridge connection and reconnect with backoff
     // -------------------------------------------------------------------------
-    private void connectBridgeOnce() {
-        // ✅ never create multiple clients
-        if (wsClient != null) return;
 
+    /** Called on game thread when the WebSocket closes. Schedules next reconnect. */
+    private void onBridgeDisconnected() {
+        wsClient = null;
+        long delay = getBackoffWithJitter();
+        nextReconnectMs = System.currentTimeMillis() + delay;
+        if (reconnectAttemptIndex < BACKOFF_MS.length - 1) {
+            reconnectAttemptIndex++;
+        }
+        System.out.println("[AI-BOT] Bridge disconnected; will retry in " + delay + " ms (attempt " + reconnectAttemptIndex + ")");
+    }
+
+    private long getBackoffWithJitter() {
+        long base = BACKOFF_MS[Math.min(reconnectAttemptIndex, BACKOFF_MS.length - 1)];
+        long jitter = (long) ((Math.random() * 2 - 1) * JITTER_MS);
+        return Math.max(100, base + jitter);
+    }
+
+    /**
+     * Ensures we have an open connection to the bridge. Call on login and every client tick.
+     * If disconnected, retries with backoff so the demo recovers after a bridge restart.
+     */
+    private void ensureBridgeConnected() {
+        if (wsClient != null && wsClient.isOpen()) return;
+        if (connecting) return;
+        long now = System.currentTimeMillis();
+        if (wsClient != null) {
+            wsClient = null;
+        }
+        if (now < nextReconnectMs) return;
+
+        connecting = true;
         try {
-            System.out.println("[AI-BOT] WS connect -> " + BRIDGE_URI);
-
-            wsClient = new ForgeWebSocketClient(new URI(BRIDGE_URI));
-            wsClient.setOnReconnect(() -> {
+            ForgeWebSocketClient client = new ForgeWebSocketClient(new URI(BRIDGE_URI));
+            client.setOnReconnect(() -> {
                 reconnectCount++;
                 System.out.println("[AI-BOT] Reconnected (" + reconnectCount + ")");
                 ForgeWebSocketClient.setAiEnabled(aiEnabled);
+                connecting = false;
+            });
+            Minecraft mc = Minecraft.getInstance();
+            client.setOnDisconnect(() -> {
+                if (mc != null) {
+                    mc.execute(this::onBridgeDisconnected);
+                } else {
+                    onBridgeDisconnected();
+                }
             });
 
+            wsClient = client;
             ForgeWebSocketClient.setAiEnabled(aiEnabled);
+            System.out.println("[AI-BOT] WS connecting -> " + BRIDGE_URI);
 
+            ForgeWebSocketClient finalClient = client;
             new Thread(() -> {
                 try {
-                    wsClient.connectBlocking();
-                    System.out.println("[AI-BOT] WS CONNECTED");
+                    finalClient.connectBlocking();
+                    if (!finalClient.isOpen()) {
+                        wsClient = null;
+                        connecting = false;
+                    }
                 } catch (Exception e) {
-                    System.err.println("[AI-BOT] WS connectBlocking failed:");
-                    e.printStackTrace();
-                    // allow retry next login
+                    System.err.println("[AI-BOT] WS connectBlocking failed: " + e.getMessage());
                     wsClient = null;
+                    connecting = false;
                 }
             }, "WS-Connect").start();
-
         } catch (Exception e) {
             wsClient = null;
-            System.err.println("[AI-BOT] WS setup failed:");
-            e.printStackTrace();
+            connecting = false;
+            System.err.println("[AI-BOT] WS setup failed: " + e.getMessage());
         }
     }
 
@@ -183,7 +229,9 @@ public class ClientBridgeHooks {
     public void onClientLogin(ClientPlayerNetworkEvent.LoggingIn event) {
         Minecraft mc = Minecraft.getInstance();
         mc.execute(() -> {
-            connectBridgeOnce();
+            nextReconnectMs = 0;
+            reconnectAttemptIndex = 0;
+            ensureBridgeConnected();
             autoSelectControlMode(mc);
         });
     }
@@ -192,6 +240,8 @@ public class ClientBridgeHooks {
     public void onClientLogout(ClientPlayerNetworkEvent.LoggingOut event) {
         ForgeWebSocketClient c = wsClient;
         wsClient = null;
+        nextReconnectMs = 0;
+        reconnectAttemptIndex = 0;
 
         if (c != null) {
             new Thread(() -> {
@@ -201,7 +251,7 @@ public class ClientBridgeHooks {
     }
 
     // -------------------------------------------------------------------------
-    // MAIN TICK LOOP (NO CONNECT HERE)
+    // MAIN TICK LOOP (reconnect check + observations)
     // -------------------------------------------------------------------------
     @SubscribeEvent
     public void onClientTick(TickEvent.ClientTickEvent event) {
@@ -210,6 +260,8 @@ public class ClientBridgeHooks {
         Minecraft mc = Minecraft.getInstance();
         if (mc.player == null || mc.level == null) return;
         var p = mc.player;
+
+        ensureBridgeConnected();
 
         // respawn detect
         if (lastPlayerId != null && !p.getUUID().equals(lastPlayerId)) {

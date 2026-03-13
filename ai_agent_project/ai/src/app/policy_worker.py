@@ -105,6 +105,7 @@ async def PolicyWorker(
     log,
     emit_event=None,
     policy_step=None,
+    on_latency_stats=None,
     drop_policy: str = "block",  # keep for compat but don’t use
     on_drop=None,  # keep for compat
 ):
@@ -319,4 +320,9 @@ async def PolicyWorker(
             p90 = Percentile(samples, 0.90)
             detail = f"latency_stats p50_ms={p50:.1f} p90_ms={p90:.1f} hz={tick_hz:.0f}"
             await emit_event("bridge_health", {"level": "info", "detail": detail})
+            if on_latency_stats is not None:
+                try:
+                    on_latency_stats(float(p50), float(p90), float(tick_hz))
+                except Exception:
+                    pass
             lastStatsTs = time.time()

@@ -137,6 +137,10 @@ public class ForgeWebSocketClient extends WebSocketClient {
     private Runnable onReconnect = null;
     public void setOnReconnect(Runnable r) { this.onReconnect = r; }
 
+    /** Called when connection closes (any thread). Use to schedule reconnect in ClientBridgeHooks. */
+    private Runnable onDisconnect = null;
+    public void setOnDisconnect(Runnable r) { this.onDisconnect = r; }
+
     private long lastAckSeq = -1;
     private final AtomicBoolean bridgeReady = new AtomicBoolean(false);
 
@@ -194,8 +198,7 @@ public class ForgeWebSocketClient extends WebSocketClient {
         Minecraft mc = Minecraft.getInstance();
         if (mc != null) mc.execute(() -> releaseAllKeys(mc));
 
-        // NO reconnect loop here anymore.
-        // ClientBridgeHooks.ensureBridgeConnected() must create a fresh client instance.
+        if (onDisconnect != null) onDisconnect.run();
     }
 
     @Override

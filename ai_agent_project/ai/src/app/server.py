@@ -75,6 +75,26 @@ episode = 0
 # ---------- Runtime overlay persistence (hot-reload values: control_mode, policy.reward, policy.dqn) ----------
 RUNTIME_OVERLAY_PATH = dataDir / "runtime_overrides.yaml"
 
+# ---------- Metrics sink path (resolved at startup relative to dataDir so logs go to a known location) ----------
+RESOLVED_METRICS_SINK_PATH: Optional[pathlib.Path] = None
+connection_count = 0
+
+
+def resolve_metrics_sink_path(cfg: Any, base_dir: pathlib.Path) -> pathlib.Path:
+    """Resolve metrics.sink.path relative to base_dir (e.g. shared/Data) so the file is always in a known place."""
+    try:
+        sink = (cfg.bridge or {}).get("metrics") or {}
+        sink = sink.get("sink") if isinstance(sink.get("sink"), dict) else {}
+        path_str = sink.get("path")
+    except Exception:
+        path_str = None
+    if not path_str:
+        return base_dir / "logs" / "bridge_metrics.ndjson"
+    path = pathlib.Path(path_str)
+    if path.is_absolute():
+        return path
+    return (base_dir / path).resolve()
+
 
 def load_runtime_overlay() -> Dict[str, Any]:
     """Load persisted runtime overlay from disk. Returns empty dict if missing or invalid."""
@@ -171,6 +191,7 @@ async def EnqueueObservation(
                 state["obsDropped"] = state.get("obsDropped", 0) + 1
 
     state["obsHighWatermark"] = max(state.get("obsHighWatermark", 0), q.qsize())
+    state["total_obs_received"] = state.get("total_obs_received", 0) + 1
 
 
 async def start_new_episode(ws, obs_q, obs_state, obs_drop_policy: str) -> None:
@@ -227,24 +248,46 @@ async def MetricsLoop(
         log.debug("metrics sink disabled (non-file)", extra={"kind": sink.get("kind")})
         return
 
-    sinkPath = sink.get("path")
-    interval = float(metricsCfg.get("sample_interval_s", 2) or 2)
+    sinkPath = RESOLVED_METRICS_SINK_PATH if RESOLVED_METRICS_SINK_PATH is not None else sink.get("path")
     if not sinkPath:
         return
+    interval = float(metricsCfg.get("sample_interval_s", 2) or 2)
 
     while not stopEvt.is_set():
         try:
-            WriteMetric(
-                sinkPath,
-                {
-                    "queue_obs_size": obsQ.qsize(),
-                    "queue_obs_high_watermark": obsState.get("obsHighWatermark", 0),
-                    "obs_dropped": obsState.get("obsDropped", 0),
-                    "queue_act_size": actQ.qsize(),
-                    "queue_act_high_watermark": actState.get("actHighWatermark", 0),
-                    "action_timeouts": actState.get("actionTimeouts", 0),
-                },
-            )
+            now = time.time()
+            last_ts = actState.get("_last_throughput_ts", now)
+            dt = max(0.001, now - last_ts)
+            obs_total = obsState.get("total_obs_received", 0)
+            act_total = actState.get("total_acts_sent", 0)
+            last_obs = actState.get("_last_obs_count", 0)
+            last_act = actState.get("_last_act_count", 0)
+            obs_per_sec = (obs_total - last_obs) / dt if dt >= 0.5 else None
+            acts_per_sec = (act_total - last_act) / dt if dt >= 0.5 else None
+            actState["_last_throughput_ts"] = now
+            actState["_last_obs_count"] = obs_total
+            actState["_last_act_count"] = act_total
+
+            row = {
+                "queue_obs_size": obsQ.qsize(),
+                "queue_obs_high_watermark": obsState.get("obsHighWatermark", 0),
+                "obs_dropped": obsState.get("obsDropped", 0),
+                "queue_act_size": actQ.qsize(),
+                "queue_act_high_watermark": actState.get("actHighWatermark", 0),
+                "action_timeouts": actState.get("actionTimeouts", 0),
+            }
+            if obs_per_sec is not None:
+                row["obs_per_sec"] = round(obs_per_sec, 1)
+            if acts_per_sec is not None:
+                row["acts_per_sec"] = round(acts_per_sec, 1)
+            if "last_latency_p50_ms" in actState:
+                row["tick_latency_p50_ms"] = actState["last_latency_p50_ms"]
+            if "last_latency_p90_ms" in actState:
+                row["tick_latency_p90_ms"] = actState["last_latency_p90_ms"]
+            if "last_latency_hz" in actState:
+                row["tick_latency_hz"] = actState["last_latency_hz"]
+
+            WriteMetric(sinkPath, row)
         except Exception as e:
             log.warning("metrics write failed", extra={"error": str(e)})
         await asyncio.sleep(interval)
@@ -266,7 +309,18 @@ async def HeartBeatLoop(ws: WebSocketServerProtocol, stopEvt: asyncio.Event) -> 
 
 # Main connection handler
 async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
+    global connection_count
     log = stdlog.getLogger("bridge.server")
+
+    connection_count += 1
+    if RESOLVED_METRICS_SINK_PATH and cfg.bridge.get("metrics", {}).get("enabled", True):
+        try:
+            WriteMetric(
+                RESOLVED_METRICS_SINK_PATH,
+                {"type": "connection", "connection_count": connection_count, "event": "connected"},
+            )
+        except Exception as e:
+            log.debug("metrics connection event write failed", extra={"error": str(e)})
 
     policy = None
 
@@ -310,12 +364,19 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
     )
 
     queuesCfg = cfg.bridge.get("queues", {})
-    obsState = {"obsHighWatermark": 0, "obsDropped": 0}
+    obsState = {"obsHighWatermark": 0, "obsDropped": 0, "total_obs_received": 0}
     obsQueue: asyncio.Queue[dict] = asyncio.Queue(maxsize=int(queuesCfg.get("obs_max", 128)))
     obs_drop_policy = queuesCfg.get("obs_drop_policy", "oldest")
 
     actQueue: asyncio.Queue[dict] = asyncio.Queue(maxsize=int(queuesCfg.get("act_max", 64)))
-    actState = {"actHighWatermark": 0, "actionTimeouts": 0}
+    actState = {
+        "actHighWatermark": 0,
+        "actionTimeouts": 0,
+        "total_acts_sent": 0,
+        "_last_throughput_ts": time.time(),
+        "_last_obs_count": 0,
+        "_last_act_count": 0,
+    }
 
     pending: dict[int, asyncio.Future] = {}
 
@@ -395,6 +456,7 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
 
         if not wait_for_result:
             await ws.send(_dumps(actionMsg))
+            actState["total_acts_sent"] = actState.get("total_acts_sent", 0) + 1
             return None
 
         fut = asyncio.get_running_loop().create_future()
@@ -402,6 +464,7 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
 
         # SEND BEFORE WAITING
         await ws.send(_dumps(actionMsg))
+        actState["total_acts_sent"] = actState.get("total_acts_sent", 0) + 1
 
         try:
             return await asyncio.wait_for(fut, timeout=timeoutMs / 1000.0)
@@ -602,6 +665,19 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
                     tasks.append(asyncio.create_task(HeartBeatLoop(ws, stopEvt)))
                     tasks.append(asyncio.create_task(ActionSenderLoop(stopEvt)))
 
+                    def on_latency_stats(p50_ms: float, p90_ms: float, hz: float) -> None:
+                        actState["last_latency_p50_ms"] = p50_ms
+                        actState["last_latency_p90_ms"] = p90_ms
+                        actState["last_latency_hz"] = hz
+                        if RESOLVED_METRICS_SINK_PATH is not None:
+                            try:
+                                WriteMetric(
+                                    RESOLVED_METRICS_SINK_PATH,
+                                    {"type": "tick_latency", "p50_ms": p50_ms, "p90_ms": p90_ms, "hz": hz},
+                                )
+                            except Exception:
+                                pass
+
                     # RL worker (policy is guaranteed non-None here)
                     tasks.append(
                         asyncio.create_task(
@@ -613,7 +689,8 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
                                 act_schema=ACT,
                                 log=stdlog.getLogger("bridge.policy"),
                                 emit_event=emit_event,
-                                policy_step=(policy.act if hasattr(policy, "act") else policy),  # or policy.act if your policy implements act()
+                                policy_step=(policy.act if hasattr(policy, "act") else policy),
+                                on_latency_stats=on_latency_stats,
                             )
                         )
                     )
@@ -713,6 +790,14 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
                 log.info("episode_start from client ignored")
                 continue
 
+            if kind == "eval_control":
+                # Evaluation runner: request start of next episode without sending episode_end.
+                payload = msg.get("payload") or {}
+                if isinstance(payload, dict) and payload.get("action") == "start_episode":
+                    await start_new_episode(ws, obsQueue, obsState, obs_drop_policy)
+                    log.debug("eval_control start_episode", extra={"ws_id": id(ws)})
+                continue
+
             if kind == "config_update":
                 # Hot-reload: merge payload into overlay, refresh current_runtime, apply to policy, persist to disk.
                 payload = msg.get("payload")
@@ -772,10 +857,13 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
 
 # Entrypoint
 async def Main() -> None:
+    global RESOLVED_METRICS_SINK_PATH
     LoadEpisodeNumber()
 
     env = os.getenv("APP_ENV", "prod")
     cfg = LoadConfig(env=env)
+
+    RESOLVED_METRICS_SINK_PATH = resolve_metrics_sink_path(cfg, dataDir)
 
     # Configure logging once per process
     SetupLogging(cfg.bridge.get("logging", {}))

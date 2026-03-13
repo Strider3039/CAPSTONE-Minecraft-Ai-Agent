@@ -99,7 +99,21 @@ cd mod/
 
 ## Functionality
 
-As the steps above were followed, the AI agent should connect to your client the moment you open a world. The human-ai toggle is the "p" key.
+Once the bridge is running and you have joined a world, the mod connects automatically. Control is toggled with the following keybinds (must be in-game, not in menus):
+
+| Keybind | Action |
+|--------|--------|
+| **Ctrl+P** | Toggle AI control **on/off**. When on, the policy (e.g. DQN) sends actions; when off, no actions are sent and local keys are released. |
+| **Ctrl+M** | Toggle **control mode**: **PLAYER** (AI moves the local player) or **SERVER_BOT** (AI moves a server-side “ghost” bot; you see the bot’s state on the client). |
+
+- **Singleplayer**: Default mode is **PLAYER** (AI controls your character). Press **Ctrl+P** to enable AI; you should see the character move/look/jump according to the policy.
+- **Multiplayer**: Default mode is **SERVER_BOT** (AI controls a server-side bot; your client shows the ghost). Press **Ctrl+P** to enable AI; the ghost should move.
+
+For a stable demo, use **singleplayer** and leave mode as **PLAYER** so the audience clearly sees the local character moving under AI control.
+
+### Bridge metrics and logs
+
+When the bridge runs with metrics enabled (`bridge.metrics.enabled: true` in config), it writes NDJSON metric rows to a single file. The path in config (e.g. `logs/bridge_metrics.ndjson`) is **resolved relative to `shared/Data`**, so the file is always written to a known location: **`ai_agent_project/shared/Data/logs/bridge_metrics.ndjson`** (for default path `logs/bridge_metrics.ndjson`). Rows include queue sizes, watermarks, obs/act throughput (obs_per_sec, acts_per_sec), tick latency (p50/p90 ms, hz), and connection events (connection_count on each client connect). Run the bridge with `ai_agent_project` on `PYTHONPATH` so it finds `shared/config` and `shared/Data`; see [docs/HOT_RELOAD_AND_PATHS.md](docs/HOT_RELOAD_AND_PATHS.md).
 
 ## Contributing
 
@@ -111,6 +125,12 @@ As the steps above were followed, the AI agent should connect to your client the
 
 ## Additional Documentation
 
-<https://github.com/Strider3039/CAPSTONE-Minecraft-Ai-Agent/tree/Sprint_2/ai_agent_project/docs>
+- **Keybinds and demo**: [docs/DEMO_AND_CONTROLS.md](docs/DEMO_AND_CONTROLS.md) — exact keybinds (Ctrl+P, Ctrl+M), mode clarity, and recommended demo flow.
+- **Hot-reload and paths**: [docs/HOT_RELOAD_AND_PATHS.md](docs/HOT_RELOAD_AND_PATHS.md) — GUI → config_update flow, overlay path (`shared/Data/runtime_overrides.yaml`), and how to run the bridge so it finds config and Data.
+- **Experiment ideas**: [docs/EXPERIMENT_IDEAS.md](docs/EXPERIMENT_IDEAS.md) — short experiments (step penalty, epsilon, obs rate, rewards) for students.
+- **Config parameters**: [docs/CONFIG_PARAMETERS.md](docs/CONFIG_PARAMETERS.md) — all exposed runtime parameters and where they are used.
+- **Evaluation runner**: [docs/EVALUATION_RUNNER.md](docs/EVALUATION_RUNNER.md) — scenario-driven runs, eval.csv, and optional plots (scripts/run_eval.py).
+- **Experimental data (conference)**: [docs/EXPERIMENTAL_DATA.md](docs/EXPERIMENTAL_DATA.md) — baseline, parameter sensitivity, and stability runs (scripts/run_experiments.py).
+- Project docs: <https://github.com/Strider3039/CAPSTONE-Minecraft-Ai-Agent/tree/Sprint_2/ai_agent_project/docs>
 
 ## License

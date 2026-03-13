@@ -25,28 +25,25 @@ def test_loadyaml_missing_file(tmp_path: Path):
 
 
 def test_loadconfig_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """LoadConfig loads single default.yaml (schema_version 2) then merges env overlay (dev.yaml)."""
     conf_dir = tmp_path / "shared" / "config"
 
-    write_yaml(conf_dir / "bridge.yaml", """
-      server: { host: 0.0.0.0, port: 8765 }
-      schema_version: "1"
-      queues: { obs_max: 128, act_max: 64 }
-    """)
-    write_yaml(conf_dir / "runtime.yaml", """
-      policy: { tick_hz: 12, budget_ms: 80 }
-    """)
-    write_yaml(conf_dir / "evaluation.yaml", """
-      worlds: ["flat_clear"]
-      trials_per_world: 3
-    """)
     write_yaml(conf_dir / "default.yaml", """
-      bridge: { logging: { level: INFO, json: true } }
+      schema_version: 2
+      bridge:
+        server: { host: 0.0.0.0, port: 8765 }
+        queues: { obs_max: 128, act_max: 64 }
+        logging: { level: INFO, json: true }
+      runtime:
+        policy: { tick_hz: 12, budget_ms: 80 }
+      evaluation:
+        worlds: ["flat_clear"]
+        trials_per_world: 3
     """)
     write_yaml(conf_dir / "dev.yaml", """
       bridge: { logging: { level: DEBUG } }
     """)
 
-    # Point loader at our temp dir + use dev env
     monkeypatch.setattr(cfg_mod, "CONF_DIR", conf_dir)
     monkeypatch.setenv("APP_ENV", "dev")
 
@@ -54,18 +51,17 @@ def test_loadconfig_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     assert cfg.bridge["server"]["port"] == 8765
     assert cfg.runtime["policy"]["tick_hz"] == 12
     assert cfg.evaluation["trials_per_world"] == 3
-    # dev overrides default
     assert cfg.bridge["logging"]["level"] == "DEBUG"
-    # merged values present
     assert cfg.bridge["queues"]["obs_max"] == 128
 
 
 def test_loadconfig_schema_version_mismatch_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """LoadConfig raises when default.yaml has schema_version other than 2."""
     conf_dir = tmp_path / "shared" / "config"
-    write_yaml(conf_dir / "bridge.yaml", 'schema_version: "1.1"')
-    write_yaml(conf_dir / "runtime.yaml", "{}")
-    write_yaml(conf_dir / "evaluation.yaml", "{}")
-    write_yaml(conf_dir / "default.yaml", "{}")
+    write_yaml(conf_dir / "default.yaml", """
+      schema_version: "1.1"
+      bridge: {}
+    """)
 
     monkeypatch.setattr(cfg_mod, "CONF_DIR", conf_dir)
     monkeypatch.delenv("APP_ENV", raising=False)
@@ -76,19 +72,94 @@ def test_loadconfig_schema_version_mismatch_raises(tmp_path: Path, monkeypatch: 
 
 
 def test_config_attribute_access(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Attribute-style access (cfg.bridge, cfg.bridge['server']) works after LoadConfig."""
     conf_dir = tmp_path / "shared" / "config"
-    write_yaml(conf_dir / "bridge.yaml", """
-      schema_version: "1"
-      server: { host: 0.0.0.0, port: 8765 }
+    write_yaml(conf_dir / "default.yaml", """
+      schema_version: 2
+      bridge:
+        server: { host: 0.0.0.0, port: 8765 }
     """)
-    write_yaml(conf_dir / "runtime.yaml", "{}")
-    write_yaml(conf_dir / "evaluation.yaml", "{}")
-    write_yaml(conf_dir / "default.yaml", "{}")
 
     monkeypatch.setattr(cfg_mod, "CONF_DIR", conf_dir)
+    monkeypatch.delenv("APP_ENV", raising=False)
     cfg = cfg_mod.LoadConfig()
 
-    # attribute-style access works (via __getattr__ = dict.get)
     assert cfg.bridge is not None
     assert cfg.bridge["server"]["port"] == 8765
     assert cfg.bridge.get("does_not_exist") is None
+
+
+# Project config dir (ai_agent_project/shared/config) for 2.1 parameter tests
+_CONFIG_DIR = Path(__file__).resolve().parent.parent / "shared" / "config"
+
+
+def test_runtime_parameters_exposed(monkeypatch: pytest.MonkeyPatch):
+    """
+    2.1: Assert runtime.obs, policy (incl. heading, action_rates), reward, dqn, raycasts
+    are present in the project default config and have expected keys.
+    """
+    if not (_CONFIG_DIR / "default.yaml").exists():
+        pytest.skip("default.yaml not found (run from repo with ai_agent_project/shared/config)")
+    monkeypatch.setattr(cfg_mod, "CONF_DIR", _CONFIG_DIR)
+    monkeypatch.delenv("APP_ENV", raising=False)
+    cfg = cfg_mod.LoadConfig()
+    runtime = cfg.get("runtime") or {}
+    assert isinstance(runtime, dict), "runtime must be a dict"
+
+    # runtime.obs
+    obs = runtime.get("obs") or {}
+    assert "rate_hz" in obs
+    assert "entity_cap" in obs
+    assert "include" in obs
+    assert "quantization" in obs
+    include = obs.get("include") or {}
+    assert "pose" in include
+    assert "entities_nearby" in include
+    quant = obs.get("quantization") or {}
+    assert "pos_decimals" in quant
+
+    # runtime.policy
+    policy = runtime.get("policy") or {}
+    assert "tick_hz" in policy
+    assert "budget_ms" in policy
+    assert "max_ray_dist" in policy
+    assert "success_radius" in policy
+    assert "stuck_speed_thresh" in policy
+    assert "stuck_ticks" in policy
+    assert "heading" in policy
+    assert "action_rates" in policy
+    assert "dqn" in policy
+    assert "reward" in policy
+    heading = policy.get("heading") or {}
+    assert "max_look_deg" in heading
+    assert "yaw_p_gain" in heading
+    assert "stop_on_collision" in heading
+    action_rates = policy.get("action_rates") or {}
+    assert "look_hz" in action_rates
+    assert "move_hz" in action_rates
+    assert "jump_min_ms" in action_rates
+    assert "interact_cooldown_ms" in action_rates
+
+    # runtime.policy.reward
+    reward = policy.get("reward") or {}
+    assert "survival_reward" in reward
+    assert "step_penalty" in reward
+    assert "move_scale" in reward
+    assert "max_steps_per_episode" in reward
+    assert "blocks" in reward
+    assert "mobs" in reward
+
+    # runtime.policy.dqn
+    dqn = policy.get("dqn") or {}
+    assert "epsilon_start" in dqn
+    assert "epsilon_end" in dqn
+    assert "gamma" in dqn
+    assert "lr" in dqn
+    assert "batch_size" in dqn
+
+    # runtime.raycasts
+    raycasts = runtime.get("raycasts") or {}
+    assert "max_dist" in raycasts
+    assert "count" in raycasts
+    assert "fov_deg" in raycasts
+    assert "front_clear_threshold" in raycasts

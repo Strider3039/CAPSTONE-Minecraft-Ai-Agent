@@ -275,6 +275,7 @@ class OnlineDQNPolicy(Policy):
         # Episode tracking (Python-side)
         self.episode_idx = 0
         self.episode_step = 0  # step index within current episode
+        self._episode_start_time: float | None = None  # wall-clock for duration_seconds
 
         # Resolve shared paths (shared/Data/episode_state.json, etc.)
         (
@@ -365,6 +366,7 @@ class OnlineDQNPolicy(Policy):
         collision = body.get("collision", {})
 
         doc = {
+            "episode_id": int(self.episode_idx),
             "python_episode_idx": int(self.episode_idx),
             "episode_step": int(self.episode_step),
             "total_steps": int(self.agent.totalSteps),
@@ -430,7 +432,12 @@ class OnlineDQNPolicy(Policy):
         except Exception as e:
             print(f"[OnlineDQN] failed to append step_history.jsonl: {e}")
 
-    def _append_episode_history(self, last_obs: dict, done_reason: str = "done_true") -> None:
+    def _append_episode_history(
+        self,
+        last_obs: dict,
+        done_reason: str = "done_true",
+        success: bool | None = None,
+    ) -> None:
         body = last_obs.get("payload", {}) if isinstance(last_obs, dict) else {}
         pose = body.get("pose", {}) if isinstance(body, dict) else {}
         world = body.get("world", {}) if isinstance(body, dict) else {}
@@ -438,8 +445,19 @@ class OnlineDQNPolicy(Policy):
         ep_return = float(getattr(self.reward_engine, "episode_return", 0.0))
         steps = int(self.episode_step) if self.episode_step > 0 else 0
         avg_reward = ep_return / steps if steps > 0 else 0.0
+        duration_seconds = (
+            float(time.time() - self._episode_start_time)
+            if self._episode_start_time is not None
+            else None
+        )
 
         entry = {
+            "episode_id": int(self.episode_idx),
+            "episode_step": steps,
+            "episode_return": ep_return,
+            "done_reason": done_reason,
+            "duration_seconds": duration_seconds,
+            "success": success,
             "episode": int(self.episode_idx),
             "steps": steps,
             "return": ep_return,
@@ -472,6 +490,7 @@ class OnlineDQNPolicy(Policy):
     def _reset_episode_state(self) -> None:
         """Reset Python-side episode bookkeeping and transition memory."""
         self.episode_step = 0
+        self._episode_start_time = time.time()
         self.reward_engine.reset_episode()
         self._last_obs_vec = None
         self._last_action_idx = None
@@ -529,6 +548,10 @@ class OnlineDQNPolicy(Policy):
         if kind is not None and kind != "observation":
             self.seq += 1
             return ToMinecraftControls(0, self.seq)
+
+        # Ensure we have an episode start time (first observation or episode without explicit episode_start)
+        if self._episode_start_time is None:
+            self._episode_start_time = time.time()
 
         # 1) Encode current observation
         obs_vec = EncodeObservation(obsMsg, self.max_ray_dist)
