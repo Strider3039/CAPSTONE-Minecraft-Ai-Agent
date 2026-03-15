@@ -1,6 +1,7 @@
 package com.example.aiagent.server;
 
 import com.example.aiagent.BotMod;
+import com.example.aiagent.BridgeConstants;
 import com.google.gson.JsonObject;
 import net.minecraft.server.level.ServerLevel;
 import org.java_websocket.client.WebSocketClient;
@@ -48,11 +49,12 @@ public class ServerBridgeWebSocketClient {
                     System.out.println("[AI-BOT][SERVER-WS] Connected to " + uri);
                     connecting.set(false);
 
-                    // NEW: identify this websocket as the SERVER
+                    // Identify as SERVER (must match Python BridgeConstants)
                     JsonObject hello = new JsonObject();
                     hello.addProperty("proto", "1");
                     hello.addProperty("kind", "hello");
-                    hello.addProperty("role", "server");
+                    hello.addProperty("role", BridgeConstants.ROLE_SERVER);
+                    hello.addProperty("control_mode", BridgeConstants.MODE_SERVER_BOT);
                     send(hello.toString());
                 }
 

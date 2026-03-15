@@ -1,6 +1,7 @@
 package com.example.aiagent.client;
 
 import com.example.aiagent.BotMod;
+import com.example.aiagent.BridgeConstants;
 import com.example.aiagent.net.BotNet;
 import com.example.aiagent.net.C2SBotActionPacket;
 import com.google.gson.JsonObject;
@@ -179,8 +180,8 @@ public class ForgeWebSocketClient extends WebSocketClient {
         JsonObject hello = new JsonObject();
         hello.addProperty("proto", "1");
         hello.addProperty("kind", "hello");
-        hello.addProperty("role", "client");
-        hello.addProperty("control_mode", controlMode.name());
+        hello.addProperty("role", BridgeConstants.ROLE_CLIENT);
+        hello.addProperty("control_mode", controlMode == ControlMode.PLAYER ? BridgeConstants.MODE_PLAYER : BridgeConstants.MODE_SERVER_BOT);
         send(hello.toString());
 
         emitBridgeHealth("info", "connected");
@@ -519,15 +520,14 @@ public class ForgeWebSocketClient extends WebSocketClient {
                 }
             }
 
-            // 6) ATTACK (click-like)
+            // 6) ATTACK (edge-trigger only: do not hold key or vanilla will continuously dig when looking at blocks)
             if (payload.has("attack")) {
                 boolean down = payload.get("attack").getAsBoolean();
-                mc.options.keyAttack.setDown(down);
-
                 if (down && !lastAttackDown) {
                     doAttack(mc);
                 }
                 lastAttackDown = down;
+                // Do not set keyAttack.setDown(down) — that causes automatic block breaking when looking at blocks
             }
 
             // 7) USE (right click)

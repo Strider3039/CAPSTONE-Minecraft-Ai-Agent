@@ -148,8 +148,25 @@ public class ClientBridgeHooks {
     /**
      * Ensures we have an open connection to the bridge. Call on login and every client tick.
      * If disconnected, retries with backoff so the demo recovers after a bridge restart.
+     *
+     * In SERVER_BOT + multiplayer: do not connect — only the dedicated server connects to the bridge;
+     * the client receives bot state via S2C packets from the server.
      */
     private void ensureBridgeConnected() {
+        Minecraft mc = Minecraft.getInstance();
+        boolean multiplayer = mc != null && mc.getConnection() != null;
+        boolean serverBotMode = ForgeWebSocketClient.getControlMode() == ForgeWebSocketClient.ControlMode.SERVER_BOT;
+
+        if (serverBotMode && multiplayer) {
+            // Dedicated MP + SERVER_BOT: server holds the bridge connection; client must not connect.
+            if (wsClient != null) {
+                try { wsClient.closeBlocking(); } catch (Exception ignored) {}
+                wsClient = null;
+            }
+            connecting = false;
+            return;
+        }
+
         if (wsClient != null && wsClient.isOpen()) return;
         if (connecting) return;
         long now = System.currentTimeMillis();
@@ -167,7 +184,6 @@ public class ClientBridgeHooks {
                 ForgeWebSocketClient.setAiEnabled(aiEnabled);
                 connecting = false;
             });
-            Minecraft mc = Minecraft.getInstance();
             client.setOnDisconnect(() -> {
                 if (mc != null) {
                     mc.execute(this::onBridgeDisconnected);

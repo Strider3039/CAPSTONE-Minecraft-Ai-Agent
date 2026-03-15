@@ -9,6 +9,8 @@ import com.google.gson.JsonObject;
 import com.mojang.authlib.GameProfile;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -108,6 +110,9 @@ public class FakeBotManager {
         bot.ctrlYawDelta = 0f;
         bot.ctrlPitchDelta = 0f;
         bot.ctrlHoldTicks = 0;
+
+        bot.digBlockPos = null;
+        bot.digBlockFace = null;
     }
 
     public ServerPlayer getDefaultPlayerOrNull() {
@@ -184,6 +189,10 @@ public class FakeBotManager {
         public int swapMainhandFromSlot = -1;    // 0..35
         public int dropFromSlot = -1;            // 0..35
         public int dropCount = 1;
+
+        // Survival block breaking: track current dig so we can call continue each tick (not instant destroyBlock)
+        public BlockPos digBlockPos = null;
+        public Direction digBlockFace = null;
 
         public FakeBot(ServerPlayer player, UUID uuid, String name) {
             this.player = player;
@@ -1557,10 +1566,22 @@ public class FakeBotManager {
         p.setShiftKeyDown(bot.sneak);
 
         // -----------------------------
-        // 4) ATTACK (edge-trigger)
+        // 4) ATTACK / BLOCK BREAK (survival: start then continue each tick until broken)
         // -----------------------------
+        if (!bot.attack && bot.digBlockPos != null) {
+            p.gameMode.handleBlockBreakAction(bot.digBlockPos, ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, bot.digBlockFace, level.getMaxBuildHeight(), 0);
+            bot.digBlockPos = null;
+            bot.digBlockFace = null;
+        }
+        if (bot.digBlockPos != null) {
+            p.gameMode.tick();
+            if (level.getBlockState(bot.digBlockPos).isAir()) {
+                bot.digBlockPos = null;
+                bot.digBlockFace = null;
+            }
+        }
         if (bot.attack && !bot.lastAttack) {
-            doServerAttack(level, p);
+            doServerAttack(level, p, bot);
             bot.swingMainHandPulse = true;
         }
         bot.lastAttack = bot.attack;
@@ -1575,7 +1596,7 @@ public class FakeBotManager {
         bot.lastUse = bot.use;
     }
 
-    private void doServerAttack(ServerLevel level, ServerPlayer p) {
+    private void doServerAttack(ServerLevel level, ServerPlayer p, FakeBot bot) {
         Vec3 from = p.getEyePosition();
         Vec3 look = p.getLookAngle();
         double maxDist = 4.5;
@@ -1597,10 +1618,11 @@ public class FakeBotManager {
 
         if (bhr != null && bhr.getType() == HitResult.Type.BLOCK) {
             BlockPos pos = bhr.getBlockPos();
-            if (p.gameMode.destroyBlock(pos)) {
-                p.swing(InteractionHand.MAIN_HAND);
-                return;
-            }
+            Direction face = bhr.getDirection();
+            // Survival-style: start destroy and advance each tick via gameMode.tick() (do not use destroyBlock — that is creative instant)
+            p.gameMode.handleBlockBreakAction(pos, ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK, face, level.getMaxBuildHeight(), 0);
+            bot.digBlockPos = pos.immutable();
+            bot.digBlockFace = face;
             p.swing(InteractionHand.MAIN_HAND);
             return;
         }
@@ -1671,27 +1693,12 @@ public class FakeBotManager {
         ServerPlayer p = bot.player;
         if (p == null) return;
 
-        // Small radius like vanilla pickup range
+        // Use vanilla ItemEntity.playerTouch so pickup delay and client magnet behavior apply (no instant disappear)
         double r = 1.5;
         AABB box = p.getBoundingBox().inflate(r, 0.5, r);
-
         List<ItemEntity> items = level.getEntitiesOfClass(ItemEntity.class, box, e -> !e.isRemoved() && e.isAlive());
-        if (items.isEmpty()) return;
-
         for (ItemEntity it : items) {
-            ItemStack stack = it.getItem();
-            if (stack.isEmpty()) continue;
-
-            // Try to add to inventory (vanilla behavior-ish)
-            ItemStack leftover = p.getInventory().add(stack) ? ItemStack.EMPTY : stack;
-
-            if (leftover.isEmpty()) {
-                it.discard(); // picked up fully
-                // Optional: play pickup sound/event
-                // level.playSound(null, p.getX(), p.getY(), p.getZ(), SoundEvents.ITEM_PICKUP, SoundSource.PLAYERS, 0.2F, 1.0F);
-            } else {
-                it.setItem(leftover); // partially picked up
-            }
+            it.playerTouch(p);
         }
     }
 

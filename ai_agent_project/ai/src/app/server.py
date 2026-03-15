@@ -67,6 +67,13 @@ OBS = _json.loads(OBS)
 ACT = _json.loads(ACT)
 EVT = _json.loads(EVT)
 
+# ---------- Bridge role/control_mode (must match Forge: ForgeWebSocketClient, ServerBridgeWebSocketClient) ----------
+ROLE_CLIENT = "client"
+ROLE_SERVER = "server"
+MODE_PLAYER = "PLAYER"
+MODE_SERVER_BOT = "SERVER_BOT"
+# PLAYER: client or server (integrated SP = client only). SERVER_BOT: server only (dedicated server connects; client does not).
+ROLES_BY_MODE = {MODE_PLAYER: (ROLE_CLIENT, ROLE_SERVER), MODE_SERVER_BOT: (ROLE_SERVER,)}
 
 # ---------- Episode persistence ----------
 EPISODE_SAVE_PATH = dataDir / "episode_state.json"
@@ -603,9 +610,8 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
                 ws_role = msg.get("role")
                 log.info("ws hello", extra={"ws_id": id(ws), "role": ws_role})
 
-                # If client sends control_mode in hello, apply it so server accepts client in PLAYER mode
-                # (UI may have set PLAYER before connection; overlay wasn't updated yet.)
-                if ws_role == "client" and "control_mode" in msg:
+                # If client or server sends control_mode in hello, apply overlay (must match Forge bridge_constants)
+                if ws_role in (ROLE_CLIENT, ROLE_SERVER) and "control_mode" in msg:
                     client_mode = str(msg.get("control_mode", "")).strip()
                     if client_mode:
                         overlay_update = {"control_mode": client_mode}
@@ -619,21 +625,19 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
                             extra={"ws_id": id(ws), "control_mode": client_mode},
                         )
 
-                control_mode_raw = str(current_runtime.get("control_mode", "SERVER_BOT")).strip()
+                control_mode_raw = str(current_runtime.get("control_mode", MODE_SERVER_BOT)).strip()
                 control_mode = control_mode_raw.replace("-", "_").upper()
 
-                if control_mode == "SERVER_BOT" and ws_role != "server":
+                allowed_roles = ROLES_BY_MODE.get(control_mode, ())
+                if control_mode not in (MODE_PLAYER, MODE_SERVER_BOT):
+                    allowed_roles = (ROLE_CLIENT, ROLE_SERVER)
+                if allowed_roles and ws_role not in allowed_roles:
                     log.warning(
-                        "rejecting non-server ws in SERVER_BOT",
-                        extra={"ws_id": id(ws), "role": ws_role},
-                    )
-                    await ws.close(code=1008, reason="wrong_role")
-                    return
-
-                if control_mode == "PLAYER" and ws_role != "client":
-                    log.warning(
-                        "rejecting non-client ws in PLAYER",
-                        extra={"ws_id": id(ws), "role": ws_role},
+                        "rejecting ws: control_mode=%s expects role in %s, got role=%s",
+                        control_mode,
+                        allowed_roles,
+                        ws_role,
+                        extra={"ws_id": id(ws), "role": ws_role, "control_mode": control_mode},
                     )
                     await ws.close(code=1008, reason="wrong_role")
                     return

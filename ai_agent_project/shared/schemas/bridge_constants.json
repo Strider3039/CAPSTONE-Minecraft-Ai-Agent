@@ -1,0 +1,13 @@
+{
+  "description": "Canonical role and control_mode strings. Python (server.py) and Forge (BridgeConstants.java) MUST use these exact values.",
+  "roles": {
+    "client": "Minecraft game client (ForgeWebSocketClient) - sends local player obs",
+    "server": "Server-side bridge (ServerBridgeWebSocketClient) - sends fake player obs"
+  },
+  "control_modes": {
+    "PLAYER": "AI controls local player; expects role=client",
+    "SERVER_BOT": "AI controls server-side fake player; expects role=server"
+  },
+  "role_values": ["client", "server"],
+  "control_mode_values": ["PLAYER", "SERVER_BOT"]
+}

@@ -334,3 +334,75 @@ async def test_invalid_observation_skipped_no_crash(tmp_path, monkeypatch):
 
     # Server should not crash; policy should have been called (with the valid obs)
     assert policy_instance.act.called
+
+
+# ------------------------------------------------------------
+# TEST: config_update (GUI hot-reload) is applied and persisted
+# ------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_config_update_hot_reload(tmp_path, monkeypatch):
+    """
+    Client sends hello then config_update (as from GUI Apply). Server must:
+    - Merge payload into runtime_overlay and refresh current_runtime
+    - Call policy.apply_runtime_config(current_runtime)
+    - Persist overlay to runtime_overrides.yaml
+    """
+    import yaml
+
+    monkeypatch.setattr(server, "sharedDir", tmp_path / "shared")
+    (tmp_path / "shared").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(server, "EPISODE_SAVE_PATH", tmp_path / "shared" / "episode_state.json")
+    monkeypatch.setattr(server, "dataDir", tmp_path / "shared")
+    overlay_path = tmp_path / "shared" / "runtime_overrides.yaml"
+    monkeypatch.setattr(server, "RUNTIME_OVERLAY_PATH", overlay_path)
+    monkeypatch.setattr(server, "load_runtime_overlay", lambda: {})
+
+    cfg = _fake_cfg(tmp_path)
+    # Base runtime has policy.reward; overlay will add/override
+    cfg.runtime["policy"] = cfg.runtime.get("policy") or {}
+    cfg.runtime["policy"]["reward"] = {"step_penalty": -0.01, "survival_reward": 0.0}
+
+    policy_instance = MagicMock()
+    policy_instance.act = MagicMock(return_value={"payload": {}})
+    policy_instance.apply_runtime_config = MagicMock()
+    monkeypatch.setattr(server, "build_policy_from_config", lambda c: policy_instance)
+
+    config_update_payload = {
+        "control_mode": "PLAYER",
+        "policy": {
+            "reward": {"step_penalty": -0.99, "max_steps_per_episode": 500},
+            "dqn": {"epsilon_start": 0.2},
+        },
+    }
+    config_update_msg = json.dumps({
+        "proto": "1",
+        "kind": "config_update",
+        "seq": 2,
+        "payload": config_update_payload,
+    })
+
+    msgs = [_hello_client(), config_update_msg]
+    ws = DummyWS(msgs, disconnect_after=True)
+
+    await server.Handle(ws, cfg)
+
+    # 1) apply_runtime_config was called (at least once at hello; and once for config_update)
+    assert policy_instance.apply_runtime_config.call_count >= 1
+    # Last call should have merged config including our overlay
+    last_call_args = policy_instance.apply_runtime_config.call_args[0][0]
+    assert isinstance(last_call_args, dict)
+    policy_cfg = last_call_args.get("policy") or {}
+    reward_cfg = policy_cfg.get("reward") or {}
+    assert reward_cfg.get("step_penalty") == -0.99
+    assert reward_cfg.get("max_steps_per_episode") == 500
+    dqn_cfg = policy_cfg.get("dqn") or {}
+    assert dqn_cfg.get("epsilon_start") == 0.2
+
+    # 2) Overlay file was persisted
+    assert overlay_path.exists(), "runtime_overrides.yaml should be written after config_update"
+    with open(overlay_path, "r", encoding="utf-8") as f:
+        overlay = yaml.safe_load(f) or {}
+    assert overlay.get("control_mode") == "PLAYER"
+    assert (overlay.get("policy") or {}).get("reward", {}).get("step_penalty") == -0.99
+    assert (overlay.get("policy") or {}).get("reward", {}).get("max_steps_per_episode") == 500
+    assert (overlay.get("policy") or {}).get("dqn", {}).get("epsilon_start") == 0.2
