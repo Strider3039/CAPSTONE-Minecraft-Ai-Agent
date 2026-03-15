@@ -579,9 +579,18 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
                 try:
                     await SendAction(item, timeoutMs=timeout_ms, wait_for_result=await_result)
                 except Exception as e:
+                    payload = item.get("payload") or {}
                     log.warning(
                         "action send failed",
-                        extra={"error": repr(e), "trace": traceback.format_exc()},
+                        extra={
+                            "error": repr(e),
+                            "seq": item.get("seq"),
+                            "action_id": item.get("action_id"),
+                            "await_result": await_result,
+                            "timeout_ms": timeout_ms,
+                            "payload_keys": list(payload.keys()),
+                            "trace": traceback.format_exc(),
+                        },
                     )
                 finally:
                     actQueue.task_done()
