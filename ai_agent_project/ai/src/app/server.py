@@ -566,7 +566,7 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
 
                 await_result = bool(item.get("await_result", False))
 
-                default_disc_ms = int(float(current_runtime.get("discrete_action_timeout_s", 2.0)) * 1000)
+                default_disc_ms = int(float(current_runtime.get("discrete_action_timeout_s", 5.0)) * 1000)
                 timeout_ms = int(item.get("timeout_ms", default_disc_ms if await_result else 0))
 
                 # If ACK action is pending, don't create more in-flight; avoid head-of-line deadlocks.

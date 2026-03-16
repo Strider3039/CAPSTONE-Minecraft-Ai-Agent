@@ -79,6 +79,13 @@ public class FakeBotManager {
         }
     }
 
+    /** True if payload is discrete-only (use / select_slot / attack) with no move/look — prioritize so await_result doesn't timeout. */
+    private static boolean isDiscreteOnly(JsonObject action) {
+        if (action == null) return false;
+        if (action.has("move") || action.has("look")) return false;
+        return action.has("use") || action.has("select_slot") || action.has("attack");
+    }
+
     private static void clearOneShotControls(FakeBot bot) {
         // things that should only apply for ONE tick/step
         bot.attack = false;
@@ -215,6 +222,8 @@ public class FakeBotManager {
     private final Map<String, FakeBot> bots = new HashMap<>();
     private final ConcurrentLinkedQueue<String> pendingActionJson = new ConcurrentLinkedQueue<>();
 
+    /** Discrete actions (use, select_slot, attack) — drained first so they don't wait behind move/look. */
+    private final ConcurrentLinkedQueue<StepRequest> pendingDiscreteSteps = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<StepRequest> pendingSteps = new ConcurrentLinkedQueue<>();
     private long nextStepId = 1;
 
@@ -485,9 +494,10 @@ public class FakeBotManager {
             // STEP STATE MACHINE
             // -----------------------------
 
-            // Start a new step if idle
+            // Start a new step if idle (discrete first so use/select_slot don't timeout)
             if (!bot.stepActive) {
-                StepRequest req = pendingSteps.poll();
+                StepRequest req = pendingDiscreteSteps.poll();
+                if (req == null) req = pendingSteps.poll();
                 if (req != null) {
                     bot.stepActive = true;
                     bot.stepTicksRemaining = Math.max(1, req.ticks);
@@ -931,9 +941,14 @@ public class FakeBotManager {
 
                     int ticks = Math.max(1, (deadlineMs + 49) / 50); // 50ms per tick
 
-                    if (pendingSteps.size() > 200)
-                        pendingSteps.poll(); // keep latency bounded
-                    pendingSteps.offer(new StepRequest(action, ticks, seq, actionId));
+                    StepRequest step = new StepRequest(action, ticks, seq, actionId);
+                    if (isDiscreteOnly(action)) {
+                        pendingDiscreteSteps.offer(step);
+                    } else {
+                        if (pendingSteps.size() > 200)
+                            pendingSteps.poll(); // keep latency bounded
+                        pendingSteps.offer(step);
+                    }
 
                     if (DEBUG_MOVE) {
                         System.out.println("[DRAIN] queued ENVELOPE step seq=" + seq
@@ -969,17 +984,21 @@ public class FakeBotManager {
                     if (action == null)
                         continue;
 
-                    if (pendingSteps.size() > 200) {
-                        // drop oldest to keep latency low
-                        pendingSteps.poll();
+                    StepRequest stepReq = new StepRequest(action, ticks, seq, actionId);
+                    if (isDiscreteOnly(action)) {
+                        pendingDiscreteSteps.offer(stepReq);
+                    } else {
+                        if (pendingSteps.size() > 200) {
+                            pendingSteps.poll();
+                        }
+                        pendingSteps.offer(stepReq);
                     }
-
-                    pendingSteps.offer(new StepRequest(action, ticks, seq, actionId));
 
                     if (DEBUG_MOVE) {
                         System.out.println("[DRAIN] queued step seq=" + seq
                                 + " action_id=" + actionId
                                 + " ticks=" + ticks
+                                + " discrete=" + isDiscreteOnly(action)
                                 + " hasMove=" + action.has("move")
                                 + " keys=" + action.keySet());
                         if (action.has("move")) {

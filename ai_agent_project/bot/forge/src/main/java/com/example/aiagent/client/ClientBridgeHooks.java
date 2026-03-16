@@ -217,30 +217,6 @@ public class ClientBridgeHooks {
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Auto mode selection on login
-    // -------------------------------------------------------------------------
-    private void autoSelectControlMode(Minecraft mc) {
-        boolean singleplayer = mc.hasSingleplayerServer();
-
-        ForgeWebSocketClient.ControlMode mode =
-                singleplayer ? ForgeWebSocketClient.ControlMode.PLAYER
-                        : ForgeWebSocketClient.ControlMode.SERVER_BOT;
-
-        ForgeWebSocketClient.setControlMode(mode);
-
-        if (mc.player != null) {
-            mc.player.displayClientMessage(
-                    Component.literal(singleplayer
-                            ? "§a[AI-BOT] Singleplayer: DQN controls LOCAL PLAYER"
-                            : "§b[AI-BOT] Multiplayer: DQN controls SERVER FakePlayer"),
-                    true
-            );
-        }
-
-        System.out.println("[AI-BOT] Auto ControlMode -> " + mode + " (singleplayer=" + singleplayer + ")");
-    }
-
     @SubscribeEvent
     public void onClientLogin(ClientPlayerNetworkEvent.LoggingIn event) {
         Minecraft mc = Minecraft.getInstance();
@@ -248,7 +224,6 @@ public class ClientBridgeHooks {
             nextReconnectMs = 0;
             reconnectAttemptIndex = 0;
             ensureBridgeConnected();
-            autoSelectControlMode(mc);
         });
     }
 
@@ -309,18 +284,18 @@ public class ClientBridgeHooks {
             }
         }
 
-        // CTRL+P: toggle AI enabled
+        // CTRL+P: toggle AI enabled (on-screen prompt in all modes)
         if (TOGGLE_AI_KEY.consumeClick()) {
             aiEnabled = !aiEnabled;
             ForgeWebSocketClient.setAiEnabled(aiEnabled);
             p.displayClientMessage(
-                    Component.literal("[AI-BOT] AI " + (aiEnabled ? "ENABLED" : "DISABLED")),
+                    Component.literal((aiEnabled ? "§a" : "§c") + "[AI-BOT] AI switched: " + (aiEnabled ? "ENABLED" : "DISABLED")),
                     true
             );
             System.out.println("[AI-BOT] CTRL+P -> aiEnabled=" + aiEnabled);
         }
 
-        // CTRL+M: manual toggle control mode
+        // CTRL+M: manual toggle control mode (on-screen prompt, persists across world joins)
         if (TOGGLE_MODE_KEY.consumeClick()) {
             ForgeWebSocketClient.ControlMode mode = ForgeWebSocketClient.getControlMode();
             ForgeWebSocketClient.ControlMode next =
@@ -329,7 +304,10 @@ public class ClientBridgeHooks {
                             : ForgeWebSocketClient.ControlMode.PLAYER;
 
             ForgeWebSocketClient.setControlMode(next);
-            p.displayClientMessage(Component.literal("[AI-BOT] Control Mode: " + next), true);
+            String msg = next == ForgeWebSocketClient.ControlMode.PLAYER
+                    ? "§a[AI-BOT] Control mode switched to PLAYER"
+                    : "§b[AI-BOT] Control mode switched to SERVER_BOT";
+            p.displayClientMessage(Component.literal(msg), true);
             System.out.println("[AI-BOT] CTRL+M -> ControlMode=" + next);
         }
 

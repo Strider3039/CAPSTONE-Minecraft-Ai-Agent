@@ -62,7 +62,7 @@ runtime:
   # ---- Control-plane (handshake/actions) ----
   control_mode: SERVER_BOT # SERVER_BOT | PLAYER
   hello_timeout_s: 2.0
-  discrete_action_timeout_s: 2.0 # wait_for_result=True timeouts
+  discrete_action_timeout_s: 5.0 # wait_for_result=True timeouts (use/select_slot/attack)
   continuous_resend_interval_s: 0.05
   continuous_hold_ticks: 3 # your smoothing hold
   worker_tasks: 1
