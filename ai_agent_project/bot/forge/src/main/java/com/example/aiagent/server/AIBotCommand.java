@@ -52,8 +52,8 @@ public class AIBotCommand {
                             if (ok) {
                                 ctx.getSource().sendSuccess(() -> Component.literal("§a[AI-BOT] agent0 teleported to you."), false);
                                 return 1;
-                            } else {
-                                ctx.getSource().sendFailure(Component.literal("§c[AI-BOT] Teleport failed (bot missing or different dimension)."));
+                             } else {
+                               ctx.getSource().sendFailure(Component.literal("§c[AI-BOT] Teleport failed (bot missing or different dimension)."));
                                 return 0;
                             }
                         })
