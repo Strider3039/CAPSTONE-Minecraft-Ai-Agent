@@ -564,6 +564,21 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
                     actQueue.task_done()
                     continue
 
+                item_kind = str(item.get("kind", "action")).strip() or "action"
+                if item_kind != "action":
+                    try:
+                        if item_kind == "eval_control":
+                            payload = item.get("payload") or {}
+                            if isinstance(payload, dict) and payload.get("action") == "start_episode":
+                                await start_new_episode(ws, obsQueue, obsState, obs_drop_policy)
+                                log.info("policy requested start_episode", extra={"ws_id": id(ws)})
+                        else:
+                            log.warning("unsupported act_q message", extra={"kind": item_kind})
+                    finally:
+                        actQueue.task_done()
+                        sent += 1
+                    continue
+
                 await_result = bool(item.get("await_result", False))
 
                 default_disc_ms = int(float(current_runtime.get("discrete_action_timeout_s", 5.0)) * 1000)
@@ -848,6 +863,12 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
     finally:
         stopEvt.set()
 
+        if policy is not None and hasattr(policy, "shutdown"):
+            try:
+                policy.shutdown("ws_disconnect")
+            except Exception as e:
+                log.warning("policy shutdown failed", extra={"error": str(e)})
+
         # Save DQN checkpoint on disconnect so latest state is persisted (in addition to periodic saves)
         if policy is not None and hasattr(policy, "agent") and hasattr(policy, "ckpt_latest_path"):
             try:
@@ -903,4 +924,7 @@ async def Main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(Main())
+    try:
+        asyncio.run(Main())
+    except KeyboardInterrupt:
+        stdlog.getLogger("bridge.server").info("server interrupted")

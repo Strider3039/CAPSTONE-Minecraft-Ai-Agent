@@ -2,6 +2,7 @@ package com.example.aiagent.server;
 
 import com.example.aiagent.BotMod;
 import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.arguments.IntegerArgumentType;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.server.MinecraftServer;
@@ -57,6 +58,35 @@ public class AIBotCommand {
                             }
                         })
                 )
+                .then(
+                    Commands.literal("soak")
+                        .then(
+                            Commands.literal("start")
+                                .executes(ctx -> startSoak(ctx.getSource(), 3, 400))
+                                .then(
+                                    Commands.argument("episodes", IntegerArgumentType.integer(1))
+                                        .executes(ctx -> startSoak(
+                                                ctx.getSource(),
+                                                IntegerArgumentType.getInteger(ctx, "episodes"),
+                                                400))
+                                        .then(
+                                            Commands.argument("ticks_per_episode", IntegerArgumentType.integer(20))
+                                                .executes(ctx -> startSoak(
+                                                        ctx.getSource(),
+                                                        IntegerArgumentType.getInteger(ctx, "episodes"),
+                                                        IntegerArgumentType.getInteger(ctx, "ticks_per_episode")))
+                                        )
+                                )
+                        )
+                        .then(
+                            Commands.literal("stop")
+                                .executes(ctx -> stopSoak(ctx.getSource()))
+                        )
+                        .then(
+                            Commands.literal("status")
+                                .executes(ctx -> showSoakStatus(ctx.getSource()))
+                        )
+                )
         );
     }
 
@@ -109,6 +139,56 @@ public class AIBotCommand {
             )),
             false
         );
+        return 1;
+    }
+
+    private static int startSoak(CommandSourceStack source, int episodes, int ticksPerEpisode) {
+        MinecraftServer server = source.getServer();
+        if (server == null) {
+            source.sendFailure(Component.literal("§c[AI-BOT] Server is null."));
+            return 0;
+        }
+
+        BotMod mod = BotMod.getInstance();
+        if (mod == null || mod.getBotManager() == null || mod.getSoakController() == null) {
+            source.sendFailure(Component.literal("§c[AI-BOT] Soak controller is unavailable."));
+            return 0;
+        }
+
+        ServerLevel level = server.overworld();
+        if (level == null) {
+            source.sendFailure(Component.literal("§c[AI-BOT] Overworld is unavailable."));
+            return 0;
+        }
+
+        mod.getSoakController().start(level, episodes, ticksPerEpisode);
+        source.sendSuccess(() -> Component.literal(
+                "§a[AI-BOT] Soak started."
+                        + " episodes=" + episodes
+                        + " ticks_per_episode=" + ticksPerEpisode), true);
+        return 1;
+    }
+
+    private static int stopSoak(CommandSourceStack source) {
+        BotMod mod = BotMod.getInstance();
+        if (mod == null || mod.getSoakController() == null) {
+            source.sendFailure(Component.literal("§c[AI-BOT] Soak controller is unavailable."));
+            return 0;
+        }
+
+        mod.getSoakController().stop("manual_stop");
+        source.sendSuccess(() -> Component.literal("§e[AI-BOT] Soak stopped."), true);
+        return 1;
+    }
+
+    private static int showSoakStatus(CommandSourceStack source) {
+        BotMod mod = BotMod.getInstance();
+        if (mod == null || mod.getSoakController() == null) {
+            source.sendFailure(Component.literal("§c[AI-BOT] Soak controller is unavailable."));
+            return 0;
+        }
+
+        source.sendSuccess(() -> Component.literal(mod.getSoakController().getStatusLine()), false);
         return 1;
     }
 }

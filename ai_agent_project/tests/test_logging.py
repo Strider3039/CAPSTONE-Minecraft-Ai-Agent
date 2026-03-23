@@ -9,11 +9,11 @@ from ai.src.utils import logging as app_logging  # noqa: E402
 
 
 def test_setup_logging_json_stdout(tmp_path: Path, capsys):
-    metrics_path = tmp_path / "logs" / "bridge_metrics.ndjson"
+    log_path = tmp_path / "logs" / "bridge.log.ndjson"
     cfg = {
         "level": "DEBUG",
         "json": True,
-        "metrics": {"sink": {"path": str(metrics_path)}},
+        "file": {"enabled": True, "path": str(log_path)},
     }
 
     app_logging.SetupLogging(cfg)
@@ -29,9 +29,9 @@ def test_setup_logging_json_stdout(tmp_path: Path, capsys):
     assert rec["msg"] == "hello world"
     assert rec["foo"] == "bar"
 
-    # Metrics sink file exists (handler added) and contains JSON
-    assert metrics_path.exists()
-    with metrics_path.open("r", encoding="utf-8") as f:
+    # File sink exists and contains JSON log records
+    assert log_path.exists()
+    with log_path.open("r", encoding="utf-8") as f:
         first = f.readline().strip()
         assert first
         json.loads(first)

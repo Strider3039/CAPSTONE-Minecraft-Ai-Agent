@@ -44,8 +44,9 @@ class TestActionSpace(unittest.TestCase):
     def test_Noop(self):
         msg = ToMinecraftControls(ActionIndex("noop"), seq=1)
         self.ValidateActionMessage(msg)
-        self.assertEqual(msg["action_id"], "look")
+        self.assertEqual(msg["action_id"], "noop")
         self.assertIn("look", msg["payload"])
+        self.assertIn("move", msg["payload"])
 
     def test_MoveForward(self):
         msg = ToMinecraftControls(ActionIndex("move_forward"), seq=2)
@@ -74,18 +75,17 @@ class TestActionSpace(unittest.TestCase):
     def test_Jump(self):
         msg = ToMinecraftControls(ActionIndex("jump"), seq=6)
         self.ValidateActionMessage(msg)
-        # schema: jump must be boolean
-        self.assertEqual(msg["payload"]["jump"], True)
+        self.assertEqual(msg["payload"]["move"]["jump"], True)
 
     def test_LookLeft(self):
         msg = ToMinecraftControls(ActionIndex("look_left_small"), seq=7)
         self.ValidateActionMessage(msg)
-        self.assertLess(msg["payload"]["look"]["dYaw"], 0)
+        self.assertLess(msg["payload"]["look"]["yaw_delta"], 0)
 
     def test_LookRight(self):
         msg = ToMinecraftControls(ActionIndex("look_right_small"), seq=8)
         self.ValidateActionMessage(msg)
-        self.assertGreater(msg["payload"]["look"]["dYaw"], 0)
+        self.assertGreater(msg["payload"]["look"]["yaw_delta"], 0)
 
     def test_InvalidIndex(self):
         with self.assertRaises(Exception):

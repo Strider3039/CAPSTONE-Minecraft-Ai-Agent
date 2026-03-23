@@ -97,11 +97,7 @@ public class FakeBotManager {
         bot.dropCount = 1;
     }
 
-    private static void clearAllControls(FakeBot bot) {
-        // one-shot
-        clearOneShotControls(bot);
-
-        // continuous
+    private static void clearContinuousControls(FakeBot bot) {
         bot.forward = 0f;
         bot.strafe = 0f;
         bot.jump = false;
@@ -117,6 +113,14 @@ public class FakeBotManager {
         bot.ctrlYawDelta = 0f;
         bot.ctrlPitchDelta = 0f;
         bot.ctrlHoldTicks = 0;
+    }
+
+    private static void clearAllControls(FakeBot bot) {
+        // one-shot
+        clearOneShotControls(bot);
+
+        // continuous
+        clearContinuousControls(bot);
 
         bot.digBlockPos = null;
         bot.digBlockFace = null;
@@ -200,6 +204,9 @@ public class FakeBotManager {
         // Survival block breaking: track current dig so we can call continue each tick (not instant destroyBlock)
         public BlockPos digBlockPos = null;
         public Direction digBlockFace = null;
+
+        public boolean pendingEpisodeReset = false;
+        public int pendingEpisodeResetTick = -1;
 
         public FakeBot(ServerPlayer player, UUID uuid, String name) {
             this.player = player;
@@ -296,6 +303,21 @@ public class FakeBotManager {
 
     public JsonObject pollCompletedResult() {
         return completedStepResults.poll();
+    }
+
+    private JsonObject buildEpisodeEndEvent(String reason) {
+        JsonObject root = new JsonObject();
+        root.addProperty("proto", "1");
+        root.addProperty("kind", "episode_end");
+        root.addProperty("seq", Math.max(0, tickCounter));
+        root.addProperty("timestamp", System.currentTimeMillis() / 1000.0);
+
+        JsonObject payload = new JsonObject();
+        JsonObject body = new JsonObject();
+        body.addProperty("reason", (reason == null || reason.isBlank()) ? "unknown" : reason);
+        payload.add("episode_end", body);
+        root.add("payload", payload);
+        return root;
     }
 
     public void enqueueActionJson(String json) {
@@ -399,8 +421,74 @@ public class FakeBotManager {
         bot.stepAction = null;
         bot.stepSeq = -1;
         bot.stepActionId = null;
+        bot.pendingEpisodeReset = true;
+        bot.pendingEpisodeResetTick = tickCounter;
 
         bot.forceStateSync = true;
+
+        completedStepResults.offer(buildEpisodeEndEvent("death"));
+
+        BotMod inst = BotMod.getInstance();
+        if (inst != null) {
+            inst.markEpisodeEnded("death");
+            if (inst.getSoakController() != null) {
+                inst.getSoakController().onEpisodeFinished("death");
+            }
+        }
+    }
+
+    public void startNewEpisode(ServerLevel level, String reason) {
+        if (level == null) return;
+
+        ensureDefaultBot(level.getServer(), level);
+        FakeBot bot = getDefaultBot();
+        if (bot == null) return;
+
+        bot.lastDeathPos = null;
+        bot.pendingEpisodeReset = false;
+        bot.pendingEpisodeResetTick = -1;
+
+        pendingActionJson.clear();
+        pendingSteps.clear();
+        pendingDiscreteSteps.clear();
+
+        clearAllControls(bot);
+        respawnBot(bot, level);
+
+        ServerPlayer p = bot.player;
+        if (p == null) return;
+
+        p.setHealth(p.getMaxHealth());
+        p.getFoodData().setFoodLevel(20);
+        p.getFoodData().setSaturation(5.0f);
+        p.getInventory().clearContent();
+        p.getInventory().selected = 0;
+        p.setItemSlot(EquipmentSlot.FEET, ItemStack.EMPTY);
+        p.setItemSlot(EquipmentSlot.LEGS, ItemStack.EMPTY);
+        p.setItemSlot(EquipmentSlot.CHEST, ItemStack.EMPTY);
+        p.setItemSlot(EquipmentSlot.HEAD, ItemStack.EMPTY);
+        p.setItemSlot(EquipmentSlot.OFFHAND, ItemStack.EMPTY);
+        p.clearFire();
+        p.removeAllEffects();
+        p.setAirSupply(p.getMaxAirSupply());
+        p.fallDistance = 0.0f;
+        p.setDeltaMovement(Vec3.ZERO);
+        p.invulnerableTime = 0;
+        p.hurtTime = 0;
+        p.hurtMarked = false;
+        p.getInventory().setChanged();
+
+        bot.forceStateSync = true;
+        sendBotState(level, bot);
+
+        BotMod inst = BotMod.getInstance();
+        if (inst != null) {
+            inst.markEpisodeStarted(level.getGameTime());
+        }
+
+        System.out.println("[AI-BOT] Server-bot episode reset. reason=" + reason
+                + " pos=" + p.position()
+                + " dim=" + level.dimension().location());
     }
 
     /**
@@ -462,7 +550,15 @@ public class FakeBotManager {
 
             // If dead/unspawned, respawn into a deterministic level
             if (bot.player == null || !bot.player.isAlive()) {
-                if (defaultLevel != null) {
+                if (bot.pendingEpisodeReset) {
+                    if (defaultLevel != null && bot.pendingEpisodeResetTick >= 0
+                            && (tickCounter - bot.pendingEpisodeResetTick) > 100) {
+                        System.out.println("[AI-BOT] Episode reset timeout fallback -> respawning bot.");
+                        bot.pendingEpisodeReset = false;
+                        bot.pendingEpisodeResetTick = -1;
+                        respawnBot(bot, defaultLevel);
+                    }
+                } else if (defaultLevel != null) {
                     respawnBot(bot, defaultLevel);
                 }
                 continue;
@@ -720,8 +816,10 @@ public class FakeBotManager {
                                 + finishedActionId);
                 }
 
-                // Step is finished -> reset step state (IMPORTANT)
+                // Step is finished -> clear both one-shot and held movement/look controls so
+                // the next logical action starts from a clean state.
                 clearOneShotControls(bot);
+                clearContinuousControls(bot);
                 bot.stepActive = false;
                 bot.stepTicksRemaining = 0;
                 bot.stepAction = null;
@@ -1129,126 +1227,7 @@ public class FakeBotManager {
         root.addProperty("proto", "1");
         root.addProperty("kind", "observation");
         root.addProperty("seq", seq);
-
-        JsonObject payload = new JsonObject();
-
-        // --------------------
-        // pose (required)
-        // --------------------
-        JsonObject pose = new JsonObject();
-        pose.addProperty("x", bot.player.getX());
-        pose.addProperty("y", bot.player.getY());
-        pose.addProperty("z", bot.player.getZ());
-        pose.addProperty("yaw", bot.player.getYRot());
-        pose.addProperty("pitch", bot.player.getXRot());
-        payload.add("pose", pose);
-
-        // --------------------
-        // rays (required)
-        // --------------------
-        // Use your existing rays if you already compute them; otherwise default to
-        // empty array.
-        // If your Python schema requires items, empty array is still valid if "rays"
-        // itself is required.
-        // --------------------
-        // rays (required) — default placeholder
-        // --------------------
-        com.google.gson.JsonArray rays = new com.google.gson.JsonArray();
-
-        // 16 rays @ 22.5° increments, default "no hit" at max distance
-        for (int i = 0; i < 16; i++) {
-            JsonObject r = new JsonObject();
-            r.addProperty("hit", false);
-            r.addProperty("dist", 5.0);
-            r.addProperty("angle_deg", i * 22.5);
-            rays.add(r);
-        }
-
-        payload.add("rays", rays);
-
-        // --------------------
-        // front_clear (required)
-        // --------------------
-        // Default: assume clear unless your rays say otherwise.
-        boolean frontClear = true;
-        try {
-            JsonObject r0 = rays.get(0).getAsJsonObject();
-            boolean hit = r0.get("hit").getAsBoolean();
-            double dist = r0.get("dist").getAsDouble();
-            frontClear = !(hit && dist < 1.25);
-        } catch (Exception ignored) {
-        }
-
-        payload.addProperty("front_clear", frontClear);
-
-        // --------------------
-        // world (required)
-        // --------------------
-        JsonObject world = new JsonObject();
-        long dayTime = level.getDayTime() % 24000L;
-        world.addProperty("time_of_day", (double) dayTime);
-
-        String weather = "clear";
-        if (level.isThundering())
-            weather = "thunder";
-        else if (level.isRaining())
-            weather = "rain";
-        world.addProperty("weather", weather);
-
-        String biomeName = "unknown";
-        try {
-            var biomeKey = level.getBiome(bot.player.blockPosition()).unwrapKey();
-            if (biomeKey.isPresent())
-                biomeName = biomeKey.get().location().toString();
-        } catch (Exception ignored) {
-        }
-        world.addProperty("biome", biomeName);
-
-        payload.add("world", world);
-
-        // --------------------
-        // inventory (required)
-        // --------------------
-        JsonObject inv = new JsonObject();
-        inv.addProperty("selected_slot", bot.player.getInventory().selected);
-
-        com.google.gson.JsonArray hotbar = new com.google.gson.JsonArray();
-        for (int i = 0; i < 9; i++) {
-            var stack = bot.player.getInventory().getItem(i);
-            JsonObject it = new JsonObject();
-            String id = "air";
-            try {
-                id = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
-            } catch (Exception ignored) {
-            }
-            it.addProperty("id", id);
-            it.addProperty("count", stack.getCount());
-            hotbar.add(it);
-        }
-        inv.add("hotbar", hotbar);
-        payload.add("inventory", inv);
-
-        // --------------------
-        // collision (required)
-        // --------------------
-        JsonObject collision = new JsonObject();
-        collision.addProperty("is_grounded", bot.player.onGround());
-        collision.addProperty("is_colliding", bot.player.horizontalCollision || bot.player.verticalCollision);
-
-        // "no_progress" default heuristic: if movement over step is tiny
-        double dx = bot.player.getX() - bot.stepStartX;
-        double dz = bot.player.getZ() - bot.stepStartZ;
-        boolean noProgress = (dx * dx + dz * dz) < 0.0004; // ~2cm threshold squared
-        collision.addProperty("no_progress", noProgress);
-
-        payload.add("collision", collision);
-
-        // --------------------
-        // entities (optional in your schema, but nice to include)
-        // --------------------
-        payload.add("entities", new com.google.gson.JsonArray());
-
-        root.add("payload", payload);
+        root.add("payload", buildObservationPayload(level, bot.player, bot));
         return root;
     }
 
@@ -1779,6 +1758,84 @@ public class FakeBotManager {
         pendingActionJson.clear();
     }
 
+    private com.google.gson.JsonArray buildRayArray(ServerLevel level, ServerPlayer p, int count, double maxDist) {
+        com.google.gson.JsonArray rays = new com.google.gson.JsonArray();
+        if (level == null || p == null) return rays;
+
+        for (int i = 0; i < count; i++) {
+            double angle = (i / (double) count) * 360.0;
+            float yaw = (float) (p.getYRot() + angle);
+
+            Vec3 from = p.getEyePosition();
+            Vec3 dir = Vec3.directionFromRotation(p.getXRot(), yaw);
+            Vec3 to = from.add(dir.scale(maxDist));
+
+            BlockHitResult hit = level.clip(new ClipContext(
+                    from, to,
+                    ClipContext.Block.COLLIDER,
+                    ClipContext.Fluid.NONE,
+                    p));
+
+            boolean hitBlock = hit.getType() != HitResult.Type.MISS;
+
+            JsonObject ray = new JsonObject();
+            ray.addProperty("hit", hitBlock);
+            ray.addProperty("dist", hitBlock ? from.distanceTo(hit.getLocation()) : maxDist);
+            ray.addProperty("angle_deg", angle);
+            rays.add(ray);
+        }
+
+        return rays;
+    }
+
+    private static boolean isFrontClear(com.google.gson.JsonArray rays, double threshold) {
+        if (rays == null || rays.size() == 0) return true;
+        try {
+            JsonObject ray0 = rays.get(0).getAsJsonObject();
+            boolean hit = ray0.get("hit").getAsBoolean();
+            double dist = ray0.get("dist").getAsDouble();
+            return !(hit && dist < threshold);
+        } catch (Exception ignored) {
+            return true;
+        }
+    }
+
+    private com.google.gson.JsonArray buildNearbyEntities(ServerLevel level, ServerPlayer p, double radius, int cap) {
+        com.google.gson.JsonArray entities = new com.google.gson.JsonArray();
+        if (level == null || p == null) return entities;
+
+        AABB box = p.getBoundingBox().inflate(radius, radius * 0.5, radius);
+        List<Entity> nearby = level.getEntities(p, box, e -> e != null && e.isAlive() && !e.isRemoved());
+        nearby.sort(java.util.Comparator.comparingDouble(e -> e.distanceToSqr(p)));
+
+        int count = 0;
+        for (Entity e : nearby) {
+            if (count >= cap) break;
+
+            JsonObject entity = new JsonObject();
+            entity.addProperty("id", e.getId());
+
+            String typeId = "unknown";
+            try {
+                typeId = BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).toString();
+            } catch (Exception ignored) {
+            }
+            entity.addProperty("type", typeId);
+            entity.addProperty("dist", Math.sqrt(e.distanceToSqr(p)));
+
+            boolean los = false;
+            try {
+                los = p.hasLineOfSight(e);
+            } catch (Throwable ignored) {
+            }
+            entity.addProperty("los", los);
+            entities.add(entity);
+            count++;
+        }
+
+        return entities;
+    }
+
     private JsonObject buildObservationPayload(ServerLevel level, ServerPlayer p, FakeBot bot) {
         JsonObject payload = new JsonObject();
 
@@ -1791,11 +1848,12 @@ public class FakeBotManager {
         pose.addProperty("pitch", p.getXRot());
         payload.add("pose", pose);
 
-        // ---- rays (required) : minimal valid = empty array
-        payload.add("rays", new com.google.gson.JsonArray());
+        // ---- rays (required)
+        com.google.gson.JsonArray rays = buildRayArray(level, p, 16, 5.0);
+        payload.add("rays", rays);
 
-        // ---- front_clear (required) : simple 1-block ray in front
-        payload.addProperty("front_clear", isFrontClear(level, p));
+        // ---- front_clear (required)
+        payload.addProperty("front_clear", isFrontClear(rays, 1.25));
 
         // ---- world (required)
         JsonObject world = new JsonObject();
@@ -1845,24 +1903,23 @@ public class FakeBotManager {
 
         collision.addProperty("is_colliding", isColliding);
 
-        // no_progress: moved less than ~1cm during the step
-        double dx = p.getX() - bot.stepStartX;
-        double dy = p.getY() - bot.stepStartY;
-        double dz = p.getZ() - bot.stepStartZ;
-        boolean noProgress = (dx * dx + dy * dy + dz * dz) < 1.0e-4;
+        boolean noProgress;
+        if (bot != null && bot.stepActive) {
+            double dx = p.getX() - bot.stepStartX;
+            double dy = p.getY() - bot.stepStartY;
+            double dz = p.getZ() - bot.stepStartZ;
+            noProgress = (dx * dx + dy * dy + dz * dz) < 1.0e-4;
+        } else {
+            Vec3 vel = p.getDeltaMovement();
+            noProgress = (vel.x * vel.x + vel.z * vel.z) < 4.0e-4;
+        }
         collision.addProperty("no_progress", noProgress);
 
         payload.add("collision", collision);
 
-        return payload;
-    }
+        payload.add("entities", buildNearbyEntities(level, p, 8.0, 8));
 
-    private boolean isFrontClear(ServerLevel level, ServerPlayer p) {
-        Vec3 from = p.getEyePosition();
-        Vec3 to = from.add(p.getLookAngle().scale(1.0)); // 1 block ahead
-        ClipContext ctx = new ClipContext(from, to, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, p);
-        BlockHitResult hit = level.clip(ctx);
-        return hit.getType() == HitResult.Type.MISS;
+        return payload;
     }
 
 }

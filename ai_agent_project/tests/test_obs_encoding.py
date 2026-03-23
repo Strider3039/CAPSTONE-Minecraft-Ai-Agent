@@ -35,6 +35,11 @@ class TestObsEncoding(unittest.TestCase):
                 "world": {
                     "time_of_day": 6000,
                     "weather": "rain",
+                    "biome": "minecraft:plains",
+                },
+                "inventory": {
+                    "selected_slot": 0,
+                    "hotbar": [],
                 },
             },
         }
@@ -58,7 +63,7 @@ class TestObsEncoding(unittest.TestCase):
         # Rays
         # Ray 0: hit=True, dist=5.0; hit=1, dist_norm=0.5
         self.assertAlmostEqual(vec[7], 1.0)     # ray 0 hit
-        self.assertAlmostEqual(vec[8], 0.0)     # ray 0 dist_norm
+        self.assertAlmostEqual(vec[8], 0.5)     # ray 0 dist_norm
         # Ray 1: hit=False, dist=0.0; hit=0, dist_norm=0.0
         self.assertAlmostEqual(vec[9], 0.0)     # ray 1 hit
         self.assertAlmostEqual(vec[10], 0.0)    # ray 1 dist_norm

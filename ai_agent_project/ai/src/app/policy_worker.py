@@ -123,9 +123,6 @@ async def PolicyWorker(
     tick_dt = 1.0 / tick_hz
     next_tick = time.time()
 
-    RESEND_INTERVAL_S = float(runtime_cfg.get("continuous_resend_interval_s", 0.05))
-    RESEND_INTERVAL_S = max(0.0, RESEND_INTERVAL_S)
-
     coalesce_cfg = (
         (queues_cfg.get("coalesce") or {})
         if isinstance(queues_cfg.get("coalesce"), dict)
@@ -142,30 +139,15 @@ async def PolicyWorker(
     latSamplesMs = deque(maxlen=200)
     lastStatsTs = time.time()
 
-    async def DrainLatest() -> bool:
-        nonlocal latestObs
-        drained = False
-        while True:
-            try:
-                item = obs_q.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-            else:
-                latestObs = item
-                drained = True
-        return drained
-
-    last_payload = None
-    last_send_ts = 0.0
-
     while True:
         now = time.time()
         if now < next_tick:
             await asyncio.sleep(next_tick - now)
         next_tick += tick_dt
 
-        await DrainLatest()
-        if latestObs is None:
+        try:
+            latestObs = obs_q.get_nowait()
+        except asyncio.QueueEmpty:
             continue
 
         obsTs = float(latestObs.get("timestamp", time.time()))
@@ -181,6 +163,12 @@ async def PolicyWorker(
                     "policy_step returned non-dict, skipping",
                     extra={"type": type(action_msg).__name__},
                 )
+                continue
+
+            msg_kind = str(action_msg.get("kind", "action")).strip() or "action"
+            if msg_kind != "action":
+                put_timeout_s = float(queues_cfg.get("act_put_timeout_s", 0) or 0)
+                await QueueAdd(act_q, action_msg, put_timeout_s, log, emit_event)
                 continue
 
             raw_payload = (action_msg or {}).get("payload") or {}
@@ -228,24 +216,6 @@ async def PolicyWorker(
                     continue
 
             payload = action_msg.get("payload") or {}
-
-            if not needs_ack:
-                now2 = time.time()
-                if (
-                    payload == last_payload
-                    and (now2 - last_send_ts) < RESEND_INTERVAL_S
-                ):
-                    log.debug(
-                        "suppress_duplicate_control",
-                        extra={
-                            "age_s": (now2 - last_send_ts),
-                            "resend_s": RESEND_INTERVAL_S,
-                            "payload_keys": list((payload or {}).keys()),
-                        },
-                    )
-                    continue
-                last_payload = payload
-                last_send_ts = now2
 
             # 3) Coalesce controls ONLY when the queue is actually backing up.
             # Keep the newest control, preserve ACK actions.

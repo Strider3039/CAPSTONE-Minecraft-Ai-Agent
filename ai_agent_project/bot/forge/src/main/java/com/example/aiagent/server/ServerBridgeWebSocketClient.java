@@ -26,6 +26,7 @@ public class ServerBridgeWebSocketClient {
 
     // WS thread -> server thread queue
     private final ConcurrentLinkedQueue<JsonObject> actionQueue = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<JsonObject> eventQueue = new ConcurrentLinkedQueue<>();
 
     public ServerBridgeWebSocketClient(String uri) {
         this.uri = uri;
@@ -67,7 +68,14 @@ public class ServerBridgeWebSocketClient {
 
                         String proto = json.has("proto") ? json.get("proto").getAsString() : "";
                         String kind  = json.has("kind")  ? json.get("kind").getAsString()  : "";
-                        if (!"1".equals(proto) || !"action".equals(kind)) return;
+                        if (!"1".equals(proto)) return;
+
+                        if ("episode_start".equals(kind) || "bridge_health".equals(kind)) {
+                            eventQueue.offer(json);
+                            return;
+                        }
+
+                        if (!"action".equals(kind)) return;
 
                         if (!json.has("payload") || !json.get("payload").isJsonObject()) {
                             if (DEBUG_WS) System.out.println("[AI-BOT][SERVER-WS] Dropped action (missing payload): " + message);
@@ -164,6 +172,10 @@ public class ServerBridgeWebSocketClient {
         }
     }
 
+    public boolean isConnected() {
+        return client != null && client.isOpen();
+    }
+
     /**
      * Drain WS actions into FakeBotManager queue (server thread).
      * This matches: ws.drainActionsAndApply(level, BOTS);
@@ -171,6 +183,31 @@ public class ServerBridgeWebSocketClient {
     public void drainActionsAndApply(ServerLevel level, FakeBotManager bots) {
         ensureConnected();
         if (bots == null) return;
+
+        JsonObject evt;
+        while ((evt = eventQueue.poll()) != null) {
+            String kind = evt.has("kind") ? evt.get("kind").getAsString() : "";
+            if ("episode_start".equals(kind)) {
+                JsonObject payload = evt.has("payload") && evt.get("payload").isJsonObject()
+                        ? evt.getAsJsonObject("payload")
+                        : new JsonObject();
+                JsonObject body = payload.has("episode_start") && payload.get("episode_start").isJsonObject()
+                        ? payload.getAsJsonObject("episode_start")
+                        : new JsonObject();
+                String reason = body.has("reason") ? body.get("reason").getAsString() : "episode_start";
+                bots.startNewEpisode(level, reason);
+
+                BotMod inst = BotMod.getInstance();
+                if (inst != null && inst.getSoakController() != null) {
+                    inst.getSoakController().onEpisodeStarted(level, reason);
+                }
+                continue;
+            }
+
+            if ("bridge_health".equals(kind) && DEBUG_WS) {
+                System.out.println("[AI-BOT][SERVER-WS] bridge_health " + evt);
+            }
+        }
 
         JsonObject payload;
         while ((payload = actionQueue.poll()) != null) {
@@ -224,6 +261,30 @@ public class ServerBridgeWebSocketClient {
         sendJson(msg);
     }
 
+    public void sendEvalControlStartEpisode() {
+        JsonObject msg = new JsonObject();
+        msg.addProperty("proto", "1");
+        msg.addProperty("kind", "eval_control");
+
+        JsonObject payload = new JsonObject();
+        payload.addProperty("action", "start_episode");
+        msg.add("payload", payload);
+        sendJson(msg);
+    }
+
+    public void sendEpisodeEnd(String reason) {
+        JsonObject msg = new JsonObject();
+        msg.addProperty("proto", "1");
+        msg.addProperty("kind", "episode_end");
+
+        JsonObject payload = new JsonObject();
+        JsonObject body = new JsonObject();
+        body.addProperty("reason", (reason == null || reason.isBlank()) ? "unknown" : reason);
+        payload.add("episode_end", body);
+        msg.add("payload", payload);
+        sendJson(msg);
+    }
+
 
 
 
@@ -233,6 +294,7 @@ public class ServerBridgeWebSocketClient {
         // Prefer the (ServerLevel, FakeBotManager) method.
         ensureConnected();
         actionQueue.clear();
+        eventQueue.clear();
     }
 
     public void closeBlockingSafe() {

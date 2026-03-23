@@ -69,6 +69,10 @@ async def test_start_new_episode(tmp_path, monkeypatch):
 
     monkeypatch.setattr(server, "sharedDir", fake_shared)
     monkeypatch.setattr(server, "EPISODE_SAVE_PATH", fake_shared / "episode_state.json")
+    monkeypatch.setattr(server, "episode", 0)
+    monkeypatch.setattr(server, "episode_start_time", None)
+    monkeypatch.setattr(server, "episode", 0)
+    monkeypatch.setattr(server, "episode_start_time", None)
 
     # Reset global episode counter
     monkeypatch.setattr(server, "episode", 0)
@@ -111,6 +115,8 @@ async def test_episode_end_triggers_new_episode(tmp_path, monkeypatch):
 
     monkeypatch.setattr(server, "sharedDir", fake_shared)
     monkeypatch.setattr(server, "EPISODE_SAVE_PATH", fake_shared / "episode_state.json")
+    monkeypatch.setattr(server, "episode", 0)
+    monkeypatch.setattr(server, "episode_start_time", None)
 
     # Fake config for Handle()
     fake_cfg = MagicMock()
@@ -119,7 +125,12 @@ async def test_episode_end_triggers_new_episode(tmp_path, monkeypatch):
         "server": {"host": "127.0.0.1", "port": 8765},
         "metrics": {}
     }
-    fake_cfg.runtime = {}
+    fake_cfg.runtime = {
+        "control_mode": "PLAYER",
+        "hello_timeout_s": 2.0,
+        "validate_actions": False,
+        "policy": {"tick_hz": 20},
+    }
 
     # Patch LoadConfig so Handle() loads our fake config
     monkeypatch.setattr(server, "LoadConfig", lambda env=None: fake_cfg)
@@ -136,6 +147,12 @@ async def test_episode_end_triggers_new_episode(tmp_path, monkeypatch):
     mock_start = AsyncMock()
     monkeypatch.setattr(server, "start_new_episode", mock_start)
 
+    hello_json = json.dumps({
+        "proto": "1",
+        "kind": "hello",
+        "role": "client",
+        "control_mode": "PLAYER",
+    })
     # Message: client says episode ended
     episode_end_json = json.dumps({
         "proto": "1",
@@ -145,14 +162,11 @@ async def test_episode_end_triggers_new_episode(tmp_path, monkeypatch):
         "payload": {"episode_end": {"reason": "death"}}
     })
 
-    # WebSocket containing *one* event: episode_end
-    ws = DummyWS([episode_end_json])
+    # WebSocket containing hello, then episode_end
+    ws = DummyWS([hello_json, episode_end_json])
 
-    # Handle should:
-    #   - call start_new_episode once at connection
-    #   - then again when episode_end arrives
     with pytest.raises(asyncio.CancelledError):
-        await server.Handle(ws)
+        await server.Handle(ws, fake_cfg)
 
     assert mock_start.await_count == 2, \
         f"Expected 2 calls (initial + death). Got {mock_start.await_count}"

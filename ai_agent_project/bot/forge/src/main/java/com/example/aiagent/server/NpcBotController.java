@@ -19,7 +19,12 @@ public final class NpcBotController {
 
     public static void enqueueActionJson(String json) {
         if (json == null || json.isBlank()) return;
-        BotMod.getInstance().getBotManager().enqueueActionJson(json);
+        BotMod mod = BotMod.getInstance();
+        if (mod == null || mod.getBotManager() == null) {
+            System.err.println("[AI-BOT] enqueueActionJson dropped: botManager unavailable");
+            return;
+        }
+        mod.getBotManager().enqueueActionJson(json);
     }
 
     public static void tick(ServerLevel level) {

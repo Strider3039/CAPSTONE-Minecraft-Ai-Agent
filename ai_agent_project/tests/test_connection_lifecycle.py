@@ -270,6 +270,79 @@ async def test_graceful_shutdown_on_client_disconnect(tmp_path, monkeypatch):
 
 
 # ------------------------------------------------------------
+# TEST: Disconnect flushes policy shutdown and checkpoint save
+# ------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_disconnect_flushes_policy_and_checkpoint(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "sharedDir", tmp_path / "shared")
+    (tmp_path / "shared").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(server, "EPISODE_SAVE_PATH", tmp_path / "shared" / "episode_state.json")
+    monkeypatch.setattr(server, "dataDir", tmp_path / "shared")
+    monkeypatch.setattr(server, "RUNTIME_OVERLAY_PATH", tmp_path / "shared" / "runtime_overrides.yaml")
+    monkeypatch.setattr(server, "load_runtime_overlay", lambda: {})
+
+    cfg = _fake_cfg(tmp_path)
+    policy_instance = MagicMock()
+    policy_instance.act = MagicMock(return_value={"payload": {}})
+    policy_instance.shutdown = MagicMock()
+    policy_instance.agent = MagicMock()
+    policy_instance.ckpt_latest_path = str(tmp_path / "shared" / "online_dqn_latest.pt")
+    monkeypatch.setattr(server, "build_policy_from_config", lambda cfg: policy_instance)
+
+    ws = DummyWS([_hello_client()], disconnect_after=True)
+
+    await server.Handle(ws, cfg)
+
+    policy_instance.shutdown.assert_called_once()
+    policy_instance.agent.Save.assert_called_once_with(policy_instance.ckpt_latest_path)
+
+
+# ------------------------------------------------------------
+# TEST: Policy eval_control passes through the worker unchanged
+# ------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_policy_eval_control_passes_through_worker():
+    obs_q = asyncio.Queue()
+    act_q = asyncio.Queue()
+    await obs_q.put(json.loads(_minimal_observation()))
+
+    runtime_cfg = {"policy": {"tick_hz": 20}, "validate_actions": False}
+    queues_cfg = {"act_put_timeout_s": 0, "coalesce": {"enabled": False}}
+
+    async def emit_event(kind, payload):
+        return None
+
+    def policy_step(_obs):
+        return {
+            "proto": "1",
+            "kind": "eval_control",
+            "payload": {"action": "start_episode"},
+        }
+
+    task = asyncio.create_task(
+        server.PolicyWorker(
+            obs_q=obs_q,
+            act_q=act_q,
+            runtime_cfg=runtime_cfg,
+            queues_cfg=queues_cfg,
+            act_schema=server.ACT,
+            log=server.stdlog.getLogger("bridge.policy.test"),
+            emit_event=emit_event,
+            policy_step=policy_step,
+        )
+    )
+
+    await asyncio.sleep(0.1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    item = act_q.get_nowait()
+    assert item["kind"] == "eval_control"
+    assert item["payload"]["action"] == "start_episode"
+
+
+# ------------------------------------------------------------
 # TEST: Observations before hello are enqueued but policy not started
 # ------------------------------------------------------------
 @pytest.mark.asyncio

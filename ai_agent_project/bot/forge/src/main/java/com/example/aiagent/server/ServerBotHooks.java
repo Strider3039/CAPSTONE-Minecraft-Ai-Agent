@@ -11,7 +11,7 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 /**
  * ServerBotHooks (SERVER SIDE)
  *
- * Dedicated server only:
+ * Logical server side:
  * - Spawn REAL NPC player once when overworld loads
  * - Run server websocket bridge and feed actions into your manager
  *
@@ -30,6 +30,7 @@ public class ServerBotHooks {
     }
 
     private final ServerBridgeWebSocketClient ws = new ServerBridgeWebSocketClient(getBridgeUri());
+    private final BotSoakTestController soak;
 
     private static final java.util.concurrent.atomic.AtomicInteger INSTANCES =
         new java.util.concurrent.atomic.AtomicInteger(0);
@@ -41,18 +42,20 @@ public class ServerBotHooks {
 
     public ServerBotHooks(FakeBotManager bots) {
         this.bots = bots;
+        this.soak = new BotSoakTestController(bots, ws);
         com.example.aiagent.BotMod.getInstance().setBridgeClient(this.ws);
+        com.example.aiagent.BotMod.getInstance().setSoakController(this.soak);
 
         MinecraftForge.EVENT_BUS.register(this);
 
         String uri = getBridgeUri();
         System.out.println("[AI-BOT] ServerBotHooks registered. instanceId=" + instanceId
                 + " this=" + System.identityHashCode(this));
-        System.out.println("[AI-BOT][SERVER-WS] Will connect to " + uri + " (dedicated servers only)");
+        System.out.println("[AI-BOT][SERVER-WS] Will connect to " + uri + " (logical server side)");
     }
 
     private static boolean shouldRun(MinecraftServer server) {
-        return server != null && server.isDedicatedServer();
+        return server != null;
     }
 
     @SubscribeEvent
@@ -105,6 +108,8 @@ public class ServerBotHooks {
 
         // Apply queued actions + physics at the correct tick phase
         bots.tick();
+
+        soak.tick(level);
 
         // Send results back
         ws.drainCompletedResultsAndSend(bots);

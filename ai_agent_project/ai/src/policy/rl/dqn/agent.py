@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import datetime, timezone, timedelta
 import pathlib as _pathlib
@@ -353,11 +354,18 @@ class OnlineDQNPolicy(Policy):
         data_dir = shared_dir / "Data"
         data_dir.mkdir(parents=True, exist_ok=True)
 
-        episode_state_path = data_dir / "episode_state.json"
+        episode_state_path = data_dir / "online_dqn_episode_state.json"
         episode_history_path = data_dir / "episode_history.json"
         step_history_path = data_dir / "step_history.jsonl"
 
         return shared_dir, episode_state_path, episode_history_path, step_history_path
+
+    @staticmethod
+    def _atomic_write_text(path: _pathlib.Path, contents: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp_path.write_text(contents, encoding="utf-8")
+        tmp_path.replace(path)
 
     def _write_episode_state(self, reward: float, done: bool, obsMsg: dict) -> None:
         body = obsMsg.get("payload", {})
@@ -395,9 +403,9 @@ class OnlineDQNPolicy(Policy):
         }
 
         try:
-            self._episode_state_path.write_text(json.dumps(doc, indent=2))
+            self._atomic_write_text(self._episode_state_path, json.dumps(doc, indent=2))
         except Exception as e:
-            print(f"[OnlineDQN] failed to write episode_state.json: {e}")
+            print(f"[OnlineDQN] failed to write {self._episode_state_path.name}: {e}")
 
     def _append_step_history(
         self,
@@ -480,12 +488,63 @@ class OnlineDQNPolicy(Policy):
                 existing = []
 
             existing.append(entry)
-            self._episode_history_path.write_text(json.dumps(existing, indent=2))
+            self._atomic_write_text(self._episode_history_path, json.dumps(existing, indent=2))
         except Exception as e:
             print(f"[OnlineDQN] failed to append episode_history.json: {e}")
 
     def _compute_reward(self, prev_obs: dict | None, curr_obs: dict) -> tuple[float, bool]:
         return self.reward_engine.compute(prev_obs, curr_obs)
+
+    def _flush_pending_transition(
+        self,
+        done_reason: str,
+        reward: float = 0.0,
+        terminal_obs_msg: dict | None = None,
+    ) -> bool:
+        """
+        Close the last pending (s, a) when the environment ends without a fresh
+        observation, such as a disconnect or explicit episode_end event.
+        """
+        if self._last_obs_vec is None or self._last_action_idx is None:
+            return False
+
+        next_obs_msg = terminal_obs_msg if isinstance(terminal_obs_msg, dict) else self._last_obs_msg
+        if not isinstance(next_obs_msg, dict):
+            next_obs_msg = {"payload": {}}
+
+        if isinstance(terminal_obs_msg, dict) and terminal_obs_msg.get("kind") == "observation":
+            next_obs_vec = EncodeObservation(terminal_obs_msg, self.max_ray_dist)
+        else:
+            # No post-terminal observation exists, so reuse the last encoded state
+            # but force done=True to stop bootstrap leakage into the next episode.
+            next_obs_vec = np.array(self._last_obs_vec, copy=True)
+
+        self._write_episode_state(reward, True, next_obs_msg)
+        self._append_step_history(reward, True, self._last_action_idx, next_obs_msg)
+        self.episode_step += 1
+
+        self.agent.StoreTransition(
+            state=self._last_obs_vec,
+            action=self._last_action_idx,
+            reward=float(reward),
+            nextState=next_obs_vec,
+            done=True,
+        )
+
+        loss = self.agent.TrainStep()
+        if loss is not None:
+            self.agent.UpdateTargetNetwork()
+
+        return True
+
+    @staticmethod
+    def _build_eval_control(action: str) -> dict:
+        return {
+            "proto": "1",
+            "kind": "eval_control",
+            "timestamp": time.time(),
+            "payload": {"action": action},
+        }
 
     def _reset_episode_state(self) -> None:
         """Reset Python-side episode bookkeeping and transition memory."""
@@ -517,6 +576,20 @@ class OnlineDQNPolicy(Policy):
         except Exception as e:
             print(f"[OnlineDQN] checkpoint save failed: {e}")
 
+    def shutdown(self, reason: str = "shutdown_disconnect") -> None:
+        has_pending = self._flush_pending_transition(done_reason=reason, reward=0.0)
+        has_episode_data = has_pending or self.episode_step > 0 or self._last_obs_msg is not None
+        if not has_episode_data:
+            return
+
+        try:
+            self._append_episode_history(last_obs=self._last_obs_msg or {"payload": {}}, done_reason=reason)
+        except Exception as e:
+            print(f"[OnlineDQN] failed to log episode_history on shutdown: {e}")
+
+        self.episode_idx += 1
+        self._reset_episode_state()
+
     def act(self, obsMsg: dict) -> dict:
         """
         Called by PolicyWorker every tick.
@@ -534,6 +607,7 @@ class OnlineDQNPolicy(Policy):
             return ToMinecraftControls(0, self.seq)  # noop
 
         if kind == "episode_end":
+            self._flush_pending_transition(done_reason="client_episode_end", reward=0.0)
             try:
                 self._append_episode_history(last_obs=self._last_obs_msg or obsMsg, done_reason="client_episode_end")
             except Exception as e:
@@ -600,6 +674,7 @@ class OnlineDQNPolicy(Policy):
 
                 self.episode_idx += 1
                 self._reset_episode_state()
+                return self._build_eval_control("start_episode")
 
         # 3) Select action for current state
         action_idx = self.agent.SelectAction(obs_vec)
