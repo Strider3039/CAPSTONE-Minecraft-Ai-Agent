@@ -634,21 +634,6 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
                 ws_role = msg.get("role")
                 log.info("ws hello", extra={"ws_id": id(ws), "role": ws_role})
 
-                # If client or server sends control_mode in hello, apply overlay (must match Forge bridge_constants)
-                if ws_role in (ROLE_CLIENT, ROLE_SERVER) and "control_mode" in msg:
-                    client_mode = str(msg.get("control_mode", "")).strip()
-                    if client_mode:
-                        overlay_update = {"control_mode": client_mode}
-                        new_overlay = DeepMerge(dict(runtime_overlay), overlay_update)
-                        runtime_overlay.clear()
-                        runtime_overlay.update(new_overlay)
-                        refresh_current_runtime()
-                        save_runtime_overlay(runtime_overlay)
-                        log.info(
-                            "control_mode from client hello",
-                            extra={"ws_id": id(ws), "control_mode": client_mode},
-                        )
-
                 control_mode_raw = str(current_runtime.get("control_mode", MODE_SERVER_BOT)).strip()
                 control_mode = control_mode_raw.replace("-", "_").upper()
 
@@ -666,10 +651,30 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
                     await ws.close(code=1008, reason="wrong_role")
                     return
 
+                # Mark the socket ready as soon as its hello is accepted. Policy loading and
+                # runtime overlay persistence can take long enough to trip the hello watchdog.
+                ws_ready.set()
+
+                # Apply control_mode from hello only after role validation, so a client cannot
+                # self-authorize by changing the global mode during its own handshake.
+                if ws_role in (ROLE_CLIENT, ROLE_SERVER) and "control_mode" in msg:
+                    client_mode = str(msg.get("control_mode", "")).strip()
+                    if client_mode:
+                        overlay_update = {"control_mode": client_mode}
+                        new_overlay = DeepMerge(dict(runtime_overlay), overlay_update)
+                        runtime_overlay.clear()
+                        runtime_overlay.update(new_overlay)
+                        refresh_current_runtime()
+                        save_runtime_overlay(runtime_overlay)
+                        log.info(
+                            "control_mode from client hello",
+                            extra={"ws_id": id(ws), "control_mode": client_mode},
+                        )
+
                 if not started:
                     started = True
 
-                    # Load policy ONLY for accepted server ws (use current_runtime so overlay is applied)
+                    # Use the refreshed runtime after the accepted hello overlay is applied.
                     policy = build_policy_from_config(current_runtime)
                     if hasattr(policy, "apply_runtime_config"):
                         policy.apply_runtime_config(current_runtime)
@@ -722,8 +727,6 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
                             )
                         )
                     )
-
-                ws_ready.set()
 
                 if episode_start_time is None:
                     await start_new_episode(ws, obsQueue, obsState, obs_drop_policy)

@@ -2,6 +2,7 @@ package com.example.aiagent.client;
 
 import com.example.aiagent.BotMod;
 import com.example.aiagent.BridgeConstants;
+import com.example.aiagent.common.AgentModeSharedLogic;
 import com.example.aiagent.net.BotNet;
 import com.example.aiagent.net.C2SBotActionPacket;
 import com.google.gson.JsonObject;
@@ -434,34 +435,13 @@ public class ForgeWebSocketClient extends WebSocketClient {
         String reason = "";
 
         try {
-            // 1) LOOK (clamped deltas)
-            if (payload.has("look")) {
-                JsonObject look = payload.getAsJsonObject("look");
-                float dYaw = 0f;
-                float dPitch = 0f;
+            AgentModeSharedLogic.DecodedAction action =
+                    AgentModeSharedLogic.decodeActionPayload(payload, MAX_YAW_PER_TICK, MAX_PITCH_PER_TICK, 3);
 
-                // Prefer v2 schema fields (yaw_delta / pitch_delta), fallback to legacy dYaw / dPitch
-                if (look.has("yaw_delta") || look.has("pitch_delta")) {
-                    if (look.has("yaw_delta")) {
-                        dYaw = look.get("yaw_delta").getAsFloat();
-                    }
-                    if (look.has("pitch_delta")) {
-                        dPitch = look.get("pitch_delta").getAsFloat();
-                    }
-                } else {
-                    if (look.has("dYaw")) {
-                        dYaw = look.get("dYaw").getAsFloat();
-                    }
-                    if (look.has("dPitch")) {
-                        dPitch = look.get("dPitch").getAsFloat();
-                    }
-                }
-
-                dYaw = clamp(dYaw, -MAX_YAW_PER_TICK, MAX_YAW_PER_TICK);
-                dPitch = clamp(dPitch, -MAX_PITCH_PER_TICK, MAX_PITCH_PER_TICK);
-
-                float newYaw = p.getYRot() + dYaw;
-                float newPitch = clamp(p.getXRot() + dPitch, -89.0f, 89.0f);
+            // 1) LOOK
+            if (action.hasLook()) {
+                float newYaw = p.getYRot() + action.yawDelta();
+                float newPitch = clamp(p.getXRot() + action.pitchDelta(), -89.0f, 89.0f);
 
                 p.setYRot(newYaw);
                 p.setXRot(newPitch);
@@ -469,38 +449,11 @@ public class ForgeWebSocketClient extends WebSocketClient {
                 p.xRotO = newPitch;
             }
 
-            // 2) MOVE + JUMP / SPRINT / SNEAK (v2 schema and legacy support)
-            double forward = 0.0;
-            double strafe  = 0.0;
-            boolean jump   = false;
-            boolean sprint = false;
-            boolean sneak  = false;
-
-            if (payload.has("move")) {
-                JsonObject move = payload.getAsJsonObject("move");
-                if (move.has("forward")) forward = move.get("forward").getAsDouble();
-                if (move.has("strafe"))  strafe  = move.get("strafe").getAsDouble();
-
-                if (move.has("jump"))   jump   = move.get("jump").getAsBoolean();
-                if (move.has("sprint")) sprint = move.get("sprint").getAsBoolean();
-                if (move.has("sneak"))  sneak  = move.get("sneak").getAsBoolean();
-            }
-
-            // Legacy top-level flags override move.* when present
-            if (payload.has("jump")) {
-                jump = payload.get("jump").getAsBoolean();
-            }
-            if (payload.has("sprint")) {
-                sprint = payload.get("sprint").getAsBoolean();
-            }
-            if (payload.has("sneak")) {
-                sneak = payload.get("sneak").getAsBoolean();
-            }
-
-            boolean w = forward > 0.2;
-            boolean s = forward < -0.2;
-            boolean d = strafe  > 0.2;
-            boolean a = strafe  < -0.2;
+            // 2) MOVE + JUMP / SPRINT / SNEAK
+            boolean w = action.forward() > 0.2f;
+            boolean s = action.forward() < -0.2f;
+            boolean d = action.strafe() > 0.2f;
+            boolean a = action.strafe() < -0.2f;
 
             Options opt = mc.options;
             opt.keyUp.setDown(w);
@@ -508,13 +461,13 @@ public class ForgeWebSocketClient extends WebSocketClient {
             opt.keyRight.setDown(d);
             opt.keyLeft.setDown(a);
 
-            opt.keyJump.setDown(jump);
-            opt.keySprint.setDown(sprint);
-            opt.keyShift.setDown(sneak);
+            opt.keyJump.setDown(action.jump());
+            opt.keySprint.setDown(action.sprint());
+            opt.keyShift.setDown(action.sneak());
 
             // 5) HOTBAR SELECT
-            if (payload.has("select_slot")) {
-                int slot = payload.get("select_slot").getAsInt();
+            if (action.selectSlot() >= 0) {
+                int slot = action.selectSlot();
                 if (slot >= 0 && slot < 9) {
                     p.getInventory().selected = slot;
                 }
@@ -522,7 +475,7 @@ public class ForgeWebSocketClient extends WebSocketClient {
 
             // 6) ATTACK (edge-trigger only: do not hold key or vanilla will continuously dig when looking at blocks)
             if (payload.has("attack")) {
-                boolean down = payload.get("attack").getAsBoolean();
+                boolean down = action.attack();
                 if (down && !lastAttackDown) {
                     doAttack(mc);
                 }
@@ -532,7 +485,7 @@ public class ForgeWebSocketClient extends WebSocketClient {
 
             // 7) USE (right click)
             if (payload.has("use")) {
-                boolean down = payload.get("use").getAsBoolean();
+                boolean down = action.use();
                 mc.options.keyUse.setDown(down);
 
                 if (down && !lastUseDown) {

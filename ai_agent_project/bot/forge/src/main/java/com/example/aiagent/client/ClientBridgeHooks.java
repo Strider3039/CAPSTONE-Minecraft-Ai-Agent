@@ -1,16 +1,16 @@
 package com.example.aiagent.client;
 
 import com.example.aiagent.BotMod;
-import com.google.gson.JsonArray;
+import com.example.aiagent.common.AgentModeSharedLogic;
 import com.google.gson.JsonObject;
 import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.commands.Commands;
-import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
-import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.ClientPlayerNetworkEvent;
@@ -25,6 +25,9 @@ import net.minecraftforge.fml.common.Mod;
 import org.lwjgl.glfw.GLFW;
 
 import java.net.URI;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -334,26 +337,7 @@ public class ClientBridgeHooks {
         var level = mc.level;
         if (p == null || level == null) return;
 
-        if (!p.isAlive()) {
-            try { p.respawn(); } catch (Exception ignored) {}
-        }
-
-        BlockPos spawn = level.getSharedSpawnPos();
-        p.teleportTo(spawn.getX() + 0.5, spawn.getY(), spawn.getZ() + 0.5);
-
-        p.setHealth(p.getMaxHealth());
-        p.getFoodData().setFoodLevel(20);
-        p.getFoodData().setSaturation(5.0f);
-        p.getInventory().clearContent();
-
-        try {
-            var server = mc.getSingleplayerServer();
-            if (server != null) {
-                ServerLevel overworld = server.overworld();
-                overworld.setDayTime(0);
-                overworld.setWeatherParameters(6000, 0, false, false);
-            }
-        } catch (Exception ignored) {}
+        EpisodeController.startNewEpisode(mc);
 
         episodeStartTick = level.getGameTime();
         episodeActive = true;
@@ -369,134 +353,41 @@ public class ClientBridgeHooks {
         var p = mc.player;
         var level = mc.level;
         if (p == null || level == null) return;
+        List<AgentModeSharedLogic.RaySample> rays = buildObservationRays(p, level);
+        List<AgentModeSharedLogic.HotbarSlot> hotbar = buildHotbarSummary(p);
+        List<AgentModeSharedLogic.NearbyEntitySample> entities = buildNearbyEntities(p, level);
 
-        // --------------------
-        // pose
-        // --------------------
-        JsonObject pose = new JsonObject();
-        pose.addProperty("x", p.getX());
-        pose.addProperty("y", p.getY());
-        pose.addProperty("z", p.getZ());
-        pose.addProperty("yaw", p.getYRot());
-        pose.addProperty("pitch", p.getXRot());
-
-        // --------------------
-        // rays (16 around player)
-        // --------------------
-        JsonArray rays = new JsonArray();
-        int count = 16;
-        double fov = 360.0;
-        double maxDist = 5.0;
-
-        for (int i = 0; i < count; i++) {
-            double angle = (i / (double) count) * fov;
-            float yaw = (float) (p.getYRot() + angle);
-
-            Vec3 from = p.getEyePosition(1f);
-            Vec3 dir = Vec3.directionFromRotation(p.getXRot(), yaw);
-            Vec3 to = from.add(dir.scale(maxDist));
-
-            var hit = level.clip(new net.minecraft.world.level.ClipContext(
-                    from, to,
-                    net.minecraft.world.level.ClipContext.Block.COLLIDER,
-                    net.minecraft.world.level.ClipContext.Fluid.NONE,
-                    p));
-
-            JsonObject r = new JsonObject();
-            boolean hitBlock = hit.getType() != net.minecraft.world.phys.HitResult.Type.MISS;
-            r.addProperty("hit", hitBlock);
-            r.addProperty("dist", hitBlock ? from.distanceTo(hit.getLocation()) : maxDist);
-            r.addProperty("angle_deg", angle);
-            rays.add(r);
-        }
-
-        // --------------------
-        // inventory
-        // --------------------
-        JsonArray hotbar = new JsonArray();
-        var inv = p.getInventory();
-
-        for (int i = 0; i < 9; i++) {
-            ItemStack s = inv.getItem(i);
-
-            JsonObject item = new JsonObject();
-            String id = "minecraft:air";
-            try {
-                id = net.minecraft.core.registries.BuiltInRegistries.ITEM
-                        .getKey(s.getItem())
-                        .toString();
-            } catch (Exception ignored) {}
-
-            item.addProperty("id", id);
-            item.addProperty("count", s.getCount());
-            hotbar.add(item);
-        }
-
-        JsonObject inventory = new JsonObject();
-        inventory.addProperty("selected_slot", inv.selected);
-        inventory.add("hotbar", hotbar);
-
-        // --------------------
-        // front_clear
-        // --------------------
-        boolean frontClear = true;
-        try {
-            if (rays.size() > 0) {
-                JsonObject r0 = rays.get(0).getAsJsonObject();
-                boolean hitBlock = r0.get("hit").getAsBoolean();
-                double dist = r0.get("dist").getAsDouble();
-                frontClear = !(hitBlock && dist < 1.25);
+        JsonObject payload = AgentModeSharedLogic.buildObservationPayload(new AgentModeSharedLogic.ObservationAdapter() {
+            @Override public double x() { return p.getX(); }
+            @Override public double y() { return p.getY(); }
+            @Override public double z() { return p.getZ(); }
+            @Override public float yaw() { return p.getYRot(); }
+            @Override public float pitch() { return p.getXRot(); }
+            @Override public List<AgentModeSharedLogic.RaySample> rays() { return rays; }
+            @Override public double timeOfDay() { return (double) (level.getDayTime() % 24000L); }
+            @Override public String weather() {
+                if (level.isThundering()) return "thunder";
+                if (level.isRaining()) return "rain";
+                return "clear";
             }
-        } catch (Exception ignored) {}
-
-        // --------------------
-        // world
-        // --------------------
-        JsonObject world = new JsonObject();
-        long dayTime = level.getDayTime() % 24000L;
-        world.addProperty("time_of_day", (double) dayTime);
-
-        String weather = "clear";
-        if (level.isThundering()) weather = "thunder";
-        else if (level.isRaining()) weather = "rain";
-        world.addProperty("weather", weather);
-
-        String biomeName = "unknown";
-        try {
-            var biomeKey = level.getBiome(p.blockPosition()).unwrapKey();
-            if (biomeKey.isPresent())
-                biomeName = biomeKey.get().location().toString();
-        } catch (Exception ignored) {}
-        world.addProperty("biome", biomeName);
-
-        // --------------------
-        // collision
-        // --------------------
-        JsonObject collision = new JsonObject();
-        collision.addProperty("is_grounded", p.onGround());
-        collision.addProperty("is_colliding", p.horizontalCollision || p.verticalCollision);
-
-        double vx = p.getDeltaMovement().x;
-        double vz = p.getDeltaMovement().z;
-        boolean noProgress = (vx * vx + vz * vz) < 0.0004;
-        collision.addProperty("no_progress", noProgress);
-
-        // --------------------
-        // entities (empty for now)
-        // --------------------
-        JsonArray entities = new JsonArray();
-
-        // --------------------
-        // final payload
-        // --------------------
-        JsonObject payload = new JsonObject();
-        payload.add("pose", pose);
-        payload.add("rays", rays);
-        payload.addProperty("front_clear", frontClear);
-        payload.add("world", world);
-        payload.add("inventory", inventory);
-        payload.add("collision", collision);
-        payload.add("entities", entities);
+            @Override public String biome() {
+                try {
+                    return level.getBiome(p.blockPosition()).unwrapKey().map(k -> k.location().toString()).orElse("unknown");
+                } catch (Exception ignored) {
+                    return "unknown";
+                }
+            }
+            @Override public int selectedSlot() { return p.getInventory().selected; }
+            @Override public List<AgentModeSharedLogic.HotbarSlot> hotbar() { return hotbar; }
+            @Override public boolean isGrounded() { return p.onGround(); }
+            @Override public boolean isColliding() { return p.horizontalCollision || p.verticalCollision; }
+            @Override public boolean noProgress() {
+                double vx = p.getDeltaMovement().x;
+                double vz = p.getDeltaMovement().z;
+                return (vx * vx + vz * vz) < 0.0004;
+            }
+            @Override public List<AgentModeSharedLogic.NearbyEntitySample> nearbyEntities() { return entities; }
+        });
 
         JsonObject obs = new JsonObject();
         obs.addProperty("proto", "1");
@@ -517,6 +408,81 @@ public class ClientBridgeHooks {
             droppedCount++;
             System.err.println("[AI-BOT] Send failed: " + e.getMessage());
         }
+    }
+
+    private static List<AgentModeSharedLogic.RaySample> buildObservationRays(
+            net.minecraft.world.entity.player.Player p,
+            net.minecraft.world.level.Level level
+    ) {
+        List<AgentModeSharedLogic.RaySample> rays = new ArrayList<>();
+        int count = 16;
+        double maxDist = 5.0;
+
+        for (int i = 0; i < count; i++) {
+            double angle = (i / (double) count) * 360.0;
+            float yaw = (float) (p.getYRot() + angle);
+
+            Vec3 from = p.getEyePosition();
+            Vec3 dir = Vec3.directionFromRotation(p.getXRot(), yaw);
+            Vec3 to = from.add(dir.scale(maxDist));
+
+            var hit = level.clip(new net.minecraft.world.level.ClipContext(
+                    from, to,
+                    net.minecraft.world.level.ClipContext.Block.COLLIDER,
+                    net.minecraft.world.level.ClipContext.Fluid.NONE,
+                    p));
+
+            boolean hitBlock = hit.getType() != net.minecraft.world.phys.HitResult.Type.MISS;
+            rays.add(new AgentModeSharedLogic.RaySample(
+                    hitBlock,
+                    hitBlock ? from.distanceTo(hit.getLocation()) : maxDist,
+                    angle
+            ));
+        }
+
+        return rays;
+    }
+
+    private static List<AgentModeSharedLogic.HotbarSlot> buildHotbarSummary(net.minecraft.world.entity.player.Player p) {
+        List<AgentModeSharedLogic.HotbarSlot> hotbar = new ArrayList<>();
+        var inv = p.getInventory();
+        for (int i = 0; i < 9; i++) {
+            ItemStack s = inv.getItem(i);
+            String id = "minecraft:air";
+            try {
+                id = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(s.getItem()).toString();
+            } catch (Exception ignored) {
+            }
+            hotbar.add(new AgentModeSharedLogic.HotbarSlot(id, s.getCount()));
+        }
+        return hotbar;
+    }
+
+    private static List<AgentModeSharedLogic.NearbyEntitySample> buildNearbyEntities(
+            net.minecraft.world.entity.player.Player p,
+            net.minecraft.world.level.Level level
+    ) {
+        List<AgentModeSharedLogic.NearbyEntitySample> entities = new ArrayList<>();
+        AABB box = p.getBoundingBox().inflate(8.0, 4.0, 8.0);
+        List<Entity> nearby = level.getEntities(p, box, e -> e != null && e.isAlive() && !e.isRemoved());
+        nearby.sort(Comparator.comparingDouble(e -> e.distanceToSqr(p)));
+
+        int cap = Math.min(8, nearby.size());
+        for (int i = 0; i < cap; i++) {
+            Entity e = nearby.get(i);
+            String typeId = "unknown";
+            try {
+                typeId = net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).toString();
+            } catch (Exception ignored) {
+            }
+            entities.add(new AgentModeSharedLogic.NearbyEntitySample(
+                    e.getId(),
+                    typeId,
+                    Math.sqrt(e.distanceToSqr(p)),
+                    p.hasLineOfSight(e)
+            ));
+        }
+        return entities;
     }
 
 

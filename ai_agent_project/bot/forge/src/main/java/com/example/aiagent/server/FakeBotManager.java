@@ -3,6 +3,7 @@ package com.example.aiagent.server;
 import com.example.aiagent.server.DamageableFakePlayer;
 import com.example.aiagent.server.DamageableFakePlayerFactory;
 import com.example.aiagent.BotMod;
+import com.example.aiagent.common.AgentModeSharedLogic;
 import com.example.aiagent.net.BotNet;
 import com.example.aiagent.net.S2CBotStatePacket;
 import com.google.gson.JsonObject;
@@ -24,7 +25,6 @@ import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.projectile.ProjectileUtil;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.phys.*;
-import net.minecraftforge.common.util.FakePlayerFactory;
 import net.minecraftforge.network.PacketDistributor;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.item.ItemStack;
@@ -34,7 +34,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.Map;
 import java.util.Set;
 
@@ -458,33 +457,88 @@ public class FakeBotManager {
         ServerPlayer p = bot.player;
         if (p == null) return;
 
-        p.setHealth(p.getMaxHealth());
-        p.getFoodData().setFoodLevel(20);
-        p.getFoodData().setSaturation(5.0f);
-        p.getInventory().clearContent();
-        p.getInventory().selected = 0;
-        p.setItemSlot(EquipmentSlot.FEET, ItemStack.EMPTY);
-        p.setItemSlot(EquipmentSlot.LEGS, ItemStack.EMPTY);
-        p.setItemSlot(EquipmentSlot.CHEST, ItemStack.EMPTY);
-        p.setItemSlot(EquipmentSlot.HEAD, ItemStack.EMPTY);
-        p.setItemSlot(EquipmentSlot.OFFHAND, ItemStack.EMPTY);
-        p.clearFire();
-        p.removeAllEffects();
-        p.setAirSupply(p.getMaxAirSupply());
-        p.fallDistance = 0.0f;
-        p.setDeltaMovement(Vec3.ZERO);
-        p.invulnerableTime = 0;
-        p.hurtTime = 0;
-        p.hurtMarked = false;
-        p.getInventory().setChanged();
+        AgentModeSharedLogic.applyEpisodeReset(new AgentModeSharedLogic.EpisodeResetAdapter() {
+            @Override
+            public void ensureAlive() {
+                if (!p.isAlive()) {
+                    respawnBot(bot, level);
+                }
+            }
+
+            @Override
+            public void teleportToSpawn() {
+                BlockPos spawn = level.getSharedSpawnPos();
+                p.teleportTo(spawn.getX() + 0.5, spawn.getY(), spawn.getZ() + 0.5);
+            }
+
+            @Override
+            public void restoreVitals() {
+                p.setHealth(p.getMaxHealth());
+                p.getFoodData().setFoodLevel(20);
+                p.getFoodData().setSaturation(5.0f);
+                p.invulnerableTime = 0;
+                p.hurtTime = 0;
+                p.hurtMarked = false;
+            }
+
+            @Override
+            public void clearInventory() {
+                p.getInventory().clearContent();
+                p.getInventory().selected = 0;
+                p.getInventory().setChanged();
+            }
+
+            @Override
+            public void clearEquipment() {
+                p.setItemSlot(EquipmentSlot.FEET, ItemStack.EMPTY);
+                p.setItemSlot(EquipmentSlot.LEGS, ItemStack.EMPTY);
+                p.setItemSlot(EquipmentSlot.CHEST, ItemStack.EMPTY);
+                p.setItemSlot(EquipmentSlot.HEAD, ItemStack.EMPTY);
+                p.setItemSlot(EquipmentSlot.OFFHAND, ItemStack.EMPTY);
+            }
+
+            @Override
+            public void clearFire() {
+                p.clearFire();
+            }
+
+            @Override
+            public void clearEffects() {
+                p.removeAllEffects();
+            }
+
+            @Override
+            public void resetAir() {
+                p.setAirSupply(p.getMaxAirSupply());
+            }
+
+            @Override
+            public void resetFallDistance() {
+                p.fallDistance = 0.0f;
+            }
+
+            @Override
+            public void clearVelocity() {
+                p.setDeltaMovement(Vec3.ZERO);
+            }
+
+            @Override
+            public void resetWorldState() {
+                level.setDayTime(0);
+                level.setWeatherParameters(6000, 0, false, false);
+            }
+
+            @Override
+            public void markEpisodeStarted() {
+                BotMod inst = BotMod.getInstance();
+                if (inst != null) {
+                    inst.markEpisodeStarted(level.getGameTime());
+                }
+            }
+        });
 
         bot.forceStateSync = true;
         sendBotState(level, bot);
-
-        BotMod inst = BotMod.getInstance();
-        if (inst != null) {
-            inst.markEpisodeStarted(level.getGameTime());
-        }
 
         System.out.println("[AI-BOT] Server-bot episode reset. reason=" + reason
                 + " pos=" + p.position()
@@ -1303,109 +1357,35 @@ public class FakeBotManager {
     private void applyPayloadToBot(JsonObject payload, FakeBot bot) {
         if (payload == null || bot == null)
             return;
+        AgentModeSharedLogic.DecodedAction action =
+                AgentModeSharedLogic.decodeActionPayload(payload, 15.0f, 10.0f, 3);
 
-        // -----------------------------
-        // LOOK (deltas) accept multiple key spellings
-        // -----------------------------
-        if (payload.has("look") && payload.get("look").isJsonObject()) {
-            JsonObject look = payload.getAsJsonObject("look");
-
-            float dyaw = 0f;
-            float dpitch = 0f;
-
-            if (look.has("dYaw"))
-                dyaw = look.get("dYaw").getAsFloat();
-            else if (look.has("yaw_delta"))
-                dyaw = look.get("yaw_delta").getAsFloat();
-            else if (look.has("dyaw"))
-                dyaw = look.get("dyaw").getAsFloat();
-
-            if (look.has("dPitch"))
-                dpitch = look.get("dPitch").getAsFloat();
-            else if (look.has("pitch_delta"))
-                dpitch = look.get("pitch_delta").getAsFloat();
-            else if (look.has("dpitch"))
-                dpitch = look.get("dpitch").getAsFloat();
-
-            bot.ctrlYawDelta = dyaw;
-            bot.ctrlPitchDelta = dpitch;
-
-            bot.ctrlHoldTicks = Math.max(bot.ctrlHoldTicks, 3);
+        bot.ctrlYawDelta = action.yawDelta();
+        bot.ctrlPitchDelta = action.pitchDelta();
+        bot.ctrlForward = action.forward();
+        bot.ctrlStrafe = action.strafe();
+        bot.ctrlJump = action.jump();
+        bot.ctrlSprint = action.sprint();
+        bot.ctrlSneak = action.sneak();
+        if (action.refreshHold()) {
+            bot.ctrlHoldTicks = Math.max(bot.ctrlHoldTicks, action.holdTicks());
         }
 
-        // -----------------------------
-        // MOVE (forward/strafe + optionally jump/sprint/sneak inside move)
-        // -----------------------------
-        if (payload.has("move") && payload.get("move").isJsonObject()) {
-            JsonObject move = payload.getAsJsonObject("move");
+        bot.selectSlot = action.selectSlot();
+        bot.attack = action.attack();
+        bot.use = action.use();
+        bot.equipArmorFromSlot = action.equipArmorFromSlot();
+        bot.swapMainhandFromSlot = action.swapSelectedFromSlot();
+        bot.dropFromSlot = action.dropFromSlot();
+        bot.dropCount = action.dropCount();
 
-            bot.ctrlForward = move.has("forward") ? (float) move.get("forward").getAsDouble() : 0f;
-            bot.ctrlStrafe = move.has("strafe") ? (float) move.get("strafe").getAsDouble() : 0f;
-
-            // Some senders embed these inside move
-            if (move.has("jump"))
-                bot.ctrlJump = move.get("jump").getAsBoolean();
-            if (move.has("sprint"))
-                bot.ctrlSprint = move.get("sprint").getAsBoolean();
-            if (move.has("sneak"))
-                bot.ctrlSneak = move.get("sneak").getAsBoolean();
-
-            bot.ctrlHoldTicks = Math.max(bot.ctrlHoldTicks, 3);
-
-            if (DEBUG_MOVE) {
-                System.out.println("[PAYLOAD MOVE] keys=" + payload.keySet()
-                        + " f=" + bot.ctrlForward + " s=" + bot.ctrlStrafe
-                        + " jump=" + bot.ctrlJump + " sprint=" + bot.ctrlSprint + " sneak=" + bot.ctrlSneak);
-            }
-        } else {
-            if (DEBUG_MOVE)
-                System.out.println("[PAYLOAD NO-MOVE] keys=" + payload.keySet());
+        if (DEBUG_MOVE) {
+            System.out.println("[PAYLOAD] keys=" + payload.keySet()
+                    + " f=" + bot.ctrlForward + " s=" + bot.ctrlStrafe
+                    + " jump=" + bot.ctrlJump + " sprint=" + bot.ctrlSprint + " sneak=" + bot.ctrlSneak
+                    + " look=(" + bot.ctrlYawDelta + "," + bot.ctrlPitchDelta + ")"
+                    + " hold=" + bot.ctrlHoldTicks);
         }
-
-        // -----------------------------
-        // FLAGS also allowed top-level
-        // -----------------------------
-        if (payload.has("jump")) {
-            bot.ctrlJump = payload.get("jump").getAsBoolean();
-            bot.ctrlHoldTicks = Math.max(bot.ctrlHoldTicks, 3);
-        }
-        if (payload.has("sprint")) {
-            bot.ctrlSprint = payload.get("sprint").getAsBoolean();
-            bot.ctrlHoldTicks = Math.max(bot.ctrlHoldTicks, 3);
-        }
-        if (payload.has("sneak")) {
-            bot.ctrlSneak = payload.get("sneak").getAsBoolean();
-            bot.ctrlHoldTicks = Math.max(bot.ctrlHoldTicks, 3);
-        }
-
-        // -----------------------------
-        // HOTBAR + DISCRETE ACTIONS
-        // -----------------------------
-        if (payload.has("select_slot")) {
-            bot.selectSlot = payload.get("select_slot").getAsInt();
-        }
-
-        bot.attack = payload.has("attack") && payload.get("attack").getAsBoolean();
-        bot.use = payload.has("use") && payload.get("use").getAsBoolean();
-
-        // -----------------------------
-        // INVENTORY / EQUIP ACTIONS (one-shot)
-        // -----------------------------
-        if (payload.has("equip_armor_from_slot")) {
-            bot.equipArmorFromSlot = payload.get("equip_armor_from_slot").getAsInt();
-        }
-
-        if (payload.has("swap_selected_from_slot")) {
-            bot.swapMainhandFromSlot = payload.get("swap_selected_from_slot").getAsInt();
-        }
-
-        if (payload.has("drop_slot") && payload.get("drop_slot").isJsonObject()) {
-            JsonObject d = payload.getAsJsonObject("drop_slot");
-            bot.dropFromSlot = d.has("slot") ? d.get("slot").getAsInt() : -1;
-            bot.dropCount = d.has("count") ? d.get("count").getAsInt() : 1;
-        }
-
-        
     }
 
     private void applyMovementTravel(FakeBot bot) {
@@ -1595,6 +1575,10 @@ public class FakeBotManager {
     }
 
     private void doServerAttack(ServerLevel level, ServerPlayer p, FakeBot bot) {
+        if (p.getAttackStrengthScale(0.0f) < 0.9f) {
+            return;
+        }
+
         Vec3 from = p.getEyePosition();
         Vec3 look = p.getLookAngle();
         double maxDist = 4.5;
@@ -1671,20 +1655,6 @@ public class FakeBotManager {
             p.jumpFromGround();
         }
 
-        // OPTIONAL "autojump" for 1-block obstacles:
-        // If we're moving, grounded, and hit a wall, do a jump to clear typical 1-block steps.
-        // This mirrors human behavior but changes the action semantics.
-        boolean wantsMove = (Math.abs(bot.forward) > 0.2f) || (Math.abs(bot.strafe) > 0.2f);
-        if (!bot.jump
-                && wantsMove
-                && p.onGround()
-                && p.horizontalCollision
-                && !p.isInWaterOrBubble()
-                && !p.isInLava()
-                && !p.isPassenger()) {
-
-            p.jumpFromGround();
-        }
     }
 
     private void collectNearbyItems(FakeBot bot, ServerLevel level) {
@@ -1758,8 +1728,8 @@ public class FakeBotManager {
         pendingActionJson.clear();
     }
 
-    private com.google.gson.JsonArray buildRayArray(ServerLevel level, ServerPlayer p, int count, double maxDist) {
-        com.google.gson.JsonArray rays = new com.google.gson.JsonArray();
+    private List<AgentModeSharedLogic.RaySample> buildRayArray(ServerLevel level, ServerPlayer p, int count, double maxDist) {
+        List<AgentModeSharedLogic.RaySample> rays = new java.util.ArrayList<>();
         if (level == null || p == null) return rays;
 
         for (int i = 0; i < count; i++) {
@@ -1778,30 +1748,18 @@ public class FakeBotManager {
 
             boolean hitBlock = hit.getType() != HitResult.Type.MISS;
 
-            JsonObject ray = new JsonObject();
-            ray.addProperty("hit", hitBlock);
-            ray.addProperty("dist", hitBlock ? from.distanceTo(hit.getLocation()) : maxDist);
-            ray.addProperty("angle_deg", angle);
-            rays.add(ray);
+            rays.add(new AgentModeSharedLogic.RaySample(
+                    hitBlock,
+                    hitBlock ? from.distanceTo(hit.getLocation()) : maxDist,
+                    angle
+            ));
         }
 
         return rays;
     }
 
-    private static boolean isFrontClear(com.google.gson.JsonArray rays, double threshold) {
-        if (rays == null || rays.size() == 0) return true;
-        try {
-            JsonObject ray0 = rays.get(0).getAsJsonObject();
-            boolean hit = ray0.get("hit").getAsBoolean();
-            double dist = ray0.get("dist").getAsDouble();
-            return !(hit && dist < threshold);
-        } catch (Exception ignored) {
-            return true;
-        }
-    }
-
-    private com.google.gson.JsonArray buildNearbyEntities(ServerLevel level, ServerPlayer p, double radius, int cap) {
-        com.google.gson.JsonArray entities = new com.google.gson.JsonArray();
+    private List<AgentModeSharedLogic.NearbyEntitySample> buildNearbyEntities(ServerLevel level, ServerPlayer p, double radius, int cap) {
+        List<AgentModeSharedLogic.NearbyEntitySample> entities = new java.util.ArrayList<>();
         if (level == null || p == null) return entities;
 
         AABB box = p.getBoundingBox().inflate(radius, radius * 0.5, radius);
@@ -1812,24 +1770,23 @@ public class FakeBotManager {
         for (Entity e : nearby) {
             if (count >= cap) break;
 
-            JsonObject entity = new JsonObject();
-            entity.addProperty("id", e.getId());
-
             String typeId = "unknown";
             try {
                 typeId = BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).toString();
             } catch (Exception ignored) {
             }
-            entity.addProperty("type", typeId);
-            entity.addProperty("dist", Math.sqrt(e.distanceToSqr(p)));
 
             boolean los = false;
             try {
                 los = p.hasLineOfSight(e);
             } catch (Throwable ignored) {
             }
-            entity.addProperty("los", los);
-            entities.add(entity);
+            entities.add(new AgentModeSharedLogic.NearbyEntitySample(
+                    e.getId(),
+                    typeId,
+                    Math.sqrt(e.distanceToSqr(p)),
+                    los
+            ));
             count++;
         }
 
@@ -1837,89 +1794,53 @@ public class FakeBotManager {
     }
 
     private JsonObject buildObservationPayload(ServerLevel level, ServerPlayer p, FakeBot bot) {
-        JsonObject payload = new JsonObject();
-
-        // ---- pose (required)
-        JsonObject pose = new JsonObject();
-        pose.addProperty("x", p.getX());
-        pose.addProperty("y", p.getY());
-        pose.addProperty("z", p.getZ());
-        pose.addProperty("yaw", p.getYRot());
-        pose.addProperty("pitch", p.getXRot());
-        payload.add("pose", pose);
-
-        // ---- rays (required)
-        com.google.gson.JsonArray rays = buildRayArray(level, p, 16, 5.0);
-        payload.add("rays", rays);
-
-        // ---- front_clear (required)
-        payload.addProperty("front_clear", isFrontClear(rays, 1.25));
-
-        // ---- world (required)
-        JsonObject world = new JsonObject();
-        world.addProperty("time_of_day", (double) (level.getDayTime() % 24000L));
-
-        String weather = level.isThundering() ? "thunder" : (level.isRaining() ? "rain" : "clear");
-        world.addProperty("weather", weather);
-
-        String biome = level.getBiome(p.blockPosition())
-                .unwrapKey()
-                .map(k -> k.location().toString())
-                .orElse("unknown");
-        world.addProperty("biome", biome);
-
-        payload.add("world", world);
-
-        // ---- inventory (required)
-        JsonObject inv = new JsonObject();
-        inv.addProperty("selected_slot", p.getInventory().selected);
-
-        com.google.gson.JsonArray hotbar = new com.google.gson.JsonArray();
+        List<AgentModeSharedLogic.RaySample> rays = buildRayArray(level, p, 16, 5.0);
+        List<AgentModeSharedLogic.HotbarSlot> hotbar = new java.util.ArrayList<>();
         for (int i = 0; i < 9; i++) {
             ItemStack stack = p.getInventory().getItem(i);
-            String id = stack.isEmpty()
-                    ? "minecraft:air"
-                    : BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
-
-            JsonObject slot = new JsonObject();
-            slot.addProperty("id", id);
-            slot.addProperty("count", stack.isEmpty() ? 0 : stack.getCount());
-            hotbar.add(slot);
-        }
-        inv.add("hotbar", hotbar);
-        payload.add("inventory", inv);
-
-        // ---- collision (required)
-        JsonObject collision = new JsonObject();
-        collision.addProperty("is_grounded", p.onGround());
-
-        // If these fields are accessible in your mappings, use them. If not, fallback
-        // false.
-        boolean isColliding = false;
-        try {
-            isColliding = p.horizontalCollision || p.verticalCollision;
-        } catch (Throwable ignored) {
+            String id = stack.isEmpty() ? "minecraft:air" : BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+            hotbar.add(new AgentModeSharedLogic.HotbarSlot(id, stack.isEmpty() ? 0 : stack.getCount()));
         }
 
-        collision.addProperty("is_colliding", isColliding);
-
-        boolean noProgress;
-        if (bot != null && bot.stepActive) {
-            double dx = p.getX() - bot.stepStartX;
-            double dy = p.getY() - bot.stepStartY;
-            double dz = p.getZ() - bot.stepStartZ;
-            noProgress = (dx * dx + dy * dy + dz * dz) < 1.0e-4;
-        } else {
-            Vec3 vel = p.getDeltaMovement();
-            noProgress = (vel.x * vel.x + vel.z * vel.z) < 4.0e-4;
-        }
-        collision.addProperty("no_progress", noProgress);
-
-        payload.add("collision", collision);
-
-        payload.add("entities", buildNearbyEntities(level, p, 8.0, 8));
-
-        return payload;
+        return AgentModeSharedLogic.buildObservationPayload(new AgentModeSharedLogic.ObservationAdapter() {
+            @Override public double x() { return p.getX(); }
+            @Override public double y() { return p.getY(); }
+            @Override public double z() { return p.getZ(); }
+            @Override public float yaw() { return p.getYRot(); }
+            @Override public float pitch() { return p.getXRot(); }
+            @Override public List<AgentModeSharedLogic.RaySample> rays() { return rays; }
+            @Override public double timeOfDay() { return (double) (level.getDayTime() % 24000L); }
+            @Override public String weather() { return level.isThundering() ? "thunder" : (level.isRaining() ? "rain" : "clear"); }
+            @Override public String biome() {
+                return level.getBiome(p.blockPosition())
+                        .unwrapKey()
+                        .map(k -> k.location().toString())
+                        .orElse("unknown");
+            }
+            @Override public int selectedSlot() { return p.getInventory().selected; }
+            @Override public List<AgentModeSharedLogic.HotbarSlot> hotbar() { return hotbar; }
+            @Override public boolean isGrounded() { return p.onGround(); }
+            @Override public boolean isColliding() {
+                try {
+                    return p.horizontalCollision || p.verticalCollision;
+                } catch (Throwable ignored) {
+                    return false;
+                }
+            }
+            @Override public boolean noProgress() {
+                if (bot != null && bot.stepActive) {
+                    double dx = p.getX() - bot.stepStartX;
+                    double dy = p.getY() - bot.stepStartY;
+                    double dz = p.getZ() - bot.stepStartZ;
+                    return (dx * dx + dy * dy + dz * dz) < 1.0e-4;
+                }
+                Vec3 vel = p.getDeltaMovement();
+                return (vel.x * vel.x + vel.z * vel.z) < 4.0e-4;
+            }
+            @Override public List<AgentModeSharedLogic.NearbyEntitySample> nearbyEntities() {
+                return buildNearbyEntities(level, p, 8.0, 8);
+            }
+        });
     }
 
 }
