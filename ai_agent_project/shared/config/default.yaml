@@ -9,8 +9,9 @@ bridge:
   server:
     host: 0.0.0.0
     port: 8765
-    ping_interval_s: 5
-    ping_timeout_s: 5
+    # Keepalive: 5s is too aggressive under normal lag/GC and causes disconnect loops.
+    ping_interval_s: 20
+    ping_timeout_s: 120
     max_msg_bytes: 1048576
 
   streaming:
@@ -19,7 +20,10 @@ bridge:
 
   queues:
     obs_max: 128
-    act_max: 64
+    # Action queue was saturating at 64 while the policy loop blocked on put → obs backlog + multi‑second staleness.
+    act_max: 256
+    # PolicyWorker latency_stats uses only the last N samples so metrics recover after a spike (not whole deque).
+    latency_stats_recent_samples: 48
     obs_drop_policy: oldest
     act_full_behavior: block
     coalesce:
@@ -60,7 +64,8 @@ bridge:
 
 runtime:
   # ---- Control-plane (handshake/actions) ----
-  control_mode: SERVER_BOT # SERVER_BOT | PLAYER
+  # PLAYER: client WebSocket (integrated SP / packaged bridge + CurseForge). SERVER_BOT: dedicated server bridge.
+  control_mode: PLAYER
   hello_timeout_s: 2.0
   discrete_action_timeout_s: 5.0 # wait_for_result=True timeouts (use/select_slot/attack)
   continuous_resend_interval_s: 0.05
@@ -74,7 +79,12 @@ runtime:
     type: "online_dqn"
     tick_hz: 20
     budget_ms: 80
-    max_actions_per_tick: 3
+    # Drain the act queue faster so PolicyWorker does not block on put when the game/WS is briefly slow.
+    max_actions_per_tick: 12
+    # Run a gradient / target update every N env transitions (1 = old behavior). Higher cuts CPU a lot.
+    train_every_n: 2
+    # Write online_dqn_episode_state.json + step_history.jsonl every N steps (always on episode done).
+    log_disk_every_n: 5
     max_ray_dist: 20
     success_radius: 1.5
     stuck_speed_thresh: 0.02

@@ -53,6 +53,11 @@ public class ForgeWebSocketClient extends WebSocketClient {
 
     public static void setControlMode(ControlMode mode) {
         if (mode == null) mode = ControlMode.PLAYER;
+        ControlMode previous = controlMode;
+        if (previous != mode) {
+            System.out.println("[AI-BOT][DEBUG][ControlMode] change " + previous + " -> " + mode
+                    + " | thread=" + Thread.currentThread().getName());
+        }
         controlMode = mode;
 
         Minecraft mc = Minecraft.getInstance();
@@ -182,8 +187,10 @@ public class ForgeWebSocketClient extends WebSocketClient {
         hello.addProperty("proto", "1");
         hello.addProperty("kind", "hello");
         hello.addProperty("role", BridgeConstants.ROLE_CLIENT);
-        hello.addProperty("control_mode", controlMode == ControlMode.PLAYER ? BridgeConstants.MODE_PLAYER : BridgeConstants.MODE_SERVER_BOT);
+        String modeStr = controlMode == ControlMode.PLAYER ? BridgeConstants.MODE_PLAYER : BridgeConstants.MODE_SERVER_BOT;
+        hello.addProperty("control_mode", modeStr);
         send(hello.toString());
+        System.out.println("[AI-BOT][DEBUG][WS] client hello sent role=client control_mode=" + modeStr);
 
         emitBridgeHealth("info", "connected");
         sendBridgeReady();
@@ -637,11 +644,17 @@ public class ForgeWebSocketClient extends WebSocketClient {
      */
     public static void sendConfigUpdate(JsonObject payload) {
         ForgeWebSocketClient c = currentInstance;
-        if (c == null || !c.isOpen() || payload == null) return;
+        if (c == null || !c.isOpen() || payload == null) {
+            System.out.println("[AI-BOT][DEBUG][WS] sendConfigUpdate SKIP: clientOpen=" + (c != null && c.isOpen())
+                    + " payloadNull=" + (payload == null));
+            return;
+        }
         JsonObject msg = new JsonObject();
         msg.addProperty("proto", "1");
         msg.addProperty("kind", "config_update");
         msg.add("payload", payload);
+        String cm = payload.has("control_mode") ? payload.get("control_mode").getAsString() : "?";
+        System.out.println("[AI-BOT][DEBUG][WS] sendConfigUpdate ok control_mode=" + cm);
         c.send(BotMod.GSON.toJson(msg));
     }
 }

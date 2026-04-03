@@ -136,8 +136,15 @@ async def PolicyWorker(
         return any(k in p for k in coalesce_kinds)
 
     latestObs: Optional[dict] = None
+    # Ring buffer for latency samples; stats use only the tail so a backlog spike
+    # does not keep p50/p90 "stuck" for minutes once the system recovers.
     latSamplesMs = deque(maxlen=200)
     lastStatsTs = time.time()
+    stale_warn_last_ts = 0.0
+    lat_stats_recent_n = max(
+        5,
+        int(queues_cfg.get("latency_stats_recent_samples", 48) or 48),
+    )
 
     while True:
         now = time.time()
@@ -151,6 +158,23 @@ async def PolicyWorker(
             continue
 
         obsTs = float(latestObs.get("timestamp", time.time()))
+        age_ms_pre = max(0.0, (time.time() - obsTs) * 1000.0)
+        if (
+            emit_event
+            and age_ms_pre >= 5000.0
+            and (time.time() - stale_warn_last_ts) >= 10.0
+        ):
+            stale_warn_last_ts = time.time()
+            await emit_event(
+                "bridge_health",
+                {
+                    "level": "warn",
+                    "detail": (
+                        f"stale_observation age_ms={age_ms_pre:.0f} "
+                        f"obs_q={obs_q.qsize()} act_q={act_q.qsize()}"
+                    ),
+                },
+            )
 
         try:
             if policy_step is None:
@@ -285,10 +309,15 @@ async def PolicyWorker(
         latSamplesMs.append(latMs)
 
         if emit_event and (time.time() - lastStatsTs >= 2.0) and len(latSamplesMs) >= 5:
-            samples = sorted(latSamplesMs)
+            buf = list(latSamplesMs)
+            tail = buf[-lat_stats_recent_n:]
+            samples = sorted(tail)
             p50 = statistics.median(samples)
             p90 = Percentile(samples, 0.90)
-            detail = f"latency_stats p50_ms={p50:.1f} p90_ms={p90:.1f} hz={tick_hz:.0f}"
+            detail = (
+                f"latency_stats p50_ms={p50:.1f} p90_ms={p90:.1f} hz={tick_hz:.0f}"
+                f" window={len(samples)}"
+            )
             await emit_event("bridge_health", {"level": "info", "detail": detail})
             if on_latency_stats is not None:
                 try:

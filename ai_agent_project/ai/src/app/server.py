@@ -1,4 +1,5 @@
 import asyncio
+import atexit
 import os
 import sys
 import time
@@ -9,6 +10,14 @@ import traceback
 from typing import Any, Dict, Optional
 import uuid
 
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    _import_root = pathlib.Path(sys._MEIPASS)
+else:
+    _import_root = pathlib.Path(__file__).resolve().parents[3]
+_ir = str(_import_root)
+if _ir not in sys.path:
+    sys.path.insert(0, _ir)
+
 from websockets.server import serve, WebSocketServerProtocol
 from websockets.exceptions import (
     ConnectionClosed,
@@ -17,9 +26,8 @@ from websockets.exceptions import (
 )
 from jsonschema import validate, ValidationError
 
-# from ai/src/app to ai
-sys.path.append(str(pathlib.Path(__file__).resolve().parents[3]))
 from ai.src.utils.config import LoadConfig, DeepMerge, LoadYaml, SaveYaml
+from ai.src.utils.runtime_paths import data_dir, shared_dir
 from ai.src.utils.logging import SetupLogging, WriteMetric
 
 from ai.src.policy.registry import build_policy_from_config
@@ -49,14 +57,10 @@ except Exception:
 
 
 # ---------- Paths ----------
-server_root = pathlib.Path(__file__).resolve()
-project_root = server_root.parents[3]  # ai_agent_project
-
-sharedDir = project_root / "shared"
+sharedDir = shared_dir()
 schemasDir = sharedDir / "schemas"
 
-dataDir = sharedDir / "Data"
-dataDir.mkdir(parents=True, exist_ok=True)
+dataDir = data_dir()
 
 OBS = (schemasDir / "observation.schema.json").read_text("utf-8")
 ACT = (schemasDir / "action.schema.json").read_text("utf-8")
@@ -72,8 +76,10 @@ ROLE_CLIENT = "client"
 ROLE_SERVER = "server"
 MODE_PLAYER = "PLAYER"
 MODE_SERVER_BOT = "SERVER_BOT"
-# PLAYER: client or server (integrated SP = client only). SERVER_BOT: server only (dedicated server connects; client does not).
-ROLES_BY_MODE = {MODE_PLAYER: (ROLE_CLIENT, ROLE_SERVER), MODE_SERVER_BOT: (ROLE_SERVER,)}
+# Connection role expectations by mode.
+# - PLAYER: the *client* bridge controls the local player.
+# - SERVER_BOT: the *server* bridge controls a server-side bot.
+ROLES_BY_MODE = {MODE_PLAYER: (ROLE_CLIENT,), MODE_SERVER_BOT: (ROLE_SERVER,)}
 
 # ---------- Episode persistence ----------
 EPISODE_SAVE_PATH = dataDir / "episode_state.json"
@@ -84,7 +90,57 @@ RUNTIME_OVERLAY_PATH = dataDir / "runtime_overrides.yaml"
 
 # ---------- Metrics sink path (resolved at startup relative to dataDir so logs go to a known location) ----------
 RESOLVED_METRICS_SINK_PATH: Optional[pathlib.Path] = None
+
+# Each active WebSocket that called start_workers() runs a full PolicyWorker + DQN loop; >1 hammers CPU and fills queues.
+_active_policy_bridge_sessions: int = 0
 connection_count = 0
+
+# Policies active per websocket handler. If the process dies on Ctrl+C before Handle.finally
+# completes, we still flush checkpoints from Main.finally / atexit.
+_registered_checkpoint_policies: Dict[int, Any] = {}
+
+
+def _register_checkpoint_policy(policy: Any) -> None:
+    if policy is not None and hasattr(policy, "agent") and hasattr(policy, "ckpt_latest_path"):
+        _registered_checkpoint_policies[id(policy)] = policy
+
+
+def _unregister_checkpoint_policy(policy: Any) -> None:
+    if policy is not None:
+        _registered_checkpoint_policies.pop(id(policy), None)
+
+
+def _flush_registered_checkpoint_policies(reason: str) -> None:
+    log = stdlog.getLogger("bridge.server")
+    for policy in list(_registered_checkpoint_policies.values()):
+        try:
+            if hasattr(policy, "shutdown"):
+                with contextlib.suppress(Exception):
+                    policy.shutdown(reason)
+            if hasattr(policy, "agent") and hasattr(policy, "ckpt_latest_path"):
+                policy.agent.Save(policy.ckpt_latest_path)
+                log.info(
+                    "checkpoint saved on process shutdown",
+                    extra={"reason": reason, "path": str(policy.ckpt_latest_path)},
+                )
+        except Exception as e:
+            log.warning(
+                "checkpoint save on process shutdown failed",
+                extra={"reason": reason, "error": str(e)},
+            )
+    _registered_checkpoint_policies.clear()
+
+
+def _atexit_flush_policies() -> None:
+    if not _registered_checkpoint_policies:
+        return
+    try:
+        _flush_registered_checkpoint_policies("atexit")
+    except Exception:
+        pass
+
+
+atexit.register(_atexit_flush_policies)
 
 
 def resolve_metrics_sink_path(cfg: Any, base_dir: pathlib.Path) -> pathlib.Path:
@@ -353,6 +409,78 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
     stopEvt = asyncio.Event()
     tasks: list[asyncio.Task] = []
     started = False
+    config_only = False
+    ws_role: Optional[str] = None
+    # Provide these closures for both normal connections and config-only upgrades.
+    async def emit_event(kind: str, payload: dict) -> None:
+        await SendEvents(ws, kind, payload)
+
+    def on_latency_stats(p50_ms: float, p90_ms: float, hz: float) -> None:
+        actState["last_latency_p50_ms"] = p50_ms
+        actState["last_latency_p90_ms"] = p90_ms
+        actState["last_latency_hz"] = hz
+        if RESOLVED_METRICS_SINK_PATH is not None:
+            try:
+                WriteMetric(
+                    RESOLVED_METRICS_SINK_PATH,
+                    {"type": "tick_latency", "p50_ms": p50_ms, "p90_ms": p90_ms, "hz": hz},
+                )
+            except Exception:
+                pass
+
+    def start_workers() -> None:
+        """Start background loops once per accepted active connection."""
+        nonlocal started, policy
+        global _active_policy_bridge_sessions
+        if started:
+            return
+        started = True
+        _active_policy_bridge_sessions += 1
+        if _active_policy_bridge_sessions > 1:
+            log.warning(
+                "multiple WebSocket sessions each run a full online DQN policy loop on this process — "
+                "expect high CPU, full obs/act queues, and multi-second tick latency. "
+                "Use a single game peer (only integrated client XOR dedicated server) on this bridge port.",
+                extra={
+                    "active_sessions": _active_policy_bridge_sessions,
+                    "ws_id": id(ws),
+                },
+            )
+
+        policy = build_policy_from_config(current_runtime)
+        if hasattr(policy, "apply_runtime_config"):
+            policy.apply_runtime_config(current_runtime)
+        _register_checkpoint_policy(policy)
+
+        log.info(
+            "policy_loaded",
+            extra={
+                "ws_id": id(ws),
+                "policy_type": type(policy).__name__,
+                "has_act": hasattr(policy, "act"),
+                "has_step": hasattr(policy, "step"),
+                "callable": callable(policy),
+            },
+        )
+
+        tasks.append(asyncio.create_task(MetricsLoop(stopEvt, cfg, obsState, obsQueue, actState, actQueue)))
+        tasks.append(asyncio.create_task(HeartBeatLoop(ws, stopEvt)))
+        tasks.append(asyncio.create_task(ActionSenderLoop(stopEvt)))
+        tasks.append(
+            asyncio.create_task(
+                PolicyWorker(
+                    obs_q=obsQueue,
+                    act_q=actQueue,
+                    runtime_cfg=current_runtime,
+                    queues_cfg=queuesCfg,
+                    act_schema=ACT,
+                    log=stdlog.getLogger("bridge.policy"),
+                    emit_event=emit_event,
+                    policy_step=(policy.act if hasattr(policy, "act") else policy),
+                    on_latency_stats=on_latency_stats,
+                )
+            )
+        )
 
     async def hello_guard():
         try:
@@ -634,105 +762,45 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
                 ws_role = msg.get("role")
                 log.info("ws hello", extra={"ws_id": id(ws), "role": ws_role})
 
-                control_mode_raw = str(current_runtime.get("control_mode", MODE_SERVER_BOT)).strip()
-                control_mode = control_mode_raw.replace("-", "_").upper()
+                # Control mode is owned by runtime config + hot-reload overlay only.
+                # We DO NOT accept control_mode changes via hello; that would allow a peer to
+                # change the bridge mode just by reconnecting.
+                control_mode_raw = str(current_runtime.get("control_mode", MODE_PLAYER)).strip()
+                effective_mode = control_mode_raw.replace("-", "_").upper()
 
-                allowed_roles = ROLES_BY_MODE.get(control_mode, ())
-                if control_mode not in (MODE_PLAYER, MODE_SERVER_BOT):
+                allowed_roles = ROLES_BY_MODE.get(effective_mode, ())
+                if effective_mode not in (MODE_PLAYER, MODE_SERVER_BOT):
                     allowed_roles = (ROLE_CLIENT, ROLE_SERVER)
+
+                # If role isn't allowed under current mode, we normally reject immediately.
+                # However, to support switching modes strictly via hot-reload, we allow a
+                # "config-only" connection: it may connect only to send config_update and
+                # will be closed once the mode is incompatible.
                 if allowed_roles and ws_role not in allowed_roles:
+                    config_only = True
                     log.warning(
-                        "rejecting ws: control_mode=%s expects role in %s, got role=%s",
-                        control_mode,
+                        "ws connected in config-only mode: control_mode=%s expects role in %s, got role=%s",
+                        effective_mode,
                         allowed_roles,
                         ws_role,
-                        extra={"ws_id": id(ws), "role": ws_role, "control_mode": control_mode},
+                        extra={"ws_id": id(ws), "role": ws_role, "control_mode": effective_mode},
                     )
-                    await ws.close(code=1008, reason="wrong_role")
-                    return
 
                 # Mark the socket ready as soon as its hello is accepted. Policy loading and
                 # runtime overlay persistence can take long enough to trip the hello watchdog.
                 ws_ready.set()
 
-                # Apply control_mode from hello only after role validation, so a client cannot
-                # self-authorize by changing the global mode during its own handshake.
-                if ws_role in (ROLE_CLIENT, ROLE_SERVER) and "control_mode" in msg:
-                    client_mode = str(msg.get("control_mode", "")).strip()
-                    if client_mode:
-                        overlay_update = {"control_mode": client_mode}
-                        new_overlay = DeepMerge(dict(runtime_overlay), overlay_update)
-                        runtime_overlay.clear()
-                        runtime_overlay.update(new_overlay)
-                        refresh_current_runtime()
-                        save_runtime_overlay(runtime_overlay)
-                        log.info(
-                            "control_mode from client hello",
-                            extra={"ws_id": id(ws), "control_mode": client_mode},
-                        )
-
-                if not started:
-                    started = True
-
-                    # Use the refreshed runtime after the accepted hello overlay is applied.
-                    policy = build_policy_from_config(current_runtime)
-                    if hasattr(policy, "apply_runtime_config"):
-                        policy.apply_runtime_config(current_runtime)
-
-                    log.info(
-                        "policy_loaded",
-                        extra={
-                            "ws_id": id(ws),
-                            "policy_type": type(policy).__name__,
-                            "has_act": hasattr(policy, "act"),
-                            "has_step": hasattr(policy, "step"),
-                            "callable": callable(policy),
-                        },
-                    )
-
-                    async def emit_event(kind: str, payload: dict) -> None:
-                        await SendEvents(ws, kind, payload)
-
-                    # Start background tasks AFTER hello(role=server)
-                    tasks.append(asyncio.create_task(MetricsLoop(stopEvt, cfg, obsState, obsQueue, actState, actQueue)))
-                    tasks.append(asyncio.create_task(HeartBeatLoop(ws, stopEvt)))
-                    tasks.append(asyncio.create_task(ActionSenderLoop(stopEvt)))
-
-                    def on_latency_stats(p50_ms: float, p90_ms: float, hz: float) -> None:
-                        actState["last_latency_p50_ms"] = p50_ms
-                        actState["last_latency_p90_ms"] = p90_ms
-                        actState["last_latency_hz"] = hz
-                        if RESOLVED_METRICS_SINK_PATH is not None:
-                            try:
-                                WriteMetric(
-                                    RESOLVED_METRICS_SINK_PATH,
-                                    {"type": "tick_latency", "p50_ms": p50_ms, "p90_ms": p90_ms, "hz": hz},
-                                )
-                            except Exception:
-                                pass
-
-                    # RL worker (policy is guaranteed non-None here)
-                    tasks.append(
-                        asyncio.create_task(
-                            PolicyWorker(
-                                obs_q=obsQueue,
-                                act_q=actQueue,
-                                runtime_cfg=current_runtime,
-                                queues_cfg=queuesCfg,
-                                act_schema=ACT,
-                                log=stdlog.getLogger("bridge.policy"),
-                                emit_event=emit_event,
-                                policy_step=(policy.act if hasattr(policy, "act") else policy),
-                                on_latency_stats=on_latency_stats,
-                            )
-                        )
-                    )
+                # Only start the policy/action loops when this connection is allowed for the mode.
+                if not config_only:
+                    start_workers()
 
                 if episode_start_time is None:
                     await start_new_episode(ws, obsQueue, obsState, obs_drop_policy)
                 continue
 
             if kind == "observation":
+                if config_only:
+                    continue
                 try:
                     validate(instance=msg, schema=OBS)
                 except ValidationError as ve:
@@ -743,6 +811,8 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
                 continue
 
             if kind == "action_result":
+                if config_only:
+                    continue
                 # Validate against the unified event schema (EVT) and then
                 # perform minimal sanity checks before resolving the pending future.
                 try:
@@ -793,6 +863,8 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
                 continue
 
             if kind == "episode_end":
+                if config_only:
+                    continue
                 try:
                     validate(instance=msg, schema=EVT)
                 except ValidationError as ve:
@@ -813,6 +885,8 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
                 continue
 
             if kind == "episode_start":
+                if config_only:
+                    continue
                 # Client should not send episode_start; ignore.
                 try:
                     validate(instance=msg, schema=EVT)
@@ -822,6 +896,8 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
                 continue
 
             if kind == "eval_control":
+                if config_only:
+                    continue
                 # Evaluation runner: request start of next episode without sending episode_end.
                 payload = msg.get("payload") or {}
                 if isinstance(payload, dict) and payload.get("action") == "start_episode":
@@ -833,10 +909,40 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
                 # Hot-reload: merge payload into overlay, refresh current_runtime, apply to policy, persist to disk.
                 payload = msg.get("payload")
                 if isinstance(payload, dict):
+                    prev_mode = str(current_runtime.get("control_mode", MODE_PLAYER)).strip().replace("-", "_").upper()
                     new_overlay = DeepMerge(dict(runtime_overlay), dict(payload))
                     runtime_overlay.clear()
                     runtime_overlay.update(new_overlay)
                     refresh_current_runtime()
+                    new_mode = str(current_runtime.get("control_mode", MODE_PLAYER)).strip().replace("-", "_").upper()
+
+                    # If control_mode changed, immediately enforce role allowlist for this connection.
+                    if ws_role in (ROLE_CLIENT, ROLE_SERVER) and new_mode != prev_mode:
+                        allowed_roles = ROLES_BY_MODE.get(new_mode, ())
+                        if new_mode not in (MODE_PLAYER, MODE_SERVER_BOT):
+                            allowed_roles = (ROLE_CLIENT, ROLE_SERVER)
+                        if allowed_roles and ws_role not in allowed_roles:
+                            log.warning(
+                                "closing ws after mode change: control_mode=%s expects role in %s, got role=%s",
+                                new_mode,
+                                allowed_roles,
+                                ws_role,
+                                extra={"ws_id": id(ws), "role": ws_role, "control_mode": new_mode},
+                            )
+                            stopEvt.set()
+                            with contextlib.suppress(Exception):
+                                await ws.close(code=1008, reason="wrong_role")
+                            return
+
+                        # If we were in config-only mode and the new mode now allows this role,
+                        # upgrade to full connection and start workers.
+                        if config_only and (ws_role in allowed_roles):
+                            config_only = False
+                            log.info(
+                                "upgrading ws from config-only to active after mode change",
+                                extra={"ws_id": id(ws), "role": ws_role, "control_mode": new_mode},
+                            )
+                            start_workers()
                     if policy is not None and hasattr(policy, "apply_runtime_config"):
                         try:
                             policy.apply_runtime_config(current_runtime)
@@ -865,6 +971,9 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
 
     finally:
         stopEvt.set()
+        global _active_policy_bridge_sessions
+        if started:
+            _active_policy_bridge_sessions = max(0, _active_policy_bridge_sessions - 1)
 
         if policy is not None and hasattr(policy, "shutdown"):
             try:
@@ -873,12 +982,16 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
                 log.warning("policy shutdown failed", extra={"error": str(e)})
 
         # Save DQN checkpoint on disconnect so latest state is persisted (in addition to periodic saves)
+        disconnect_save_ok = True
         if policy is not None and hasattr(policy, "agent") and hasattr(policy, "ckpt_latest_path"):
             try:
                 policy.agent.Save(policy.ckpt_latest_path)
                 log.info("checkpoint saved on disconnect", extra={"path": policy.ckpt_latest_path})
             except Exception as e:
+                disconnect_save_ok = False
                 log.warning("checkpoint save on disconnect failed", extra={"error": str(e)})
+        if policy is not None and disconnect_save_ok:
+            _unregister_checkpoint_policy(policy)
 
         # Fail pending on any exit path
         for seq, fut in list(pending.items()):
@@ -907,23 +1020,42 @@ async def Main() -> None:
 
     serverCfg = cfg.bridge["server"]
     log = stdlog.getLogger("bridge.server")
+    _rt_cfg = getattr(cfg, "runtime", {}) or {}
+    if not isinstance(_rt_cfg, dict):
+        _rt_cfg = {}
+    _ov0 = load_runtime_overlay()
+    _merged0 = DeepMerge(dict(_rt_cfg), dict(_ov0))
+    _cm0 = str(_merged0.get("control_mode", MODE_PLAYER)).strip().replace("-", "_").upper()
     log.info(
         "starting server",
-        extra={"env": env, "host": serverCfg["host"], "port": serverCfg["port"]},
+        extra={
+            "env": env,
+            "host": serverCfg["host"],
+            "port": serverCfg["port"],
+            "frozen": bool(getattr(sys, "frozen", False)),
+            "data_dir": str(dataDir),
+            "runtime_overlay_path": str(RUNTIME_OVERLAY_PATH),
+            "effective_control_mode": _cm0,
+        },
     )
 
     async def handler(ws: WebSocketServerProtocol):
         return await Handle(ws, cfg)
 
-    async with serve(
-        handler,
-        serverCfg["host"],
-        serverCfg["port"],
-        ping_interval=serverCfg.get("ping_interval_s", 5),
-        ping_timeout=serverCfg.get("ping_timeout_s", 5),
-        max_size=serverCfg.get("max_msg_bytes", 1048576),
-    ):
-        await asyncio.Future()
+    try:
+        async with serve(
+            handler,
+            serverCfg["host"],
+            serverCfg["port"],
+            # Defaults were too aggressive (5s) and caused frequent disconnects under load/GC/lag.
+            ping_interval=serverCfg.get("ping_interval_s", 20),
+            ping_timeout=serverCfg.get("ping_timeout_s", 120),
+            max_size=serverCfg.get("max_msg_bytes", 1048576),
+        ):
+            await asyncio.Future()
+    finally:
+        # Ctrl+C / process exit can skip per-connection Handle.finally; flush any registered policy.
+        _flush_registered_checkpoint_policies("main_exit")
 
 
 if __name__ == "__main__":
@@ -931,3 +1063,4 @@ if __name__ == "__main__":
         asyncio.run(Main())
     except KeyboardInterrupt:
         stdlog.getLogger("bridge.server").info("server interrupted")
+        _flush_registered_checkpoint_policies("keyboard_interrupt")

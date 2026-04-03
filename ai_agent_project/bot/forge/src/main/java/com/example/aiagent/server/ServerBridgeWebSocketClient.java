@@ -19,6 +19,15 @@ public class ServerBridgeWebSocketClient {
     private volatile WebSocketClient client;
     private volatile long nextAttemptMs = 0;
     private final AtomicBoolean connecting = new AtomicBoolean(false);
+    /** When false, {@link #ensureConnected()} does nothing (e.g. bridge in PLAYER mode — client owns the socket). */
+    private final AtomicBoolean autoConnect = new AtomicBoolean(true);
+
+    /** Last printed {@link #ensureConnected()} skip summary (avoid tick spam; never include changing ms). */
+    private volatile String lastEnsureDebugSummary = "";
+
+    /** Throttle noisy sendJson SKIP logs when the socket is down (tick spam). */
+    private volatile long lastSendJsonSkipLogMs = 0;
+    private volatile int sendJsonSkipSuppressedCount = 0;
 
     // Debug switch
     private static final boolean DEBUG_WS = false;
@@ -32,14 +41,76 @@ public class ServerBridgeWebSocketClient {
         this.uri = uri;
     }
 
+    public void setAutoConnect(boolean enabled) {
+        boolean was = autoConnect.getAndSet(enabled);
+        if (was != enabled) {
+            System.out.println("[AI-BOT][DEBUG][SERVER-WS] setAutoConnect " + was + " -> " + enabled + " uri=" + uri);
+        }
+        if (enabled) {
+            nextAttemptMs = 0;
+        }
+    }
+
+    public boolean isAutoConnectEnabled() {
+        return autoConnect.get();
+    }
+
+    /**
+     * Stop reconnecting and close the server-side bridge socket. Call when the runtime switches to
+     * PLAYER so the Python bridge is free for the game client WebSocket.
+     */
+    public void pauseForPlayerMode() {
+        System.out.println("[AI-BOT][DEBUG][SERVER-WS] pauseForPlayerMode: closing socket, autoConnect=false");
+        setAutoConnect(false);
+        closeBlockingSafe();
+        lastEnsureDebugSummary = "";
+        System.out.println("[AI-BOT][SERVER-WS] Paused (PLAYER mode or idle); server will not reconnect until SERVER_BOT / player joins.");
+    }
+
     public void ensureConnected() {
+        if (!autoConnect.get()) {
+            String s = "skip|!autoConnect uri=" + uri;
+            if (!s.equals(lastEnsureDebugSummary)) {
+                lastEnsureDebugSummary = s;
+                System.out.println("[AI-BOT][DEBUG][SERVER-WS] ensureConnected: " + s);
+            }
+            return;
+        }
+
         long now = System.currentTimeMillis();
 
-        if (client != null && client.isOpen()) return;
-        if (now < nextAttemptMs) return;
+        if (client != null && client.isOpen()) {
+            String s = "ok|open uri=" + uri;
+            if (!s.equals(lastEnsureDebugSummary)) {
+                lastEnsureDebugSummary = s;
+                System.out.println("[AI-BOT][DEBUG][SERVER-WS] ensureConnected: " + s);
+            }
+            return;
+        }
+        if (now < nextAttemptMs) {
+            // Do not include remaining ms in dedup key — it changes every tick and floods the log.
+            String s = "skip|backoff uri=" + uri;
+            if (!s.equals(lastEnsureDebugSummary)) {
+                lastEnsureDebugSummary = s;
+                long waitMs = nextAttemptMs - now;
+                System.out.println("[AI-BOT][DEBUG][SERVER-WS] ensureConnected: " + s
+                        + " (~" + waitMs + "ms until reconnect attempt)");
+            }
+            return;
+        }
         nextAttemptMs = now + 3000;
 
-        if (connecting.getAndSet(true)) return;
+        if (connecting.getAndSet(true)) {
+            String s = "skip|already connecting uri=" + uri;
+            if (!s.equals(lastEnsureDebugSummary)) {
+                lastEnsureDebugSummary = s;
+                System.out.println("[AI-BOT][DEBUG][SERVER-WS] ensureConnected: " + s);
+            }
+            return;
+        }
+
+        lastEnsureDebugSummary = "connect|starting uri=" + uri;
+        System.out.println("[AI-BOT][DEBUG][SERVER-WS] ensureConnected: " + lastEnsureDebugSummary);
 
         try {
             WebSocketClient c = new WebSocketClient(new URI(uri)) {
@@ -49,6 +120,7 @@ public class ServerBridgeWebSocketClient {
                 public void onOpen(ServerHandshake handshakedata) {
                     System.out.println("[AI-BOT][SERVER-WS] Connected to " + uri);
                     connecting.set(false);
+                    lastEnsureDebugSummary = "ok|open uri=" + uri;
 
                     // Identify as SERVER (must match Python BridgeConstants)
                     JsonObject hello = new JsonObject();
@@ -57,6 +129,8 @@ public class ServerBridgeWebSocketClient {
                     hello.addProperty("role", BridgeConstants.ROLE_SERVER);
                     hello.addProperty("control_mode", BridgeConstants.MODE_SERVER_BOT);
                     send(hello.toString());
+                    System.out.println("[AI-BOT][DEBUG][SERVER-WS] hello sent role=" + BridgeConstants.ROLE_SERVER
+                            + " control_mode=" + BridgeConstants.MODE_SERVER_BOT);
                 }
 
                 @Override
@@ -239,7 +313,18 @@ public class ServerBridgeWebSocketClient {
         int seq = msg.has("seq") ? msg.get("seq").getAsInt() : -999;
 
         if (client == null || !client.isOpen()) {
-            System.out.println("[AI-BOT][SERVER-WS] sendJson SKIP (socket not open) kind=" + kind + " seq=" + seq);
+            long t = System.currentTimeMillis();
+            if (t - lastSendJsonSkipLogMs >= 5000) {
+                if (sendJsonSkipSuppressedCount > 0) {
+                    System.out.println("[AI-BOT][SERVER-WS] sendJson SKIP (socket not open) ... suppressed "
+                            + sendJsonSkipSuppressedCount + " similar");
+                    sendJsonSkipSuppressedCount = 0;
+                }
+                System.out.println("[AI-BOT][SERVER-WS] sendJson SKIP (socket not open) kind=" + kind + " seq=" + seq);
+                lastSendJsonSkipLogMs = t;
+            } else {
+                sendJsonSkipSuppressedCount++;
+            }
             return;
         }
         if (DEBUG_WS) System.out.println("[AI-BOT][SERVER-WS] OUT " + s);
@@ -253,7 +338,14 @@ public class ServerBridgeWebSocketClient {
      * Payload should be the runtime overlay (e.g. control_mode, policy.reward, policy.dqn).
      */
     public void sendConfigUpdate(JsonObject payload) {
-        if (payload == null) return;
+        if (payload == null) {
+            System.out.println("[AI-BOT][DEBUG][SERVER-WS] sendConfigUpdate SKIP: payload null");
+            return;
+        }
+        String cm = payload.has("control_mode") ? payload.get("control_mode").getAsString() : "?";
+        boolean open = client != null && client.isOpen();
+        System.out.println("[AI-BOT][DEBUG][SERVER-WS] sendConfigUpdate control_mode=" + cm
+                + " socketOpen=" + open + " autoConnect=" + autoConnect.get());
         JsonObject msg = new JsonObject();
         msg.addProperty("proto", "1");
         msg.addProperty("kind", "config_update");

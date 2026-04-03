@@ -2,9 +2,9 @@ from __future__ import annotations
 import os, pathlib, yaml
 from typing import Any, Dict
 
-ROOT = pathlib.Path(__file__).resolve().parents[3]  # ai/src/utils -> ai/
-SHARED = ROOT.parent / "ai_agent_project" / "shared"
-CONF_DIR = SHARED / "config" 
+from ai.src.utils.runtime_paths import shared_dir
+
+CONF_DIR = shared_dir() / "config" 
 
 # Assign config 
 class Config(dict):

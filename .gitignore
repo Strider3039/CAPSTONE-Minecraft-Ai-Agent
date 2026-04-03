@@ -113,3 +113,8 @@ temp/
 
 ai_agent_project/shared/Data/*
 !ai_agent_project/shared/Data/.gitignore
+
+# =====================================================
+# Generated Resources
+# =====================================================
+ai_agent_project/dist/

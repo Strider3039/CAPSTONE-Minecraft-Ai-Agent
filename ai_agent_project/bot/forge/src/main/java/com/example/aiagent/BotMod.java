@@ -66,9 +66,17 @@ public class BotMod {
         System.out.println("[AI-BOT] CommonSetup: BotNet.register enqueued.");
 
         event.enqueueWork(() -> {
-            System.out.println("[AI-BOT] CommonSetup: constructing FakeBotManager + ServerBotHooks (logical server aware).");
             this.botManager = new FakeBotManager();
-            new ServerBotHooks(this.botManager);
+
+            // Only start the server-side websocket bridge on a dedicated server.
+            // In an integrated singleplayer server (runClient), the client bridge owns the connection (PLAYER mode),
+            // and starting ServerBotHooks causes a second "server" ws that gets rejected (wrong_role) and spams reconnects.
+            if (FMLEnvironment.dist == Dist.DEDICATED_SERVER) {
+                System.out.println("[AI-BOT] CommonSetup: dedicated server detected; constructing ServerBotHooks.");
+                new ServerBotHooks(this.botManager);
+            } else {
+                System.out.println("[AI-BOT] CommonSetup: client environment; skipping ServerBotHooks.");
+            }
         });
 
     }

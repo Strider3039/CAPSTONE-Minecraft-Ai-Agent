@@ -19,8 +19,9 @@ def _pacific_now():
         return datetime.now(ZoneInfo("America/Los_Angeles"))
     return datetime.now(timezone(timedelta(hours=-8)))
 
-import numpy as np
+# Import torch before numpy so torch's Windows DLL loader runs first (avoids OpenMP clashes → WinError 1114).
 import torch
+import numpy as np
 import torch.nn as nn
 import torch.optim as optim
 
@@ -255,10 +256,14 @@ class OnlineDQNPolicy(Policy):
         device: str = "cpu",
         save_every_steps: int | None = None,
         reward_cfg: dict | None = None,
+        train_every_n: int = 1,
+        log_disk_every_n: int = 1,
     ) -> None:
         self.agent = agent
         self.max_ray_dist = max_ray_dist
         self.device = device
+        self.train_every_n = max(1, int(train_every_n))
+        self.log_disk_every_n = max(1, int(log_disk_every_n))
 
         # For Forge / bridge (monotonic action sequence id)
         self.seq = 0
@@ -280,7 +285,7 @@ class OnlineDQNPolicy(Policy):
 
         # Resolve shared paths (shared/Data/episode_state.json, etc.)
         (
-            self._shared_dir,
+            self._data_root,
             self._episode_state_path,
             self._episode_history_path,
             self._step_history_path,
@@ -289,8 +294,8 @@ class OnlineDQNPolicy(Policy):
         # ---- checkpointing (global persistence across all worlds) ----
         # Default ~5 min at 20 Hz (5*60*20 = 6000); config can override via save_every_steps
         self.save_every_steps = int(save_every_steps) if save_every_steps is not None else 6_000
-        self.ckpt_latest_path = str((self._shared_dir / "Data" / "online_dqn_latest.pt").resolve())
-        self.ckpt_dir = (self._shared_dir / "Data" / "checkpoints")
+        self.ckpt_latest_path = str((self._data_root / "online_dqn_latest.pt").resolve())
+        self.ckpt_dir = self._data_root / "checkpoints"
         self.ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     @classmethod
@@ -303,6 +308,8 @@ class OnlineDQNPolicy(Policy):
         save_every_steps: int | None = None,
         reward_cfg: dict | None = None,
         dqn_cfg: dict | None = None,
+        train_every_n: int = 1,
+        log_disk_every_n: int = 1,
     ) -> "OnlineDQNPolicy":
         agent = DQNAgent(device=device, hiddenDims=hidden_sizes)
         if isinstance(dqn_cfg, dict):
@@ -317,7 +324,15 @@ class OnlineDQNPolicy(Policy):
             except Exception as e:
                 print(f"[OnlineDQNPolicy] failed to load checkpoint ({checkpoint_path}): {e}")
 
-        return cls(agent, max_ray_dist, device, save_every_steps=save_every_steps, reward_cfg=reward_cfg)
+        return cls(
+            agent,
+            max_ray_dist,
+            device,
+            save_every_steps=save_every_steps,
+            reward_cfg=reward_cfg,
+            train_every_n=train_every_n,
+            log_disk_every_n=log_disk_every_n,
+        )
 
     def apply_runtime_config(self, runtime_cfg: dict) -> None:
         """Hot-reload: apply runtime.policy.reward and runtime.policy.dqn to live policy."""
@@ -330,6 +345,10 @@ class OnlineDQNPolicy(Policy):
         dqn_cfg = policy_cfg.get("dqn")
         if isinstance(dqn_cfg, dict):
             self.agent.apply_config(dqn_cfg)
+        if policy_cfg.get("train_every_n") is not None:
+            self.train_every_n = max(1, int(policy_cfg["train_every_n"]))
+        if policy_cfg.get("log_disk_every_n") is not None:
+            self.log_disk_every_n = max(1, int(policy_cfg["log_disk_every_n"]))
 
     # ----- filesystem helpers for logs -----
 
@@ -337,28 +356,16 @@ class OnlineDQNPolicy(Policy):
         self,
     ) -> tuple[_pathlib.Path, _pathlib.Path, _pathlib.Path, _pathlib.Path]:
         """
-        Resolve shared/Data paths consistently with server.py.
+        Resolve Data paths consistently with server.py (shared/Data in dev; beside .exe when frozen).
         """
-        here = _pathlib.Path(__file__).resolve()
-        shared_dir: _pathlib.Path | None = None
+        from ai.src.utils.runtime_paths import data_dir
 
-        for parent in here.parents:
-            candidate = parent / "shared"
-            if candidate.exists() and candidate.is_dir():
-                shared_dir = candidate
-                break
-
-        if shared_dir is None:
-            shared_dir = _pathlib.Path.cwd() / "shared"
-
-        data_dir = shared_dir / "Data"
-        data_dir.mkdir(parents=True, exist_ok=True)
-
-        episode_state_path = data_dir / "online_dqn_episode_state.json"
-        episode_history_path = data_dir / "episode_history.json"
-        step_history_path = data_dir / "step_history.jsonl"
-
-        return shared_dir, episode_state_path, episode_history_path, step_history_path
+        data_root = data_dir()
+        data_root.mkdir(parents=True, exist_ok=True)
+        episode_state_path = data_root / "online_dqn_episode_state.json"
+        episode_history_path = data_root / "episode_history.json"
+        step_history_path = data_root / "step_history.jsonl"
+        return data_root, episode_state_path, episode_history_path, step_history_path
 
     @staticmethod
     def _atomic_write_text(path: _pathlib.Path, contents: str) -> None:
@@ -634,12 +641,17 @@ class OnlineDQNPolicy(Policy):
         if self._last_obs_vec is not None and self._last_action_idx is not None:
             reward, done = self._compute_reward(prev_obs=self._last_obs_msg, curr_obs=obsMsg)
 
-            # Logging
-            self._write_episode_state(reward, done, obsMsg)
-            self._append_step_history(reward, done, self._last_action_idx, obsMsg)
-
             # Episode step bookkeeping
             self.episode_step += 1
+
+            do_disk = (
+                self.log_disk_every_n <= 1
+                or (self.episode_step % self.log_disk_every_n == 0)
+                or done
+            )
+            if do_disk:
+                self._write_episode_state(reward, done, obsMsg)
+                self._append_step_history(reward, done, self._last_action_idx, obsMsg)
 
             # Store transition in replay
             self.agent.StoreTransition(
@@ -650,10 +662,10 @@ class OnlineDQNPolicy(Policy):
                 done=done,
             )
 
-            # One gradient update
-            loss = self.agent.TrainStep()
-            if loss is not None:
-                self.agent.UpdateTargetNetwork()
+            if self.train_every_n <= 1 or (self.episode_step % self.train_every_n == 0):
+                loss = self.agent.TrainStep()
+                if loss is not None:
+                    self.agent.UpdateTargetNetwork()
 
             # Episode end handling (RewardEngine done)
             if done:

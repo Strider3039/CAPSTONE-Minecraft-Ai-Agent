@@ -22,13 +22,406 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 public class AiBotConfigScreen extends Screen {
 
+    private static final String RUNTIME_OVERLAY_NAME = "runtime_overrides.yaml";
+
+    /**
+     * Paths where the Python bridge may persist {@code control_mode} (same file as {@code RUNTIME_OVERLAY_PATH}
+     * on the AI side). First match wins.
+     * <p>
+     * Packaged bridge (PyInstaller): overlay is {@code Data/runtime_overrides.yaml} next to the .exe.
+     * Point the game at that file using either:
+     * <ul>
+     *   <li>{@code AI_AGENT_RUNTIME_OVERLAY}=full path to {@code runtime_overrides.yaml}, or</li>
+     *   <li>{@code AI_AGENT_BRIDGE_DATA}=full path to the bridge {@code Data} folder (same as Python {@code data_dir()}).</li>
+     * </ul>
+     * JVM: {@code -Dai_agent.runtime_overlay=C:\path\to\runtime_overrides.yaml}
+     */
+    private static List<Path> runtimeOverlayCandidatePaths() {
+        List<Path> out = new ArrayList<>();
+        String prop = System.getProperty("ai_agent.runtime_overlay");
+        if (prop != null && !prop.isBlank()) {
+            out.add(Path.of(prop.trim()));
+        }
+        String envFile = System.getenv("AI_AGENT_RUNTIME_OVERLAY");
+        if (envFile != null && !envFile.isBlank()) {
+            out.add(Path.of(envFile.trim()));
+        }
+        String envData = System.getenv("AI_AGENT_BRIDGE_DATA");
+        if (envData != null && !envData.isBlank()) {
+            Path root = Path.of(envData.trim());
+            out.add(root.resolve(RUNTIME_OVERLAY_NAME));
+            out.add(root.resolve("Data").resolve(RUNTIME_OVERLAY_NAME));
+        }
+        try {
+            Path gameDir = FMLPaths.GAMEDIR.get();
+            out.add(gameDir.resolve("../../../shared/Data/" + RUNTIME_OVERLAY_NAME).normalize());
+            out.add(gameDir.resolve("../../shared/Data/" + RUNTIME_OVERLAY_NAME).normalize());
+        } catch (Exception ignored) {
+        }
+        String ud = System.getProperty("user.dir");
+        if (ud != null && !ud.isBlank()) {
+            Path cwd = Path.of(ud);
+            out.add(cwd.resolve("ai_agent_project/shared/Data/" + RUNTIME_OVERLAY_NAME));
+            out.add(cwd.resolve("shared/Data/" + RUNTIME_OVERLAY_NAME));
+        }
+        return out;
+    }
+
+    /**
+     * Read {@code control_mode} from the persisted runtime overlay (simple top-level YAML line).
+     * Returns normalized {@code PLAYER}, {@code SERVER_BOT}, or null if missing/unreadable.
+     */
+    /** First overlay file on disk that exists (for logging). */
+    private static Path findExistingRuntimeOverlayPath() {
+        for (Path path : runtimeOverlayCandidatePaths()) {
+            if (Files.isRegularFile(path)) {
+                return path;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Path used to persist the overlay from the UI (same search order as reads; prefers an existing file,
+     * then an existing parent directory, else first candidate).
+     */
+    private static Path resolveRuntimeOverlayWritePath() {
+        for (Path path : runtimeOverlayCandidatePaths()) {
+            if (Files.isRegularFile(path)) {
+                return path;
+            }
+        }
+        for (Path path : runtimeOverlayCandidatePaths()) {
+            try {
+                Path parent = path.getParent();
+                if (parent != null && Files.isDirectory(parent)) {
+                    return path;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        List<Path> c = runtimeOverlayCandidatePaths();
+        return c.isEmpty() ? null : c.get(0);
+    }
+
+    private static String yamlEscapeMapKey(String k) {
+        if (k == null || k.isEmpty()) {
+            return "\"\"";
+        }
+        boolean needsQuote = k.indexOf(':') >= 0 || k.indexOf(' ') >= 0 || k.indexOf('#') >= 0
+                || k.charAt(0) == '\'' || k.charAt(0) == '"';
+        if (!needsQuote) {
+            for (int i = 0; i < k.length(); i++) {
+                char ch = k.charAt(i);
+                if (ch == '{' || ch == '}' || ch == '[' || ch == ']' || ch == ',') {
+                    needsQuote = true;
+                    break;
+                }
+            }
+        }
+        if (needsQuote) {
+            return "\"" + k.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+        }
+        return k;
+    }
+
+    private static String yamlDouble(double v) {
+        if (!Double.isFinite(v)) {
+            return "0.0";
+        }
+        String s = String.format(Locale.US, "%.10f", v).replaceAll("0*$", "").replaceAll("\\.$", "");
+        return s.isEmpty() ? "0" : s;
+    }
+
+    /** Next wall-clock ms when {@link #persistRuntimeOverlayFromUi()} should run (debounced slider drags). */
+    private long runtimeOverlayPersistScheduledAtMs = 0L;
+
+    /**
+     * After {@link #copyFrom(AiBotConfigScreen)}, skip reloading the overlay from disk so in-memory edits
+     * (e.g. new mob) are not wiped; then persist once at end of {@link #init()}.
+     */
+    private boolean skipHydrateFromDiskOnce = false;
+    private boolean persistRuntimeOverlayAfterInit = false;
+
+    private void schedulePersistRuntimeOverlay(long delayMs) {
+        long when = System.currentTimeMillis() + Math.max(0L, delayMs);
+        if (when > runtimeOverlayPersistScheduledAtMs) {
+            runtimeOverlayPersistScheduledAtMs = when;
+        }
+    }
+
+    /**
+     * Writes {@code shared/Data/runtime_overrides.yaml} (or {@code ai_agent.runtime_overlay}) to match every
+     * field shown in this screen so disk always matches the UI without waiting for Apply or the Python bridge.
+     */
+    private void persistRuntimeOverlayFromUi() {
+        Path path = resolveRuntimeOverlayWritePath();
+        if (path == null) {
+            return;
+        }
+        double eps = Mth.clamp(epsilonValue, EPSILON_MIN, EPSILON_MAX);
+        double surv = Mth.clamp(survivalRewardValue, SURVIVAL_MIN, SURVIVAL_MAX);
+        double stepP = Mth.clamp(stepPenaltyValue, STEP_PENALTY_MIN, STEP_PENALTY_MAX);
+        double moveS = Mth.clamp(moveScaleValue, MOVE_SCALE_MIN, MOVE_SCALE_MAX);
+        double maxMove = Mth.clamp(maxMoveRewardValue, MAX_MOVE_REWARD_MIN, MAX_MOVE_REWARD_MAX);
+        double noProg = Mth.clamp(noProgressPenaltyValue, NO_PROGRESS_PENALTY_MIN, NO_PROGRESS_PENALTY_MAX);
+        double front = Mth.clamp(frontClearBonusValue, FRONT_CLEAR_BONUS_MIN, FRONT_CLEAR_BONUS_MAX);
+        double item = Mth.clamp(itemPickupRewardValue, ITEM_PICKUP_MIN, ITEM_PICKUP_MAX);
+        int maxSteps = Mth.clamp(maxStepsPerEpisodeValue, MAX_STEPS_MIN, MAX_STEPS_MAX);
+
+        StringBuilder sb = new StringBuilder(768);
+        sb.append("# Hot-reload overlay — kept in sync with the in-game AI Bot config UI.\n");
+        sb.append("control_mode: ").append(selectedMode.label).append('\n');
+        sb.append("policy:\n");
+        sb.append("  dqn:\n");
+        sb.append("    epsilon_start: ").append(yamlDouble(eps)).append('\n');
+        sb.append("  reward:\n");
+        sb.append("    survival_reward: ").append(yamlDouble(surv)).append('\n');
+        sb.append("    step_penalty: ").append(yamlDouble(stepP)).append('\n');
+        sb.append("    move_scale: ").append(yamlDouble(moveS)).append('\n');
+        sb.append("    max_move_reward: ").append(yamlDouble(maxMove)).append('\n');
+        sb.append("    no_progress_penalty: ").append(yamlDouble(noProg)).append('\n');
+        sb.append("    front_clear_bonus: ").append(yamlDouble(front)).append('\n');
+        sb.append("    item_pickup_reward: ").append(yamlDouble(item)).append('\n');
+        sb.append("    max_steps_per_episode: ").append(maxSteps).append('\n');
+        if (blockRewards.isEmpty()) {
+            sb.append("    blocks: {}\n");
+        } else {
+            sb.append("    blocks:\n");
+            for (Map.Entry<String, Double> e : blockRewards.entrySet()) {
+                double vv = Mth.clamp(e.getValue(), CUSTOM_REWARD_MIN, CUSTOM_REWARD_MAX);
+                sb.append("      ").append(yamlEscapeMapKey(e.getKey())).append(": ").append(yamlDouble(vv)).append('\n');
+            }
+        }
+        if (mobRewards.isEmpty()) {
+            sb.append("    mobs: {}\n");
+        } else {
+            sb.append("    mobs:\n");
+            for (Map.Entry<String, Double> e : mobRewards.entrySet()) {
+                double vv = Mth.clamp(e.getValue(), CUSTOM_REWARD_MIN, CUSTOM_REWARD_MAX);
+                sb.append("      ").append(yamlEscapeMapKey(e.getKey())).append(": ").append(yamlDouble(vv)).append('\n');
+            }
+        }
+
+        try {
+            Path parent = path.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            Files.writeString(path, sb.toString(), StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            System.err.println("[AI-BOT][ConfigUI] persist runtime overlay failed: " + e.getMessage());
+        }
+        saveRewards();
+    }
+
+    private void applyControlModeFromUiSelection() {
+        ForgeWebSocketClient.setControlMode(
+                selectedMode == Mode.SERVER_BOT
+                        ? ForgeWebSocketClient.ControlMode.SERVER_BOT
+                        : ForgeWebSocketClient.ControlMode.PLAYER);
+    }
+
+    private static String yamlUnquoteKey(String k) {
+        if (k == null) {
+            return "";
+        }
+        String t = k.trim();
+        if (t.length() >= 2 && t.charAt(0) == '"' && t.charAt(t.length() - 1) == '"') {
+            return t.substring(1, t.length() - 1).replace("\\\\", "\\").replace("\\\"", "\"");
+        }
+        return t;
+    }
+
+    /**
+     * Load scalar rewards, DQN epsilon, and mob/block maps from the overlay file so opening the UI does not
+     * replace disk with widget defaults. Ignores {@code control_mode} (handled by {@link #syncModeFromAuthoritativeSource()}).
+     */
+    private void hydrateUiFromRuntimeOverlayFile() {
+        Path path = findExistingRuntimeOverlayPath();
+        if (path == null || !Files.isRegularFile(path)) {
+            return;
+        }
+        List<String> lines;
+        try {
+            lines = Files.readAllLines(path, StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            return;
+        }
+        String inList = null;
+        for (String line0 : lines) {
+            int h = line0.indexOf('#');
+            String line = h >= 0 ? line0.substring(0, h) : line0;
+            line = line.stripTrailing();
+            if (line.isBlank()) {
+                continue;
+            }
+            String trim = line.trim();
+            if (line.startsWith("      ") && inList != null) {
+                int c = trim.indexOf(':');
+                if (c > 0) {
+                    String key = yamlUnquoteKey(trim.substring(0, c));
+                    String vs = trim.substring(c + 1).trim();
+                    try {
+                        double val = Double.parseDouble(vs);
+                        if ("blocks".equals(inList)) {
+                            blockRewards.put(key, Mth.clamp(val, CUSTOM_REWARD_MIN, CUSTOM_REWARD_MAX));
+                        } else {
+                            mobRewards.put(key, Mth.clamp(val, CUSTOM_REWARD_MIN, CUSTOM_REWARD_MAX));
+                        }
+                    } catch (NumberFormatException ignored) {
+                    }
+                }
+                continue;
+            }
+            if (line.startsWith("    ") && !line.startsWith("      ")) {
+                inList = null;
+                if ("blocks: {}".equals(trim)) {
+                    blockRewards.clear();
+                    continue;
+                }
+                if ("mobs: {}".equals(trim)) {
+                    mobRewards.clear();
+                    continue;
+                }
+                if ("blocks:".equals(trim)) {
+                    blockRewards.clear();
+                    inList = "blocks";
+                    continue;
+                }
+                if ("mobs:".equals(trim)) {
+                    mobRewards.clear();
+                    inList = "mobs";
+                    continue;
+                }
+                try {
+                    if (trim.startsWith("epsilon_start:")) {
+                        epsilonValue = Mth.clamp(
+                                Double.parseDouble(trim.substring("epsilon_start:".length()).trim()),
+                                EPSILON_MIN, EPSILON_MAX);
+                        continue;
+                    }
+                    if (trim.startsWith("survival_reward:")) {
+                        survivalRewardValue = Mth.clamp(
+                                Double.parseDouble(trim.substring("survival_reward:".length()).trim()),
+                                SURVIVAL_MIN, SURVIVAL_MAX);
+                        continue;
+                    }
+                    if (trim.startsWith("step_penalty:")) {
+                        stepPenaltyValue = Mth.clamp(
+                                Double.parseDouble(trim.substring("step_penalty:".length()).trim()),
+                                STEP_PENALTY_MIN, STEP_PENALTY_MAX);
+                        continue;
+                    }
+                    if (trim.startsWith("move_scale:")) {
+                        moveScaleValue = Mth.clamp(
+                                Double.parseDouble(trim.substring("move_scale:".length()).trim()),
+                                MOVE_SCALE_MIN, MOVE_SCALE_MAX);
+                        continue;
+                    }
+                    if (trim.startsWith("max_move_reward:")) {
+                        maxMoveRewardValue = Mth.clamp(
+                                Double.parseDouble(trim.substring("max_move_reward:".length()).trim()),
+                                MAX_MOVE_REWARD_MIN, MAX_MOVE_REWARD_MAX);
+                        continue;
+                    }
+                    if (trim.startsWith("no_progress_penalty:")) {
+                        noProgressPenaltyValue = Mth.clamp(
+                                Double.parseDouble(trim.substring("no_progress_penalty:".length()).trim()),
+                                NO_PROGRESS_PENALTY_MIN, NO_PROGRESS_PENALTY_MAX);
+                        continue;
+                    }
+                    if (trim.startsWith("front_clear_bonus:")) {
+                        frontClearBonusValue = Mth.clamp(
+                                Double.parseDouble(trim.substring("front_clear_bonus:".length()).trim()),
+                                FRONT_CLEAR_BONUS_MIN, FRONT_CLEAR_BONUS_MAX);
+                        continue;
+                    }
+                    if (trim.startsWith("item_pickup_reward:")) {
+                        itemPickupRewardValue = Mth.clamp(
+                                Double.parseDouble(trim.substring("item_pickup_reward:".length()).trim()),
+                                ITEM_PICKUP_MIN, ITEM_PICKUP_MAX);
+                        continue;
+                    }
+                    if (trim.startsWith("max_steps_per_episode:")) {
+                        maxStepsPerEpisodeValue = Mth.clamp(
+                                Integer.parseInt(trim.substring("max_steps_per_episode:".length()).trim().split("\\s")[0]),
+                                MAX_STEPS_MIN, MAX_STEPS_MAX);
+                    }
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        }
+    }
+
+    private static String readControlModeFromRuntimeOverlay() {
+        for (Path path : runtimeOverlayCandidatePaths()) {
+            if (!Files.isRegularFile(path)) continue;
+            try {
+                for (String line : Files.readAllLines(path, StandardCharsets.UTF_8)) {
+                    String t = line.trim();
+                    if (t.isEmpty() || t.startsWith("#")) continue;
+                    if (!t.startsWith("control_mode:")) continue;
+                    String v = t.substring("control_mode:".length()).trim();
+                    if (v.length() >= 2
+                            && ((v.startsWith("\"") && v.endsWith("\"")) || (v.startsWith("'") && v.endsWith("'")))) {
+                        v = v.substring(1, v.length() - 1);
+                    }
+                    v = v.trim().replace("-", "_").toUpperCase();
+                    if ("SERVER_BOT".equals(v) || "PLAYER".equals(v)) {
+                        return v;
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Keep UI and {@link ForgeWebSocketClient} aligned with the bridge's saved overlay when the screen opens.
+     */
+    private void syncModeFromAuthoritativeSource() {
+        ForgeWebSocketClient.ControlMode before = ForgeWebSocketClient.getControlMode();
+        Path overlayPath = findExistingRuntimeOverlayPath();
+        String fromOverlay = readControlModeFromRuntimeOverlay();
+
+        System.out.println("[AI-BOT][DEBUG][ConfigUI] open sync: in-memory ControlMode=" + before
+                + " | runtime_overlays.yaml path=" + (overlayPath != null ? overlayPath.toAbsolutePath() : "(none found)")
+                + " | parsed control_mode=" + (fromOverlay != null ? fromOverlay : "(absent)"));
+
+        if ("SERVER_BOT".equals(fromOverlay)) {
+            this.selectedMode = Mode.SERVER_BOT;
+            ForgeWebSocketClient.setControlMode(ForgeWebSocketClient.ControlMode.SERVER_BOT);
+            System.out.println("[AI-BOT][DEBUG][ConfigUI] applied mode from file -> SERVER_BOT");
+        } else if ("PLAYER".equals(fromOverlay)) {
+            // Overlay often lags (e.g. Apply failed: client WS closed, Python not running). Do not
+            // force PLAYER from stale yaml while runtime is already SERVER_BOT.
+            if (before == ForgeWebSocketClient.ControlMode.SERVER_BOT) {
+                this.selectedMode = Mode.SERVER_BOT;
+                System.out.println("[AI-BOT][DEBUG][ConfigUI] overlay PLAYER but in-memory SERVER_BOT — keeping SERVER_BOT (persist via Apply with bridge up or edit yaml)");
+            } else {
+                this.selectedMode = Mode.PLAYER;
+                ForgeWebSocketClient.setControlMode(ForgeWebSocketClient.ControlMode.PLAYER);
+                System.out.println("[AI-BOT][DEBUG][ConfigUI] applied mode from file -> PLAYER (if you need SERVER_BOT for MP, Apply while connected or edit yaml)");
+            }
+        } else {
+            this.selectedMode = ForgeWebSocketClient.getControlMode() == ForgeWebSocketClient.ControlMode.SERVER_BOT
+                    ? Mode.SERVER_BOT
+                    : Mode.PLAYER;
+            System.out.println("[AI-BOT][DEBUG][ConfigUI] no control_mode in overlay; CycleButton from in-memory -> " + this.selectedMode);
+        }
+    }
+
     private final Screen parent;
 
-    private Mode selectedMode = Mode.SERVER_BOT;
+    /** Default matches client-bridge / PLAYER path; SERVER_BOT is for dedicated-server + overlay. */
+    private Mode selectedMode = Mode.PLAYER;
 
     // DQN
     private double epsilonValue = 1.0;
@@ -229,6 +622,8 @@ public class AiBotConfigScreen extends Screen {
         this.mobRewards.putAll(other.mobRewards);
         this.blockRewards.clear();
         this.blockRewards.putAll(other.blockRewards);
+        this.skipHydrateFromDiskOnce = true;
+        this.persistRuntimeOverlayAfterInit = true;
     }
 
     @Override
@@ -241,9 +636,12 @@ public class AiBotConfigScreen extends Screen {
         final int sliderH = 22;
         final int sliderW = 220;
 
-        this.selectedMode = ForgeWebSocketClient.getControlMode() == ForgeWebSocketClient.ControlMode.SERVER_BOT
-            ? Mode.SERVER_BOT
-            : Mode.PLAYER;
+        if (!skipHydrateFromDiskOnce) {
+            hydrateUiFromRuntimeOverlayFile();
+        } else {
+            skipHydrateFromDiskOnce = false;
+        }
+        syncModeFromAuthoritativeSource();
 
         int row = 0;
 
@@ -254,7 +652,11 @@ public class AiBotConfigScreen extends Screen {
                 .withInitialValue(this.selectedMode)
                 .create(centerX - btnW / 2, startY + row * rowH, btnW, btnH,
                     Component.literal("Mode"),
-                    (btn, value) -> this.selectedMode = value)
+                    (btn, value) -> {
+                        this.selectedMode = value;
+                        applyControlModeFromUiSelection();
+                        persistRuntimeOverlayFromUi();
+                    })
         );
         row++;
 
@@ -271,11 +673,13 @@ public class AiBotConfigScreen extends Screen {
                 double v = Mth.lerp(this.value, EPSILON_MIN, EPSILON_MAX);
                 epsilonValue = Mth.clamp(v, EPSILON_MIN, EPSILON_MAX);
                 setMessage(Component.literal("Epsilon: " + String.format("%.2f", epsilonValue)));
+                schedulePersistRuntimeOverlay(150);
             }
             @Override
             protected void applyValue() {
                 double v = Mth.lerp(this.value, EPSILON_MIN, EPSILON_MAX);
                 epsilonValue = Mth.clamp(v, EPSILON_MIN, EPSILON_MAX);
+                schedulePersistRuntimeOverlay(0);
             }
         });
         row++;
@@ -335,11 +739,13 @@ public class AiBotConfigScreen extends Screen {
                 int v = (int) Math.round(Mth.lerp(this.value, (double) MAX_STEPS_MIN, (double) MAX_STEPS_MAX));
                 maxStepsPerEpisodeValue = Mth.clamp(v, MAX_STEPS_MIN, MAX_STEPS_MAX);
                 setMessage(Component.literal("Max steps/episode: " + maxStepsPerEpisodeValue));
+                schedulePersistRuntimeOverlay(150);
             }
             @Override
             protected void applyValue() {
                 int v = (int) Math.round(Mth.lerp(this.value, (double) MAX_STEPS_MIN, (double) MAX_STEPS_MAX));
                 maxStepsPerEpisodeValue = Mth.clamp(v, MAX_STEPS_MIN, MAX_STEPS_MAX);
+                schedulePersistRuntimeOverlay(0);
             }
         });
         row++;
@@ -415,16 +821,43 @@ public class AiBotConfigScreen extends Screen {
         // Apply
         this.addRenderableWidget(
             Button.builder(Component.literal("Apply"), btn -> {
-                ForgeWebSocketClient.ControlMode ctrl = this.selectedMode == Mode.SERVER_BOT
-                    ? ForgeWebSocketClient.ControlMode.SERVER_BOT
-                    : ForgeWebSocketClient.ControlMode.PLAYER;
+                boolean hasNetwork = this.minecraft != null && this.minecraft.getConnection() != null;
+                boolean integratedSp = this.minecraft != null && this.minecraft.hasSingleplayerServer();
+                // Integrated SP still has a ClientPacketListener; C2S would hit a null ServerBridgeWebSocketClient
+                // (ServerBotHooks only runs on Dist.DEDICATED_SERVER). Use client WS for hot-reload here.
+                boolean dedicatedRemoteMp = hasNetwork && !integratedSp;
+
+                // Hot-reload route:
+                // - Integrated singleplayer / main menu: client WebSocket -> Python.
+                // - Remote dedicated (or LAN client to dedicated): C2S -> server bridge (SERVER_BOT).
+                Mode effectiveMode = dedicatedRemoteMp ? Mode.SERVER_BOT : this.selectedMode;
+
+                System.out.println("[AI-BOT][DEBUG][ConfigUI] Apply: hasNetwork=" + hasNetwork
+                        + " integratedSP=" + integratedSp
+                        + " dedicatedRemoteMp=" + dedicatedRemoteMp
+                        + " | cycle selection=" + this.selectedMode
+                        + " | effectiveMode=" + effectiveMode);
+
+                persistRuntimeOverlayFromUi();
+
+                ForgeWebSocketClient.ControlMode ctrl = effectiveMode == Mode.SERVER_BOT
+                        ? ForgeWebSocketClient.ControlMode.SERVER_BOT
+                        : ForgeWebSocketClient.ControlMode.PLAYER;
                 ForgeWebSocketClient.setControlMode(ctrl);
+
+                Mode prev = this.selectedMode;
+                this.selectedMode = effectiveMode;
                 JsonObject payload = buildConfigPayload();
-                ForgeWebSocketClient.sendConfigUpdate(payload);
-                if (this.minecraft != null && this.minecraft.getConnection() != null) {
+                this.selectedMode = prev;
+
+                if (dedicatedRemoteMp) {
+                    System.out.println("[AI-BOT][DEBUG][ConfigUI] sending C2SRuntimeConfigPacket (server will forward to Python); control_mode in payload="
+                            + (payload.has("control_mode") ? payload.get("control_mode").getAsString() : "?"));
                     BotNet.CHANNEL.sendToServer(new C2SRuntimeConfigPacket(BotMod.GSON.toJson(payload)));
+                } else {
+                    System.out.println("[AI-BOT][DEBUG][ConfigUI] sending ForgeWebSocketClient.sendConfigUpdate (direct to Python)");
+                    ForgeWebSocketClient.sendConfigUpdate(payload);
                 }
-                saveRewards();
                 btn.setMessage(Component.literal("Applied"));
             }).bounds(centerX - btnW / 2, startY + row * rowH, btnW, btnH).build()
         );
@@ -438,6 +871,20 @@ public class AiBotConfigScreen extends Screen {
         );
         row++;
         this.contentHeight = startY + row * rowH + 32;
+
+        if (persistRuntimeOverlayAfterInit) {
+            persistRuntimeOverlayAfterInit = false;
+            persistRuntimeOverlayFromUi();
+        }
+    }
+
+    @Override
+    public void tick() {
+        super.tick();
+        if (runtimeOverlayPersistScheduledAtMs > 0L && System.currentTimeMillis() >= runtimeOverlayPersistScheduledAtMs) {
+            runtimeOverlayPersistScheduledAtMs = 0L;
+            persistRuntimeOverlayFromUi();
+        }
     }
 
     @FunctionalInterface
@@ -460,11 +907,13 @@ public class AiBotConfigScreen extends Screen {
                 double v = Mth.lerp(this.value, min, max);
                 setter.set(Mth.clamp(v, min, max));
                 setMessage(Component.literal(label + ": " + String.format(fmt, getter.get())));
+                schedulePersistRuntimeOverlay(150);
             }
             @Override
             protected void applyValue() {
                 double v = Mth.lerp(this.value, min, max);
                 setter.set(Mth.clamp(v, min, max));
+                schedulePersistRuntimeOverlay(0);
             }
         });
     }
@@ -521,6 +970,8 @@ public class AiBotConfigScreen extends Screen {
 
     @Override
     public void onClose() {
+        runtimeOverlayPersistScheduledAtMs = 0L;
+        persistRuntimeOverlayFromUi();
         if (this.minecraft != null) {
             this.minecraft.setScreen(this.parent);
         }

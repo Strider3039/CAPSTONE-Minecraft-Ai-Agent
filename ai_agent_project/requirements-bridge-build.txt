@@ -1,0 +1,10 @@
+# Runtime deps for the bridge + packaging. Install in your venv, then run packaging/build_bridge.ps1
+websockets>=12.0
+PyYAML>=6.0
+jsonschema>=4.0
+rfc3987-syntax>=1.0
+loguru>=0.7
+numpy>=1.24
+torch>=2.0
+pyinstaller>=6.0
+orjson>=3.9

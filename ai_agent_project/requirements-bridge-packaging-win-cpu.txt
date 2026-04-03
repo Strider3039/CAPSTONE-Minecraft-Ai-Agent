@@ -1,0 +1,13 @@
+# Frozen bridge on Windows: CPU-only PyTorch (avoids WinError 1114 loading c10.dll when CUDA drivers are missing/mismatched).
+# Use a dedicated venv for packaging if you also need GPU torch for training elsewhere.
+# pip install -r requirements-bridge-packaging-win-cpu.txt
+websockets>=12.0
+PyYAML>=6.0
+jsonschema>=4.0
+rfc3987-syntax>=1.0
+loguru>=0.7
+numpy>=1.24
+orjson>=3.9
+pyinstaller>=6.0
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.0,<3

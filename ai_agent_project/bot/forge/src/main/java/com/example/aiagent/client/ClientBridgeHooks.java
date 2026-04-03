@@ -127,6 +127,12 @@ public class ClientBridgeHooks {
     private int lastAir = -1;
     private boolean wasAlive = true;
 
+    /** True when the client was in a remote dedicated world (not integrated SP) last in-game tick. */
+    private volatile boolean lastTickPlayingRemoteDedicated = false;
+
+    /** Last printed ensureBridgeConnected summary (avoid spam). */
+    private String lastEnsureBridgeDebugSummary = "";
+
     // -------------------------------------------------------------------------
     // Bridge connection and reconnect with backoff
     // -------------------------------------------------------------------------
@@ -159,6 +165,14 @@ public class ClientBridgeHooks {
         Minecraft mc = Minecraft.getInstance();
         boolean multiplayer = mc != null && mc.getConnection() != null;
         boolean serverBotMode = ForgeWebSocketClient.getControlMode() == ForgeWebSocketClient.ControlMode.SERVER_BOT;
+        boolean wsOpen = wsClient != null && wsClient.isOpen();
+
+        String summary = "mp=" + multiplayer + "|serverBot=" + serverBotMode + "|wsOpen=" + wsOpen + "|connecting=" + connecting;
+        if (!summary.equals(lastEnsureBridgeDebugSummary)) {
+            lastEnsureBridgeDebugSummary = summary;
+            System.out.println("[AI-BOT][DEBUG][ClientBridge] ensureBridgeConnected: " + summary
+                    + " -> " + (serverBotMode && multiplayer ? "SKIP client WS (dedicated server owns bridge)" : "may open client WS"));
+        }
 
         if (serverBotMode && multiplayer) {
             // Dedicated MP + SERVER_BOT: server holds the bridge connection; client must not connect.
@@ -224,6 +238,11 @@ public class ClientBridgeHooks {
     public void onClientLogin(ClientPlayerNetworkEvent.LoggingIn event) {
         Minecraft mc = Minecraft.getInstance();
         mc.execute(() -> {
+            boolean mp = mc.getConnection() != null;
+            boolean spIntegrated = mc.getSingleplayerServer() != null;
+            System.out.println("[AI-BOT][DEBUG][ClientBridge] LoggingIn: ControlMode=" + ForgeWebSocketClient.getControlMode()
+                    + " multiplayer=" + mp + " integratedServer=" + spIntegrated);
+            lastEnsureBridgeDebugSummary = "";
             nextReconnectMs = 0;
             reconnectAttemptIndex = 0;
             ensureBridgeConnected();
@@ -232,6 +251,14 @@ public class ClientBridgeHooks {
 
     @SubscribeEvent
     public void onClientLogout(ClientPlayerNetworkEvent.LoggingOut event) {
+        if (lastTickPlayingRemoteDedicated) {
+            System.out.println("[AI-BOT][DEBUG][ClientBridge] LoggingOut from remote dedicated; forcing ControlMode PLAYER");
+            ForgeWebSocketClient.setControlMode(ForgeWebSocketClient.ControlMode.PLAYER);
+            System.out.println("[AI-BOT] Left remote dedicated server; local ControlMode -> PLAYER (client bridge can reconnect in SP).");
+        }
+        lastTickPlayingRemoteDedicated = false;
+        lastEnsureBridgeDebugSummary = "";
+
         ForgeWebSocketClient c = wsClient;
         wsClient = null;
         nextReconnectMs = 0;
@@ -254,6 +281,8 @@ public class ClientBridgeHooks {
         Minecraft mc = Minecraft.getInstance();
         if (mc.player == null || mc.level == null) return;
         var p = mc.player;
+
+        lastTickPlayingRemoteDedicated = mc.getConnection() != null && mc.getSingleplayerServer() == null;
 
         ensureBridgeConnected();
 

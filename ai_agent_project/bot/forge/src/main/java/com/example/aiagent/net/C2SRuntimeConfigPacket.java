@@ -33,10 +33,36 @@ public class C2SRuntimeConfigPacket {
         ctx.enqueueWork(() -> {
             try {
                 JsonObject payload = BotMod.GSON.fromJson(msg.json, JsonObject.class);
-                if (payload == null) return;
+                if (payload == null) {
+                    System.out.println("[AI-BOT][DEBUG][C2S] runtime config SKIP: parsed payload is null jsonLen="
+                            + (msg.json == null ? 0 : msg.json.length()));
+                    return;
+                }
                 ServerBridgeWebSocketClient bridge = BotMod.getInstance().getBridgeClient();
-                if (bridge != null) {
-                    bridge.sendConfigUpdate(payload);
+                if (bridge == null) {
+                    System.out.println("[AI-BOT][DEBUG][C2S] runtime config SKIP: getBridgeClient() is null (not dedicated / hooks not registered?)");
+                    return;
+                }
+
+                String mode = null;
+                if (payload.has("control_mode") && payload.get("control_mode").isJsonPrimitive()) {
+                    mode = payload.get("control_mode").getAsString().trim().replace("-", "_").toUpperCase();
+                }
+
+                System.out.println("[AI-BOT][DEBUG][C2S] runtime config recv control_mode=" + mode
+                        + " keys=" + payload.keySet()
+                        + " bridgeAutoConnect(before)=" + bridge.isAutoConnectEnabled()
+                        + " bridgeOpen=" + bridge.isConnected());
+
+                if ("SERVER_BOT".equals(mode)) {
+                    bridge.setAutoConnect(true);
+                }
+
+                bridge.sendConfigUpdate(payload);
+
+                // After Python sees PLAYER, stop reconnecting so the game client can own the bridge.
+                if ("PLAYER".equals(mode)) {
+                    bridge.pauseForPlayerMode();
                 }
             } catch (Exception e) {
                 System.err.println("[AI-BOT] C2SRuntimeConfigPacket handle failed: " + e.getMessage());

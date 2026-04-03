@@ -2,8 +2,10 @@ package com.example.aiagent.server;
 
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.TickEvent;
+import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.level.LevelEvent;
 import net.minecraftforge.event.server.ServerStoppingEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
@@ -82,6 +84,32 @@ public class ServerBotHooks {
 
         bots.despawnAll();
         spawned = false;
+    }
+
+    @SubscribeEvent
+    public void onPlayerLoggedIn(PlayerEvent.PlayerLoggedInEvent event) {
+        if (!(event.getEntity() instanceof ServerPlayer sp)) return;
+        int n = sp.getServer() != null ? sp.getServer().getPlayerList().getPlayers().size() : -1;
+        System.out.println("[AI-BOT][DEBUG][ServerBotHooks] PlayerLoggedIn name=" + sp.getGameProfile().getName()
+                + " playerCount=" + n + " -> bridge setAutoConnect(true) ensureConnected()");
+        ws.setAutoConnect(true);
+        ws.ensureConnected();
+    }
+
+    @SubscribeEvent
+    public void onPlayerLoggedOut(PlayerEvent.PlayerLoggedOutEvent event) {
+        MinecraftServer server = event.getEntity().getServer();
+        if (server == null) return;
+        String name = event.getEntity().getGameProfile().getName();
+        server.execute(() -> {
+            int remaining = server.getPlayerList().getPlayers().size();
+            System.out.println("[AI-BOT][DEBUG][ServerBotHooks] PlayerLoggedOut name=" + name
+                    + " remainingPlayers=" + remaining);
+            if (server.getPlayerList().getPlayers().isEmpty()) {
+                System.out.println("[AI-BOT][DEBUG][ServerBotHooks] last player left -> pauseForPlayerMode()");
+                ws.pauseForPlayerMode();
+            }
+        });
     }
 
     @SubscribeEvent
