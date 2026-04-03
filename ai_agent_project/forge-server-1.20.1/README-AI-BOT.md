@@ -70,7 +70,7 @@ run.bat nogui
 
 When the **overworld** loads, the mod will:
 
-1. Connect to the bridge at `ws://127.0.0.1:8765`
+1. Connect to the bridge at `ws://127.0.0.1:8765` by default
 2. Send `hello` with `role: "server"`
 3. Spawn the FakePlayer bot and start sending/receiving actions
 
@@ -87,7 +87,7 @@ If the bridge runs on a different machine or port, set the JVM system property w
 
 **Option A – in `user_jvm_args.txt`** (in this folder), add a line, e.g.:
 
-```
+```text
 -Dai_agent.bridge_uri=ws://192.168.1.10:8765
 ```
 
@@ -99,6 +99,20 @@ java -Dai_agent.bridge_uri=ws://your-bridge-host:8765 @user_jvm_args.txt @librar
 
 Default if unset: `ws://127.0.0.1:8765`.
 
+You can also use an environment variable if your host exposes env configuration more easily than JVM flags:
+
+```text
+AI_AGENT_BRIDGE_URI=ws://your-bridge-host:8765
+```
+
+### 6. Apex / hosted dedicated server notes
+
+For an Apex-style deployment where the Minecraft server and bridge live on different machines:
+
+1. Run the Python bridge on the VPS and make sure its firewall allows inbound TCP on the bridge port.
+2. In the server host panel, add **`-Dai_agent.bridge_uri=ws://your-vps-host:8765`** to the server startup/JVM arguments.
+3. Restart the server and confirm the console prints the remote bridge URI in the `Will connect to ...` log line.
+
 ## Run order summary
 
 1. Start **Python bridge** (so it listens on 8765).  
@@ -109,4 +123,4 @@ Default if unset: `ws://127.0.0.1:8765`.
 
 - **Mod not loading**: Ensure `ai_agent_bot-1.0.0.jar` is in `forge-server-1.20.1/mods/` and Forge version matches (1.20.1, Forge 47.x).
 - **No “Connected to” message**: Bridge must be running first; check firewall and that the bridge is bound to the host/port the server uses (e.g. `0.0.0.0:8765` for local).
-- **Wrong bridge URL**: Use `-Dai_agent.bridge_uri=ws://host:port` (or `user_jvm_args.txt`) and restart the server.
+- **Wrong bridge URL**: Use `-Dai_agent.bridge_uri=ws://host:port`, `AI_AGENT_BRIDGE_URI`, or `user_jvm_args.txt`, then restart the server.

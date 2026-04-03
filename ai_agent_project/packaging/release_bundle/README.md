@@ -1,82 +1,210 @@
-# Minecraft AI Agent — Bridge (this folder)
+# Minecraft AI Agent Bridge
 
-This package installs **only** the Python **WebSocket bridge** (the AI process that talks to Minecraft).  
-It does **not** install the Forge mod. You add the mod to your game separately (see below).
+This folder installs the **bridge program** for the Minecraft AI Agent.
 
-## What you get
+The bridge is the part that talks to Minecraft and runs the AI logic.
 
-Keep **`Install_AI_Bridge.exe`** and **`_internal`** in the **same folder** (do not share only the `.exe`). Zip the **whole** release folder when distributing.
+Important:
 
-| Item | Purpose |
-|------|--------|
-| **`Install_AI_Bridge.exe`** | Asks where to install using a **folder dialog** (Tk on all OSes when available; on Linux, **Zenity** or **KDialog** if Tk is missing). Creates a **`bridge`** subfolder, opens it in the file manager, then starts the bridge on Windows (if present). |
-| **`_internal\`** | Python runtime and installer dependencies (required next to the `.exe`). |
-| **`README.md`** | This file. |
+- This installer does **not** install the Minecraft mod `.jar`.
+- You still need to add the mod to Minecraft separately.
 
-After installation, the bridge lives in **`<folder-you-chose>\bridge\`**. If you cancel the picker, it falls back to:
+## Table of Contents
+
+1. [What This Folder Is For](#what-this-folder-is-for)
+2. [Quick Start](#quick-start)
+3. [What Gets Installed](#what-gets-installed)
+4. [Change Settings Without Opening Minecraft](#change-settings-without-opening-minecraft)
+5. [Install the Minecraft Mod](#install-the-minecraft-mod)
+6. [Use a Remote Bridge or VPS](#use-a-remote-bridge-or-vps)
+7. [Troubleshooting](#troubleshooting)
+
+## What This Folder Is For
+
+Use this folder when you want to install the **AI bridge program** on a computer or server.
+
+Examples:
+
+- Run the bridge on your own computer.
+- Run the bridge on a different computer on your network.
+- Run the bridge on a VPS.
+
+## Quick Start
+
+If you just want the simplest version:
+
+1. Double-click **`Install_AI_Bridge.exe`**.
+2. Choose a folder when asked.
+3. Let it finish installing.
+4. Open the new **`bridge`** folder if it does not open by itself.
+5. Run **`minecraft_ai_bridge.exe`**.
+6. Put the Minecraft mod `.jar` into your Minecraft `mods` folder.
+7. Start Minecraft or your server.
+
+If Windows asks about the firewall, allow the bridge so it can use **port 8765**.
+
+## What Gets Installed
+
+Keep **`Install_AI_Bridge.exe`** and **`_internal`** in the same folder before running the installer.
+
+| Item | What it does |
+| ---- | ------------ |
+| **`Install_AI_Bridge.exe`** | Installs the bridge into a new `bridge` folder. |
+| **`_internal\`** | Files the installer needs. Keep it next to the installer. |
+| **`README.md`** | This guide. |
+
+After installation, the bridge is usually here:
+
+`<folder-you-chose>\bridge\`
+
+If you cancel the folder picker on Windows, it usually falls back to:
 
 `%LOCALAPPDATA%\MinecraftAIAgentBridge\bridge\`
 
-| Location | Contents |
-|----------|----------|
-| **`minecraft_ai_bridge.exe`** | Start this to run the bridge. |
-| **`Data\`** | Checkpoints, `episode_state.json`, **`runtime_overrides.yaml`** (hot-reload / control mode), other runtime data. |
-| **`logs\`** | Bridge log files (if written next to the exe). |
-| **`_internal\`** | Bundled Python and libraries (do not edit). |
+Inside the installed `bridge` folder, you should see:
 
-Default config is bundled read-only; runtime tuning uses **`Data\runtime_overrides.yaml`** and the in-game config UI when connected.
+| Item | What it is for |
+| ---- | -------------- |
+| **`minecraft_ai_bridge.exe`** | Starts the bridge program. |
+| **`Data\`** | Stores settings and runtime files. |
+| **`Data\runtime_overrides.yaml`** | The main settings file you can edit by hand. |
+| **`_internal\`** | Program files. Do not edit these. |
 
-## Install the bridge
+## Change Settings Without Opening Minecraft
 
-1. Double-click **`Install_AI_Bridge.exe`**.
-2. In the **folder picker**, select an **existing** parent folder (create it first if needed, e.g. **`D:\MinecraftAI`** on Windows or **`~/minecraft-ai`** on Linux/macOS). The installer creates **`bridge`** inside it. **Linux:** install **`python3-tk`** for the Tk dialog, or install **zenity** / **kdialog** as a fallback. *(Set **`AI_AGENT_BRIDGE_HOME`** to skip the picker.)*
-3. Wait for extraction. Explorer should open the **`bridge`** folder; the installer then starts **`minecraft_ai_bridge.exe`** if it was unpacked.
-4. Next time, run **`minecraft_ai_bridge.exe`** from that **`bridge`** folder (or run the installer again to refresh files; your **`Data`** folder is kept when possible).
+The installer now creates this file for you:
 
-**Firewall:** allow the bridge if Windows asks — it listens on **TCP 8765** by default (WebSocket).
+`bridge\Data\runtime_overrides.yaml`
 
-### If PyTorch fails with `WinError 1114` / `c10.dll` (often when your username has a space)
+You can open that file in a text editor and change settings there without opening Minecraft.
 
-Paths under `C:\Users\First Last\...` can break PyTorch’s **`c10.dll`** on some PCs.
+Useful settings in that file include:
 
-**Easiest:** When the installer asks for a folder, choose something like **`D:\MinecraftAI`** (create it first in Explorer, no spaces in the path). The game will use **`D:\MinecraftAI\bridge\...`**.
+- `control_mode`
+- `policy.dqn.epsilon_start`
+- `policy.reward.survival_reward`
+- `policy.reward.step_penalty`
+- `policy.reward.move_scale`
+- `policy.reward.max_move_reward`
+- `policy.reward.no_progress_penalty`
+- `policy.reward.front_clear_bonus`
+- `policy.reward.item_pickup_reward`
+- `policy.reward.max_steps_per_episode`
+- `policy.reward.blocks`
+- `policy.reward.mobs`
 
-**Alternate:** Set **`AI_AGENT_BRIDGE_HOME`** to `D:\MinecraftAI` before running the installer to **skip** the picker and force that parent folder. Set **`AI_AGENT_BRIDGE_DATA`** (for the mod UI) to **`D:\MinecraftAI\bridge\Data`** (or wherever **`Data`** ended up).
+After saving the file, restart **`minecraft_ai_bridge.exe`** to make sure the new settings load.
 
-### How to tell it worked
+## Install the Minecraft Mod
 
-1. The installer window stays open until you press **Enter** (read the `[Installer]` lines for errors).
-2. **File Explorer** should open your **`bridge`** folder (under the path you picked or the default under `%LOCALAPPDATA%\MinecraftAIAgentBridge\`).
-3. That folder should contain **`minecraft_ai_bridge.exe`** and **`_internal\`** (large folder).
-4. The bridge may open its **own** console window and ask for firewall access.
+The bridge installer does **not** place the mod into Minecraft for you.
 
-If Explorer did not open, open the **`bridge`** folder you selected in the picker (or `%LOCALAPPDATA%\MinecraftAIAgentBridge\bridge` if you used the default).
+You need the built mod `.jar` file from your team or from the project build.
 
-## Install the Forge mod (manual)
+Put the `.jar` into the `mods` folder for your Minecraft installation:
 
-The installer **does not** copy any `.jar` into Minecraft.
+- CurseForge / Prism / other launchers: open the instance folder, then open `mods`
+- Default Minecraft launcher on Windows: `%APPDATA%\.minecraft\mods`
 
-1. Build the mod from the project (`bot/forge`, `gradlew build`) or obtain **`ai_agent_bot-*.jar`** from your team.
-2. Put that `.jar` in the **`mods`** folder of your Minecraft instance:
-   - **CurseForge / Prism / etc.:** open the instance folder → `mods`.
-   - **Default launcher:** `%APPDATA%\.minecraft\mods`.
+Make sure you are using the correct Minecraft and Forge versions for this project:
 
-Match **Minecraft 1.20.1** and **Forge 47.x** to the project.
+- Minecraft `1.20.1`
+- Forge `47.x`
 
-## CurseForge + overlay path (optional)
+## Use a Remote Bridge or VPS
 
-If the in-game config screen should read the same **`runtime_overrides.yaml`** as the packaged bridge, set a JVM argument on the Minecraft instance (or environment variable):
+By default, the mod looks for the bridge at:
 
-- **`-DAI_AGENT_BRIDGE_DATA=`** *full path to the bridge’s **`Data`** folder*  
-  Example: `C:\Users\You\AppData\Local\MinecraftAIAgentBridge\bridge\Data`
+`ws://127.0.0.1:8765`
 
-Or set **`AI_AGENT_BRIDGE_DATA`** to that same path in Windows environment variables.
+If your bridge is running on a different machine, like a VPS, you can change the bridge address.
+
+Ways to set the bridge address:
+
+- JVM argument: `-Dai_agent.bridge_uri=ws://your-bridge-host:8765`
+- Environment variable: `AI_AGENT_BRIDGE_URI=ws://your-bridge-host:8765`
+
+Common examples:
+
+- **Singleplayer or client-controlled mode:** set the bridge URI in your Minecraft launcher if your client should connect to a remote bridge.
+- **Dedicated server or Apex hosting:** set the bridge URI in the server startup JVM arguments so the server-side mod connects to the VPS bridge.
+
+Important:
+
+- In multiplayer **`SERVER_BOT`** mode, the **server** usually owns the bridge connection.
+- That means players normally do **not** need to set the bridge URI on their own computers for that mode.
+
+### Optional: Let the Minecraft UI Read the Same Settings File
+
+If you want the in-game config screen to use the same `runtime_overrides.yaml` file as the packaged bridge, set:
+
+- JVM argument: `-DAI_AGENT_BRIDGE_DATA=<full path to the bridge Data folder>`
+- Or environment variable: `AI_AGENT_BRIDGE_DATA=<full path to the bridge Data folder>`
+
+Example:
+
+`C:\Users\You\AppData\Local\MinecraftAIAgentBridge\bridge\Data`
 
 ## Troubleshooting
 
-- **Game won’t connect:** Start the bridge first, then launch Minecraft. Check that nothing else is using port **8765**.
-- **Stuck in wrong control mode:** See project docs; single-player + client mod normally uses **PLAYER** mode. Edit **`Data\runtime_overrides.yaml`** or use **Apply** in the mod UI when the WebSocket is connected.
-- **`WinError 1114` / `c10.dll` / lots of WebSocket errors:** PyTorch fails while loading native DLLs. The Windows bridge build now intentionally drops PyInstaller's copied **`msvcp140.dll`** and relies on the system **[VC++ Redistributable x64](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)** instead, because the bundled copy can break Torch `c10.dll` init. If you still see this, try in order: (1) rebuild with **`build_bridge.ps1`** then **`build_bridge_release.ps1`** and reinstall the fresh release, (2) confirm the VC++ redistributable is installed, (3) set **`AI_AGENT_BRIDGE_HOME`** to a path with **no spaces** if your username contains a space, and (4) reinstall so the bridge picks up PATH sanitization for CUDA vs CPU wheels.
-- **Repeated connection spam in the console:** The mod **reconnects** after each handler crash. Fixing PyTorch (above) stops the loop.
+### The installer finished, but I do not know if it worked
 
-For source, build scripts, and the mod, use the main project repository.
+Check for these signs:
+
+1. A `bridge` folder was created.
+2. That folder contains `minecraft_ai_bridge.exe`.
+3. That folder also contains `Data`.
+4. The file `Data\runtime_overrides.yaml` exists.
+
+### The game or server will not connect
+
+Try these steps:
+
+1. Start the bridge first.
+2. Make sure nothing else is already using port `8765`.
+3. If you are using a VPS or another computer, make sure the correct bridge URI is set.
+4. Make sure the firewall allows traffic on port `8765`.
+
+### I changed the settings file, but nothing happened
+
+Close and restart **`minecraft_ai_bridge.exe`** after editing `runtime_overrides.yaml`.
+
+### I am using Apex or another hosting company
+
+Put this in the server JVM arguments:
+
+```text
+-Dai_agent.bridge_uri=ws://YOUR_VPS_IP:8765
+```
+
+Then restart the server and look for a message in the console that says it will connect to that address.
+
+### I get a `WinError 1114` or `c10.dll` error
+
+This sometimes happens when the install path contains spaces, especially in usernames.
+
+Try this:
+
+1. Make a simple folder like `D:\MinecraftAI`
+2. Reinstall the bridge there
+3. Run it again
+
+If that still does not work, make sure the Microsoft Visual C++ Redistributable x64 is installed:
+
+[VC++ Redistributable x64](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)
+
+### The bridge keeps spamming connection errors
+
+That usually means the bridge cannot start correctly or the game/server is trying to reconnect over and over.
+
+Check:
+
+- the bridge is actually running
+- the address is correct
+- the firewall is not blocking it
+
+## Final Notes
+
+This README is meant to help students and teachers get started without needing to read the source code.
+
+If you are one of the project developers and need the build scripts or source files, use the main project repository instead.

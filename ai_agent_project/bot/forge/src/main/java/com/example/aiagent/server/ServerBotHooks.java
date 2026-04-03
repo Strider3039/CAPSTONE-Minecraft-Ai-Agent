@@ -1,5 +1,6 @@
 package com.example.aiagent.server;
 
+import com.example.aiagent.BridgeUriResolver;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -23,15 +24,8 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 public class ServerBotHooks {
 
     private final FakeBotManager bots;
-
-    /** Bridge WebSocket URI. Override with JVM arg: -Dai_agent.bridge_uri=ws://host:port */
-    private static final String DEFAULT_WS_URI = "ws://127.0.0.1:8765";
-    private static String getBridgeUri() {
-        String u = System.getProperty("ai_agent.bridge_uri");
-        return (u != null && !u.isBlank()) ? u.trim() : DEFAULT_WS_URI;
-    }
-
-    private final ServerBridgeWebSocketClient ws = new ServerBridgeWebSocketClient(getBridgeUri());
+    private final String bridgeUri = BridgeUriResolver.resolve();
+    private final ServerBridgeWebSocketClient ws = new ServerBridgeWebSocketClient(bridgeUri);
     private final BotSoakTestController soak;
 
     private static final java.util.concurrent.atomic.AtomicInteger INSTANCES =
@@ -50,10 +44,9 @@ public class ServerBotHooks {
 
         MinecraftForge.EVENT_BUS.register(this);
 
-        String uri = getBridgeUri();
         System.out.println("[AI-BOT] ServerBotHooks registered. instanceId=" + instanceId
                 + " this=" + System.identityHashCode(this));
-        System.out.println("[AI-BOT][SERVER-WS] Will connect to " + uri + " (logical server side)");
+        System.out.println("[AI-BOT][SERVER-WS] Will connect to " + bridgeUri + " (logical server side)");
     }
 
     private static boolean shouldRun(MinecraftServer server) {
@@ -98,9 +91,10 @@ public class ServerBotHooks {
 
     @SubscribeEvent
     public void onPlayerLoggedOut(PlayerEvent.PlayerLoggedOutEvent event) {
-        MinecraftServer server = event.getEntity().getServer();
+        if (!(event.getEntity() instanceof ServerPlayer player)) return;
+        MinecraftServer server = player.getServer();
         if (server == null) return;
-        String name = event.getEntity().getGameProfile().getName();
+        String name = player.getGameProfile().getName();
         server.execute(() -> {
             int remaining = server.getPlayerList().getPlayers().size();
             System.out.println("[AI-BOT][DEBUG][ServerBotHooks] PlayerLoggedOut name=" + name
