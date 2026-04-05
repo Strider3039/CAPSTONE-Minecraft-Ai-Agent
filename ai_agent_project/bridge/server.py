@@ -222,6 +222,51 @@ def ensure_runtime_overlay_file_on_disk(merged_runtime: Dict[str, Any]) -> None:
         )
 
 
+def build_default_runtime_overlay(runtime_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    runtime_cfg = dict(runtime_cfg) if isinstance(runtime_cfg, dict) else {}
+    policy_cfg = runtime_cfg.get("policy") if isinstance(runtime_cfg.get("policy"), dict) else {}
+    dqn_cfg = policy_cfg.get("dqn") if isinstance(policy_cfg.get("dqn"), dict) else {}
+    reward_cfg = policy_cfg.get("reward") if isinstance(policy_cfg.get("reward"), dict) else {}
+
+    control_mode = str(runtime_cfg.get("control_mode", MODE_PLAYER)).strip().replace("-", "_").upper()
+    if control_mode not in ROLES_BY_MODE:
+        control_mode = MODE_PLAYER
+
+    return {
+        "control_mode": control_mode,
+        "policy": {
+            "dqn": {
+                "epsilon_start": dqn_cfg.get("epsilon_start", 1.0),
+            },
+            "reward": {
+                "survival_reward": reward_cfg.get("survival_reward", 0.001),
+                "step_penalty": reward_cfg.get("step_penalty", -0.001),
+                "move_scale": reward_cfg.get("move_scale", 1.0),
+                "max_move_reward": reward_cfg.get("max_move_reward", 0.1),
+                "no_progress_penalty": reward_cfg.get("no_progress_penalty", -0.02),
+                "front_clear_bonus": reward_cfg.get("front_clear_bonus", 0.005),
+                "item_pickup_reward": reward_cfg.get("item_pickup_reward", 0.05),
+                "max_steps_per_episode": reward_cfg.get("max_steps_per_episode", 2000),
+                "blocks": dict(reward_cfg.get("blocks")) if isinstance(reward_cfg.get("blocks"), dict) else {},
+                "mobs": dict(reward_cfg.get("mobs")) if isinstance(reward_cfg.get("mobs"), dict) else {},
+            },
+        },
+    }
+
+
+def ensure_runtime_overlay_exists(runtime_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    if RUNTIME_OVERLAY_PATH.exists():
+        return load_runtime_overlay()
+
+    overlay = build_default_runtime_overlay(runtime_cfg)
+    save_runtime_overlay(overlay)
+    stdlog.getLogger("bridge.server").info(
+        "created default runtime overlay",
+        extra={"path": str(RUNTIME_OVERLAY_PATH)},
+    )
+    return overlay
+
+
 # ---------- Episode counter (continued) ----------
 episode_start_time: Optional[float] = None
 MC_DAY_SECONDS = 1200  # 20 min
@@ -1141,7 +1186,7 @@ async def Main() -> None:
     _rt_cfg = getattr(cfg, "runtime", {}) or {}
     if not isinstance(_rt_cfg, dict):
         _rt_cfg = {}
-    _ov0 = load_runtime_overlay()
+    _ov0 = ensure_runtime_overlay_exists(_rt_cfg)
     _merged0 = DeepMerge(dict(_rt_cfg), dict(_ov0))
     ensure_runtime_overlay_file_on_disk(_merged0)
     _cm0 = str(_merged0.get("control_mode", MODE_PLAYER)).strip().replace("-", "_").upper()

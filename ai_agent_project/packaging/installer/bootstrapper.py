@@ -228,6 +228,42 @@ def _sync_bridge_bundle(src: Path, dst: Path) -> None:
             shutil.copy2(item, target)
 
 
+def _default_runtime_overlay_text() -> str:
+    return (
+        "# Bridge runtime overrides\n"
+        "# Edit this file to tune the AI bridge without opening Minecraft.\n"
+        "# Reinstalling the bridge keeps this file when it already exists.\n"
+        "# Restart the bridge after editing to guarantee the new values are loaded.\n"
+        "control_mode: PLAYER\n"
+        "policy:\n"
+        "  dqn:\n"
+        "    epsilon_start: 1.0\n"
+        "  reward:\n"
+        "    survival_reward: 0.001\n"
+        "    step_penalty: -0.001\n"
+        "    move_scale: 1.0\n"
+        "    max_move_reward: 0.1\n"
+        "    no_progress_penalty: -0.02\n"
+        "    front_clear_bonus: 0.005\n"
+        "    item_pickup_reward: 0.05\n"
+        "    max_steps_per_episode: 2000\n"
+        "    blocks: {}\n"
+        "    mobs: {}\n"
+    )
+
+
+def _ensure_runtime_overlay(bridge_dir: Path) -> Path:
+    data_dir = bridge_dir / "Data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    overlay_path = data_dir / "runtime_overrides.yaml"
+    if overlay_path.exists():
+        print(f"[Installer] Keeping existing runtime overrides: {overlay_path}")
+        return overlay_path
+    overlay_path.write_text(_default_runtime_overlay_text(), encoding="utf-8")
+    print(f"[Installer] Created editable runtime overrides: {overlay_path}")
+    return overlay_path
+
+
 def main() -> int:
     payload_zip = _embedded_path("bridge_payload.zip")
     if not payload_zip.exists():
@@ -260,6 +296,7 @@ def main() -> int:
         return 3
 
     _sync_bridge_bundle(src_bridge, bridge_dir)
+    overlay_path = _ensure_runtime_overlay(bridge_dir)
 
     if tmp_extract.exists():
         shutil.rmtree(tmp_extract, ignore_errors=True)
@@ -267,6 +304,7 @@ def main() -> int:
     print("[Installer] Done.")
     print(f"[Installer] Run the bridge: {bridge_exe}")
     print(f"[Installer] Writable data (checkpoints, episode state, runtime_overrides.yaml): {bridge_dir / 'Data'}")
+    print(f"[Installer] Edit bridge settings here: {overlay_path}")
     print(f"[Installer] Logs / metrics: under {bridge_dir} (e.g. logs under Data as configured).")
 
     _open_install_folder(bridge_dir)

@@ -141,7 +141,7 @@ If the bridge runs on another machine, set the WebSocket URL with a **JVM argume
 -Dai_agent.bridge_uri=ws://your-bridge-host:8765
 ```
 
-**Note:** The mod reads this from the Java system property **`ai_agent.bridge_uri`**. Launcher support varies; there is **no** separate environment variable wired in the mod for the URI—use the JVM flag above.
+**Note:** The mod resolves the WebSocket URL in order: JVM **`-Dai_agent.bridge_uri=...`**, then environment variable **`AI_AGENT_BRIDGE_URI`**, then the default above. Many launchers only apply JVM args reliably.
 
 **Common examples**
 

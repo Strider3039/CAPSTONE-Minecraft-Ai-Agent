@@ -1,6 +1,7 @@
 package com.example.aiagent.client;
 
 import com.example.aiagent.BotMod;
+import com.example.aiagent.BridgeUriResolver;
 import com.example.aiagent.common.AgentModeSharedLogic;
 import com.google.gson.JsonObject;
 import com.mojang.blaze3d.platform.InputConstants;
@@ -61,13 +62,6 @@ public class ClientBridgeHooks {
     // ----------------------------
     // WebSocket / Bridge
     // ----------------------------
-    private static final String DEFAULT_WS_URI = "ws://127.0.0.1:8765";
-
-    /** Same override as dedicated server: {@code -Dai_agent.bridge_uri=ws://host:port} */
-    private static String getBridgeUri() {
-        String u = System.getProperty("ai_agent.bridge_uri");
-        return (u != null && !u.isBlank()) ? u.trim() : DEFAULT_WS_URI;
-    }
     private volatile ForgeWebSocketClient wsClient;
     private long reconnectCount = 0;
     private long droppedCount = 0;
@@ -200,7 +194,7 @@ public class ClientBridgeHooks {
 
         connecting = true;
         try {
-            String bridgeUri = getBridgeUri();
+            String bridgeUri = BridgeUriResolver.resolve();
             ForgeWebSocketClient client = new ForgeWebSocketClient(new URI(bridgeUri));
             client.setOnReconnect(() -> {
                 reconnectCount++;
