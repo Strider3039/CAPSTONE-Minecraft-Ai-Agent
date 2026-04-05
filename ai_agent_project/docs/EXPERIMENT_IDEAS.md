@@ -23,7 +23,7 @@ Short, reproducible experiments you can run with the Minecraft AI agent and the 
 ## 3. Observation rate and latency (when client uses config)
 
 - **Idea:** If the client sends observations at a lower rate, the policy gets fewer updates and reaction can feel slower; you may also see different latency in bridge logs.
-- **What to do:** In `shared/config/default.yaml`, under `runtime.obs`, set `rate_hz` to **6** (or **4**). Restart the bridge so the new config is loaded. (When the client respects `runtime.obs.rate_hz` from the server, you could change this via a future hello/config path and avoid restart.)
+- **What to do:** In `configs/default.yaml`, under `runtime.obs`, set `rate_hz` to **6** (or **4**). Restart the bridge so the new config is loaded. (When the client respects `runtime.obs.rate_hz` from the server, you could change this via a future hello/config path and avoid restart.)
 - **What you should see:** Fewer observation messages per second; in bridge metrics or logs you may see different queue depths or latency. The agent may react more slowly to the world.
 
 ---

@@ -1,7 +1,7 @@
-# ai/src/policy/mock_envs/ethan_gym.py
+# ai/policy/mock_envs/ethan_gym.py
 
 import numpy as np
-from ai.src.policy.obs_encoding import OBS_DIM
+from ai.policy.obs_encoding import OBS_DIM
 
 class EthanMockEnv:
     """

@@ -1,6 +1,7 @@
 schema_version: 2
 
 bridge:
+  # Paths are resolved in code (runtime_paths); values below are documentation hints only.
   paths:
       data_dir: "shared/Data"
       schemas_dir: "shared/schemas"
@@ -13,6 +14,8 @@ bridge:
     ping_interval_s: 20
     ping_timeout_s: 120
     max_msg_bytes: 1048576
+  # Poll runtime_overrides.yaml on disk so edits (or mod GUI writing the file) hot-reload without config_update.
+  runtime_overlay_poll_interval_s: 0.5
 
   streaming:
     target_hz: 12
@@ -102,7 +105,8 @@ runtime:
       interact_cooldown_ms: 500
 
     dqn:
-      checkpoint_path: "policy/runs/checkpoints/dqn_initial.pt"
+      # Resolved against bundle (_MEIPASS) then Data/ (see resource_search_roots). Packaged build includes seed from build_bridge.ps1.
+      checkpoint_path: "checkpoints/dqn_initial.pt"
       # Hot-reload (GUI / config_update) overrides; defaults match DQNAgent
       epsilon_start: 1.0
       epsilon_end: 0.1

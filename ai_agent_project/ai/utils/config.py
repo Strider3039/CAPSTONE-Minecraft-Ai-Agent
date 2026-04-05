@@ -2,9 +2,9 @@ from __future__ import annotations
 import os, pathlib, yaml
 from typing import Any, Dict
 
-from ai.src.utils.runtime_paths import shared_dir
+from ai.utils.runtime_paths import configs_dir
 
-CONF_DIR = shared_dir() / "config" 
+CONF_DIR = configs_dir()
 
 # Assign config 
 class Config(dict):

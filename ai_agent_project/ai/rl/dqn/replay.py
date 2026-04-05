@@ -1,7 +1,7 @@
 from __future__ import annotations
 import numpy as np
 
-from ai.src.policy.obs_encoding import EncodeObservation, OBS_DIM
+from ai.policy.obs_encoding import EncodeObservation, OBS_DIM
 
 class ReplayBuffer:
     """

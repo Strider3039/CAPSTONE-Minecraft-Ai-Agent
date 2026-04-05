@@ -16,6 +16,7 @@ import net.minecraft.util.Mth;
 import net.minecraftforge.fml.loading.FMLPaths;
 import net.minecraftforge.registries.ForgeRegistries;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -39,8 +40,22 @@ public class AiBotConfigScreen extends Screen {
      *   <li>{@code AI_AGENT_RUNTIME_OVERLAY}=full path to {@code runtime_overrides.yaml}, or</li>
      *   <li>{@code AI_AGENT_BRIDGE_DATA}=full path to the bridge {@code Data} folder (same as Python {@code data_dir()}).</li>
      * </ul>
-     * JVM: {@code -Dai_agent.runtime_overlay=C:\path\to\runtime_overrides.yaml}
+     * JVM: {@code -Dai_agent.runtime_overlay=}file, or {@code -Dai_agent.bridge_data=}Data folder (matches Python).
+     * Config file (when env vars are not passed through the launcher): {@code config/ai_agent_bridge_data_path.txt}
+     * in the Minecraft instance — first non-blank, non-{@code #} line = full path to the bridge {@code Data} folder
+     * (lines starting with {@code #} are comments).
      */
+    private static Path bridgeDataRootFromInstanceConfigTxt(Path cfgFile) throws IOException {
+        for (String raw : Files.readString(cfgFile, StandardCharsets.UTF_8).split("\\R")) {
+            String line = raw.trim();
+            if (line.isEmpty() || line.startsWith("#")) {
+                continue;
+            }
+            return Path.of(line);
+        }
+        return null;
+    }
+
     private static List<Path> runtimeOverlayCandidatePaths() {
         List<Path> out = new ArrayList<>();
         String prop = System.getProperty("ai_agent.runtime_overlay");
@@ -56,6 +71,25 @@ public class AiBotConfigScreen extends Screen {
             Path root = Path.of(envData.trim());
             out.add(root.resolve(RUNTIME_OVERLAY_NAME));
             out.add(root.resolve("Data").resolve(RUNTIME_OVERLAY_NAME));
+        }
+        // JVM: -Dai_agent.bridge_data=M:\MinecraftAI\bridge\Data (same folder Python uses for Data/)
+        String bridgeDataProp = System.getProperty("ai_agent.bridge_data");
+        if (bridgeDataProp != null && !bridgeDataProp.isBlank()) {
+            Path root = Path.of(bridgeDataProp.trim());
+            out.add(root.resolve(RUNTIME_OVERLAY_NAME));
+            out.add(root.resolve("Data").resolve(RUNTIME_OVERLAY_NAME));
+        }
+        // Instance config/ai_agent_bridge_data_path.txt — launcher often does not pass env vars to Java
+        try {
+            Path cfgLine = FMLPaths.CONFIGDIR.get().resolve("ai_agent_bridge_data_path.txt");
+            if (Files.isRegularFile(cfgLine)) {
+                Path root = bridgeDataRootFromInstanceConfigTxt(cfgLine);
+                if (root != null) {
+                    out.add(root.resolve(RUNTIME_OVERLAY_NAME));
+                    out.add(root.resolve("Data").resolve(RUNTIME_OVERLAY_NAME));
+                }
+            }
+        } catch (Exception ignored) {
         }
         try {
             Path gameDir = FMLPaths.GAMEDIR.get();
@@ -214,6 +248,7 @@ public class AiBotConfigScreen extends Screen {
                 Files.createDirectories(parent);
             }
             Files.writeString(path, sb.toString(), StandardCharsets.UTF_8);
+            System.out.println("[AI-BOT][ConfigUI] persisted runtime_overrides.yaml -> " + path.toAbsolutePath());
         } catch (Exception e) {
             System.err.println("[AI-BOT][ConfigUI] persist runtime overlay failed: " + e.getMessage());
         }

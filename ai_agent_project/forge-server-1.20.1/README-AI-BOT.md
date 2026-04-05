@@ -50,11 +50,11 @@ From `ai_agent_project` (with Python env and deps installed):
 
 ```bash
 cd ai_agent_project
-python -m ai.src.app.server
-# Or: python ai/src/app/server.py (with PYTHONPATH set so ai_agent_project is the root)
+python -m bridge.server
+# Or: python bridge/server.py (with PYTHONPATH set so ai_agent_project is the root)
 ```
 
-Default: bridge listens on `0.0.0.0:8765` (see `shared/config/default.yaml`).
+Default: bridge listens on `0.0.0.0:8765` (see `configs/default.yaml`).
 
 ### 4. Start the dedicated server
 

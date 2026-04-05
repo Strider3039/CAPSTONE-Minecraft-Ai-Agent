@@ -2,7 +2,7 @@ package com.example.aiagent;
 
 /**
  * Canonical role and control_mode strings for bridge hello. Must match Python server and
- * shared/schemas/bridge_constants.json exactly.
+ * schemas/bridge_constants.json exactly.
  */
 public final class BridgeConstants {
     private BridgeConstants() {}

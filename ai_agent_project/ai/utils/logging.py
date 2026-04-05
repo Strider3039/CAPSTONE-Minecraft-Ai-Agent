@@ -29,10 +29,17 @@ class JsonFormatter(logging.Formatter):
 
         return json.dumps(payload, separators=(",", ":"))
 
-def SetupLogging(cfg: Optional[Dict[str, Any]] = None) -> logging.Logger:
+def SetupLogging(
+    cfg: Optional[Dict[str, Any]] = None,
+    *,
+    logs_base: Optional[pathlib.Path] = None,
+) -> logging.Logger:
     """
     Configure root logger from unified YAML:
       cfg == cfg.bridge["logging"] (dict)
+
+    Relative ``file.path`` is resolved under ``logs_base`` (bridge ``Data/`` when set)
+    so packaged exes do not write next to the process CWD.
     """
     cfg = cfg or {}
     level = str(cfg.get("level", "INFO")).upper()
@@ -56,6 +63,16 @@ def SetupLogging(cfg: Optional[Dict[str, Any]] = None) -> logging.Logger:
         path_str = file_cfg.get("path")
         if path_str:
             path = pathlib.Path(path_str)
+            if not path.is_absolute():
+                base = logs_base
+                if base is None:
+                    try:
+                        from ai.utils.runtime_paths import data_dir as _data_dir
+
+                        base = _data_dir()
+                    except Exception:
+                        base = pathlib.Path.cwd()
+                path = (base / path).resolve()
             path.parent.mkdir(parents=True, exist_ok=True)
             fh = logging.FileHandler(path, mode="a", encoding="utf-8")
             fh.setFormatter(JsonFormatter() if json_logs else sh.formatter)

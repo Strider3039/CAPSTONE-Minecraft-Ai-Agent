@@ -1,9 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
-# Optional manual build (after dist/bridge_payload.zip exists). Prefer: packaging/build_bridge_release.ps1
+# Optional manual build (after packaging/dist/bridge_payload.zip exists). Prefer: packaging/build_bridge_release.ps1
 import pathlib
 
-ROOT = pathlib.Path(SPECPATH).resolve().parent
-_payload = ROOT / "dist" / "bridge_payload.zip"
+ROOT = pathlib.Path(SPECPATH).resolve().parent.parent
+_payload = ROOT / "packaging" / "dist" / "bridge_payload.zip"
 if not _payload.is_file():
     raise FileNotFoundError(f"Run packaging/build_bridge_release.ps1 (or stage {_payload}) first.")
 

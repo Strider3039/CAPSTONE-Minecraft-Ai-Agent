@@ -1,4 +1,4 @@
-# ai/src/policy/rl/dqn/agent.py
+# ai/rl/dqn/agent.py
 
 from __future__ import annotations
 
@@ -25,9 +25,9 @@ import numpy as np
 import torch.nn as nn
 import torch.optim as optim
 
-from ai.src.policy.base import Policy
-from ai.src.policy.action_space import NUM_ACTIONS, ToMinecraftControls
-from ai.src.policy.obs_encoding import OBS_DIM, EncodeObservation
+from ai.policy.base import Policy
+from ai.policy.action_space import NUM_ACTIONS, ToMinecraftControls
+from ai.policy.obs_encoding import OBS_DIM, EncodeObservation
 from .model import QNetwork  # relative import
 from .replay import ReplayBuffer
 from .reward_engine import RewardEngine
@@ -322,7 +322,11 @@ class OnlineDQNPolicy(Policy):
             except FileNotFoundError:
                 print(f"[OnlineDQNPolicy] checkpoint not found: {checkpoint_path}, training from scratch")
             except Exception as e:
-                print(f"[OnlineDQNPolicy] failed to load checkpoint ({checkpoint_path}): {e}")
+                print(
+                    f"[OnlineDQNPolicy] failed to load checkpoint ({checkpoint_path}): {e} — training from scratch"
+                )
+        else:
+            print("[OnlineDQNPolicy] no checkpoint_path resolved (bundle/Data); training from scratch")
 
         return cls(
             agent,
@@ -358,7 +362,7 @@ class OnlineDQNPolicy(Policy):
         """
         Resolve Data paths consistently with server.py (shared/Data in dev; beside .exe when frozen).
         """
-        from ai.src.utils.runtime_paths import data_dir
+        from ai.utils.runtime_paths import data_dir
 
         data_root = data_dir()
         data_root.mkdir(parents=True, exist_ok=True)

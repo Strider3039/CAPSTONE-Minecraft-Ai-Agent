@@ -1,6 +1,6 @@
 # Evaluation runner (scenario-driven runs)
 
-The evaluation runner runs scenario-driven evaluation defined in `shared/config/evaluation.yaml`: it connects to the bridge as a client, runs N trials per scenario (with seeds), applies termination (max_steps, episode_timeout_s), records success/steps/collisions/queue stats, and writes **eval.csv** plus optional plots under `reports/`.
+The evaluation runner runs scenario-driven evaluation defined in `configs/evaluation.yaml`: it connects to the bridge as a client, runs N trials per scenario (with seeds), applies termination (max_steps, episode_timeout_s), records success/steps/collisions/queue stats, and writes **eval.csv** plus optional plots under `reports/`.
 
 ## Prerequisites
 

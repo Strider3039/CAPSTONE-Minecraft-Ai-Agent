@@ -1,4 +1,4 @@
-# ai/src/policy/rl/dqn/reward_components.py
+# ai/policy/rl/dqn/reward_components.py
 """
 Modular reward components for the DQN reward engine.
 

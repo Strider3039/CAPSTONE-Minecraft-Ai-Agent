@@ -1,0 +1,11 @@
+# Minecraft instance file: copy or rename to  config/ai_agent_bridge_data_path.txt
+# (inside your Prism/Curse/.minecraft profile folder, next to the "config" folder).
+#
+# Put ONE line below (no #) with the full path to the bridge "Data" folder — the same
+# folder that contains runtime_overrides.yaml next to minecraft_ai_bridge.exe.
+#
+# Windows example (edit to match your PC):
+# C:\Games\MinecraftAI\minecraft_ai_bridge\Data
+#
+# Linux example:
+# /home/you/minecraft_ai_bridge/Data

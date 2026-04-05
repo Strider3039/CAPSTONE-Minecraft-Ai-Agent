@@ -8,10 +8,10 @@ from collections import deque
 import logging as stdlog
 
 log = stdlog.getLogger("bridge.server")
-# Make sure ai/src is on path if needed
-SRC = _pathlib.Path(__file__).resolve().parents[1]  # ai/src
-if str(SRC) not in sys.path:
-    sys.path.append(str(SRC))
+# Make sure the project root is importable when run directly.
+PROJECT_ROOT = _pathlib.Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
 
 
 async def QueueAdd(

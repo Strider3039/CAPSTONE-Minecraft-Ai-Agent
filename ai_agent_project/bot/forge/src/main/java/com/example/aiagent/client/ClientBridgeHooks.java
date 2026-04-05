@@ -61,7 +61,13 @@ public class ClientBridgeHooks {
     // ----------------------------
     // WebSocket / Bridge
     // ----------------------------
-    private static final String BRIDGE_URI = "ws://127.0.0.1:8765";
+    private static final String DEFAULT_WS_URI = "ws://127.0.0.1:8765";
+
+    /** Same override as dedicated server: {@code -Dai_agent.bridge_uri=ws://host:port} */
+    private static String getBridgeUri() {
+        String u = System.getProperty("ai_agent.bridge_uri");
+        return (u != null && !u.isBlank()) ? u.trim() : DEFAULT_WS_URI;
+    }
     private volatile ForgeWebSocketClient wsClient;
     private long reconnectCount = 0;
     private long droppedCount = 0;
@@ -194,7 +200,8 @@ public class ClientBridgeHooks {
 
         connecting = true;
         try {
-            ForgeWebSocketClient client = new ForgeWebSocketClient(new URI(BRIDGE_URI));
+            String bridgeUri = getBridgeUri();
+            ForgeWebSocketClient client = new ForgeWebSocketClient(new URI(bridgeUri));
             client.setOnReconnect(() -> {
                 reconnectCount++;
                 System.out.println("[AI-BOT] Reconnected (" + reconnectCount + ")");
@@ -211,7 +218,7 @@ public class ClientBridgeHooks {
 
             wsClient = client;
             ForgeWebSocketClient.setAiEnabled(aiEnabled);
-            System.out.println("[AI-BOT] WS connecting -> " + BRIDGE_URI);
+            System.out.println("[AI-BOT] WS connecting -> " + bridgeUri);
 
             ForgeWebSocketClient finalClient = client;
             new Thread(() -> {

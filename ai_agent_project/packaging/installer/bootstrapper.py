@@ -44,24 +44,28 @@ def _pick_folder_tkinter() -> Path | None:
     except Exception:
         return None
 
-    root = tk.Tk()
-    root.withdraw()
     try:
-        root.attributes("-topmost", True)
-    except Exception:
-        pass
-    init = _initial_dir_for_picker()
-    try:
-        sel = filedialog.askdirectory(
-            title='Choose install location — a "bridge" folder will be created here',
-            initialdir=init,
-            mustexist=True,
-        )
-    finally:
-        root.destroy()
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            root.attributes("-topmost", True)
+        except Exception:
+            pass
+        init = _initial_dir_for_picker()
+        try:
+            sel = filedialog.askdirectory(
+                title='Choose install location — a "bridge" folder will be created here',
+                initialdir=init,
+                mustexist=True,
+            )
+        finally:
+            root.destroy()
 
-    sel = (sel or "").strip()
-    return Path(sel) if sel else None
+        sel = (sel or "").strip()
+        return Path(sel) if sel else None
+    except Exception:
+        # Headless Linux/SSH: no DISPLAY → Tk fails; fall through to zenity/typed/default.
+        return None
 
 
 def _pick_folder_zenity() -> Path | None:
@@ -187,6 +191,13 @@ def _open_install_folder(path: Path) -> None:
         print(f"[Installer] Could not open install folder: {e}")
 
 
+def _bridge_binary_in_install(bridge_dir: Path) -> Path:
+    """PyInstaller entry binary is ``minecraft_ai_bridge`` (Unix) or ``.exe`` (Windows)."""
+    if sys.platform == "win32":
+        return bridge_dir / "minecraft_ai_bridge.exe"
+    return bridge_dir / "minecraft_ai_bridge"
+
+
 def _sync_bridge_bundle(src: Path, dst: Path) -> None:
     if not src.is_dir():
         raise FileNotFoundError(f"Missing bridge folder in payload: {src}")
@@ -225,7 +236,7 @@ def main() -> int:
 
     dest_root = _choose_install_parent()
     bridge_dir = dest_root / "bridge"
-    bridge_exe = bridge_dir / "minecraft_ai_bridge.exe"
+    bridge_exe = _bridge_binary_in_install(bridge_dir)
 
     print("[Installer] AI Bridge only (Forge mod is not installed by this program).")
     print(f"[Installer] Installing bridge to: {bridge_dir}")
@@ -260,12 +271,19 @@ def main() -> int:
 
     _open_install_folder(bridge_dir)
 
-    if bridge_exe.exists():
+    no_launch = os.environ.get("AI_AGENT_INSTALLER_NO_LAUNCH", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if bridge_exe.exists() and not no_launch:
         print("[Installer] Launching bridge...")
         subprocess.Popen([str(bridge_exe)], cwd=str(bridge_exe.parent))
         print("[Installer] Bridge launched.")
+    elif bridge_exe.exists() and no_launch:
+        print("[Installer] Skipping bridge launch (AI_AGENT_INSTALLER_NO_LAUNCH is set).")
     else:
-        print(f"[Installer] Note: bridge exe not found at: {bridge_exe}")
+        print(f"[Installer] Note: bridge binary not found at: {bridge_exe}")
         print("[Installer] Start it manually from the install directory.")
 
     return 0
@@ -279,7 +297,7 @@ if __name__ == "__main__":
         print(f"[Installer] Failed: {e}")
         traceback.print_exc()
         _exit = 1
-    if getattr(sys, "frozen", False):
+    if getattr(sys, "frozen", False) and sys.stdin.isatty():
         try:
             input("\n[Installer] Press Enter to close...")
         except (EOFError, KeyboardInterrupt):

@@ -97,6 +97,15 @@ cd mod/
 
 4. Launch Minecraft using the Forge profile.
 
+### Packaged bridge: keep the Minecraft config UI in sync with `runtime_overrides.yaml`
+
+If you use the **PyInstaller bridge** (`minecraft_ai_bridge.exe`), settings live in **`Data/runtime_overrides.yaml`** next to the exe. The in-game **AI Bot** config screen reads that file when it opens (and can write it when you **Apply**). For those paths to match, the Minecraft **Java** process must know where that `Data` folder is.
+
+**Recommended setup:** In your **Minecraft instance folder** (the profile Prism/Curse uses), create **`config/ai_agent_bridge_data_path.txt`**. The first non-comment line should be the **full path** to the bridge `Data` folder (same folder as `runtime_overrides.yaml`). Lines starting with `#` are ignored, so you can paste short notes above the path.
+
+- Template: [`configs/ai_agent_bridge_data_path.example.txt`](configs/ai_agent_bridge_data_path.example.txt) — after `packaging/build_bridge.ps1`, a copy also appears next to the exe under **`Data/ai_agent_bridge_data_path.example.txt`**.
+- Alternatives (if your launcher supports them): JVM arg `-Dai_agent.bridge_data=...` or env `AI_AGENT_BRIDGE_DATA` — see [docs/HOT_RELOAD_AND_PATHS.md](docs/HOT_RELOAD_AND_PATHS.md).
+
 ## Functionality
 
 Once the bridge is running and you have joined a world, the mod connects automatically. Control is toggled with the following keybinds (must be in-game, not in menus):
@@ -113,7 +122,7 @@ For a stable demo, use **singleplayer** and leave mode as **PLAYER** so the audi
 
 ### Bridge metrics and logs
 
-When the bridge runs with metrics enabled (`bridge.metrics.enabled: true` in config), it writes NDJSON metric rows to a single file. The path in config (e.g. `logs/bridge_metrics.ndjson`) is **resolved relative to `shared/Data`**, so the file is always written to a known location: **`ai_agent_project/shared/Data/logs/bridge_metrics.ndjson`** (for default path `logs/bridge_metrics.ndjson`). Rows include queue sizes, watermarks, obs/act throughput (obs_per_sec, acts_per_sec), tick latency (p50/p90 ms, hz), and connection events (connection_count on each client connect). Run the bridge with `ai_agent_project` on `PYTHONPATH` so it finds `shared/config` and `shared/Data`; see [docs/HOT_RELOAD_AND_PATHS.md](docs/HOT_RELOAD_AND_PATHS.md).
+When the bridge runs with metrics enabled (`bridge.metrics.enabled: true` in config), it writes NDJSON metric rows to a single file. The path in config (e.g. `logs/bridge_metrics.ndjson`) is **resolved relative to `shared/Data`**, so the file is always written to a known location: **`ai_agent_project/shared/Data/logs/bridge_metrics.ndjson`** (for default path `logs/bridge_metrics.ndjson`). Rows include queue sizes, watermarks, obs/act throughput (obs_per_sec, acts_per_sec), tick latency (p50/p90 ms, hz), and connection events (connection_count on each client connect). Run the bridge with `ai_agent_project` on `PYTHONPATH` so it finds `configs` and `shared/Data`; see [docs/HOT_RELOAD_AND_PATHS.md](docs/HOT_RELOAD_AND_PATHS.md).
 
 ## Contributing
 
@@ -125,6 +134,7 @@ When the bridge runs with metrics enabled (`bridge.metrics.enabled: true` in con
 
 ## Additional Documentation
 
+- **Packaged bridge (Linux / EC2)**: [packaging/release_bundle/README_LINUX.md](packaging/release_bundle/README_LINUX.md) — `packaging/build_all_linux.sh`, headless install, systemd.
 - **Keybinds and demo**: [docs/DEMO_AND_CONTROLS.md](docs/DEMO_AND_CONTROLS.md) — exact keybinds (Ctrl+P, Ctrl+M), mode clarity, and recommended demo flow.
 - **Hot-reload and paths**: [docs/HOT_RELOAD_AND_PATHS.md](docs/HOT_RELOAD_AND_PATHS.md) — GUI → config_update flow, overlay path (`shared/Data/runtime_overrides.yaml`), and how to run the bridge so it finds config and Data.
 - **Experiment ideas**: [docs/EXPERIMENT_IDEAS.md](docs/EXPERIMENT_IDEAS.md) — short experiments (step penalty, epsilon, obs rate, rewards) for students.

@@ -8,7 +8,7 @@ from jsonschema import validate
 # Add project root
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ai.src.policy.action_space import (
+from ai.policy.action_space import (
     ACTIONS,
     NUM_ACTIONS,
     ActionIndex,
@@ -93,7 +93,7 @@ class TestActionSpace(unittest.TestCase):
 
     def test_SchemaFileExists(self):
         root = pathlib.Path(__file__).parents[1]
-        schema_path = root / "shared" / "schemas" / "action.schema.json"
+        schema_path = root / "schemas" / "action.schema.json"
         self.assertTrue(schema_path.exists())
 
 

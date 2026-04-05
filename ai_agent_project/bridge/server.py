@@ -13,7 +13,7 @@ import uuid
 if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
     _import_root = pathlib.Path(sys._MEIPASS)
 else:
-    _import_root = pathlib.Path(__file__).resolve().parents[3]
+    _import_root = pathlib.Path(__file__).resolve().parents[1]
 _ir = str(_import_root)
 if _ir not in sys.path:
     sys.path.insert(0, _ir)
@@ -26,12 +26,12 @@ from websockets.exceptions import (
 )
 from jsonschema import validate, ValidationError
 
-from ai.src.utils.config import LoadConfig, DeepMerge, LoadYaml, SaveYaml
-from ai.src.utils.runtime_paths import data_dir, shared_dir
-from ai.src.utils.logging import SetupLogging, WriteMetric
+from ai.utils.config import LoadConfig, DeepMerge, LoadYaml, SaveYaml
+from ai.utils.runtime_paths import data_dir, schemas_dir, shared_dir
+from ai.utils.logging import SetupLogging, WriteMetric
 
-from ai.src.policy.registry import build_policy_from_config
-from ai.src.app.policy_worker import PolicyWorker
+from ai.policy.registry import build_policy_from_config
+from bridge.policy_worker import PolicyWorker
 
 
 # ---------- Fast JSON ----------
@@ -58,7 +58,7 @@ except Exception:
 
 # ---------- Paths ----------
 sharedDir = shared_dir()
-schemasDir = sharedDir / "schemas"
+schemasDir = schemas_dir()
 
 dataDir = data_dir()
 
@@ -86,7 +86,15 @@ EPISODE_SAVE_PATH = dataDir / "episode_state.json"
 episode = 0
 
 # ---------- Runtime overlay persistence (hot-reload values: control_mode, policy.reward, policy.dqn) ----------
-RUNTIME_OVERLAY_PATH = dataDir / "runtime_overrides.yaml"
+# Tests may assign a pathlib.Path to override; None => data_dir() / "runtime_overrides.yaml" (always fresh).
+RUNTIME_OVERLAY_PATH: Optional[pathlib.Path] = None
+
+
+def runtime_overlay_path() -> pathlib.Path:
+    """Writable overlay next to checkpoints (dev: shared/Data; frozen: exe Data/)."""
+    if RUNTIME_OVERLAY_PATH is not None:
+        return RUNTIME_OVERLAY_PATH
+    return data_dir() / "runtime_overrides.yaml"
 
 # ---------- Metrics sink path (resolved at startup relative to dataDir so logs go to a known location) ----------
 RESOLVED_METRICS_SINK_PATH: Optional[pathlib.Path] = None
@@ -161,13 +169,14 @@ def resolve_metrics_sink_path(cfg: Any, base_dir: pathlib.Path) -> pathlib.Path:
 
 def load_runtime_overlay() -> Dict[str, Any]:
     """Load persisted runtime overlay from disk. Returns empty dict if missing or invalid."""
+    path = runtime_overlay_path()
     try:
-        raw = LoadYaml(RUNTIME_OVERLAY_PATH)
+        raw = LoadYaml(path)
         return dict(raw) if isinstance(raw, dict) else {}
     except Exception as e:
         stdlog.getLogger("bridge.server").warning(
             "failed to load runtime overlay",
-            extra={"path": str(RUNTIME_OVERLAY_PATH), "error": str(e)},
+            extra={"path": str(path), "error": str(e)},
         )
         return {}
 
@@ -176,16 +185,40 @@ def save_runtime_overlay(overlay: Dict[str, Any]) -> None:
     """Persist runtime overlay to disk so next bridge start uses the same values."""
     if not isinstance(overlay, dict):
         return
+    path = runtime_overlay_path()
     try:
-        SaveYaml(RUNTIME_OVERLAY_PATH, overlay)
-        stdlog.getLogger("bridge.server").debug(
+        SaveYaml(path, overlay)
+        stdlog.getLogger("bridge.server").info(
             "saved runtime overlay",
-            extra={"path": str(RUNTIME_OVERLAY_PATH), "keys": list(overlay.keys())},
+            extra={"path": str(path), "keys": list(overlay.keys())},
         )
     except Exception as e:
         stdlog.getLogger("bridge.server").warning(
             "failed to save runtime overlay",
-            extra={"path": str(RUNTIME_OVERLAY_PATH), "error": str(e)},
+            extra={"path": str(path), "error": str(e)},
+        )
+
+
+def ensure_runtime_overlay_file_on_disk(merged_runtime: Dict[str, Any]) -> None:
+    """
+    The overlay file is only written after a GUI config_update by default, so a fresh Data/
+    folder never showed runtime_overrides.yaml. Create a minimal file on first start so the path
+    matches docs and can be edited for hot-reload without opening the in-game UI first.
+    """
+    path = runtime_overlay_path()
+    if path.exists():
+        return
+    try:
+        cm = str(merged_runtime.get("control_mode", MODE_PLAYER)).strip() or MODE_PLAYER
+        save_runtime_overlay({"control_mode": cm})
+        stdlog.getLogger("bridge.server").info(
+            "created runtime_overrides.yaml (edit this file or use in-game Apply to update)",
+            extra={"path": str(path)},
+        )
+    except Exception as e:
+        stdlog.getLogger("bridge.server").warning(
+            "could not create runtime_overrides.yaml",
+            extra={"path": str(path), "error": str(e)},
         )
 
 
@@ -356,6 +389,66 @@ async def MetricsLoop(
         await asyncio.sleep(interval)
 
 
+async def RuntimeOverlayFileWatchLoop(
+    stop_evt: asyncio.Event,
+    policy_holder: Dict[str, Any],
+    runtime_overlay: Dict[str, Any],
+    current_runtime: Dict[str, Any],
+    refresh_current_runtime_fn,
+    interval_s: float,
+) -> None:
+    """
+    When runtime_overrides.yaml mtime changes, reload overlay from disk, merge into current_runtime,
+    and apply to the active policy (same effect as a WebSocket config_update).
+    """
+    log = stdlog.getLogger("bridge.server.overlay_watch")
+    last_mtime = 0.0
+    path = runtime_overlay_path()
+    try:
+        if path.is_file():
+            last_mtime = path.stat().st_mtime
+    except OSError:
+        pass
+    interval_s = max(float(interval_s), 0.05)
+    while not stop_evt.is_set():
+        try:
+            await asyncio.wait_for(stop_evt.wait(), timeout=interval_s)
+            break
+        except asyncio.TimeoutError:
+            pass
+        path = runtime_overlay_path()
+        try:
+            mtime = path.stat().st_mtime if path.is_file() else 0.0
+        except OSError:
+            continue
+        if mtime <= last_mtime:
+            continue
+        last_mtime = mtime
+        try:
+            loaded = load_runtime_overlay()
+        except Exception as e:
+            log.debug("runtime overlay disk read skipped", extra={"error": str(e)})
+            continue
+        if not isinstance(loaded, dict):
+            continue
+        runtime_overlay.clear()
+        runtime_overlay.update(loaded)
+        refresh_current_runtime_fn()
+        pol = policy_holder.get("policy")
+        if pol is not None and hasattr(pol, "apply_runtime_config"):
+            try:
+                pol.apply_runtime_config(current_runtime)
+                log.info(
+                    "runtime_overlay_reloaded_from_file",
+                    extra={"path": str(path), "keys": list(runtime_overlay.keys())},
+                )
+            except Exception as e:
+                log.warning(
+                    "runtime_overlay_file_apply_failed",
+                    extra={"error": str(e), "trace": traceback.format_exc()},
+                )
+
+
 async def HeartBeatLoop(ws: WebSocketServerProtocol, stopEvt: asyncio.Event) -> None:
     try:
         await SendEvents(ws, "bridge_health", {"level": "info", "detail": "connected"})
@@ -406,6 +499,14 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
     refresh_current_runtime()
     hello_timeout_s = float(current_runtime.get("hello_timeout_s", 2.0))
 
+    _poll_env = os.getenv("AI_AGENT_RUNTIME_OVERLAY_POLL_S", "").strip()
+    if _poll_env:
+        overlay_poll_s = float(_poll_env)
+    else:
+        overlay_poll_s = float((cfg.bridge or {}).get("runtime_overlay_poll_interval_s", 0.5))
+
+    policy_holder: Dict[str, Any] = {"policy": None}
+
     stopEvt = asyncio.Event()
     tasks: list[asyncio.Task] = []
     started = False
@@ -448,6 +549,7 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
             )
 
         policy = build_policy_from_config(current_runtime)
+        policy_holder["policy"] = policy
         if hasattr(policy, "apply_runtime_config"):
             policy.apply_runtime_config(current_runtime)
         _register_checkpoint_policy(policy)
@@ -478,6 +580,18 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
                     emit_event=emit_event,
                     policy_step=(policy.act if hasattr(policy, "act") else policy),
                     on_latency_stats=on_latency_stats,
+                )
+            )
+        )
+        tasks.append(
+            asyncio.create_task(
+                RuntimeOverlayFileWatchLoop(
+                    stopEvt,
+                    policy_holder,
+                    runtime_overlay,
+                    current_runtime,
+                    refresh_current_runtime,
+                    overlay_poll_s,
                 )
             )
         )
@@ -1013,10 +1127,14 @@ async def Main() -> None:
     env = os.getenv("APP_ENV", "prod")
     cfg = LoadConfig(env=env)
 
+    port_override = os.getenv("AI_AGENT_BRIDGE_PORT", "").strip()
+    if port_override.isdigit():
+        cfg.bridge.setdefault("server", {})["port"] = int(port_override)
+
     RESOLVED_METRICS_SINK_PATH = resolve_metrics_sink_path(cfg, dataDir)
 
     # Configure logging once per process
-    SetupLogging(cfg.bridge.get("logging", {}))
+    SetupLogging(cfg.bridge.get("logging", {}), logs_base=data_dir())
 
     serverCfg = cfg.bridge["server"]
     log = stdlog.getLogger("bridge.server")
@@ -1025,6 +1143,7 @@ async def Main() -> None:
         _rt_cfg = {}
     _ov0 = load_runtime_overlay()
     _merged0 = DeepMerge(dict(_rt_cfg), dict(_ov0))
+    ensure_runtime_overlay_file_on_disk(_merged0)
     _cm0 = str(_merged0.get("control_mode", MODE_PLAYER)).strip().replace("-", "_").upper()
     log.info(
         "starting server",
@@ -1034,7 +1153,7 @@ async def Main() -> None:
             "port": serverCfg["port"],
             "frozen": bool(getattr(sys, "frozen", False)),
             "data_dir": str(dataDir),
-            "runtime_overlay_path": str(RUNTIME_OVERLAY_PATH),
+            "runtime_overlay_path": str(runtime_overlay_path()),
             "effective_control_mode": _cm0,
         },
     )

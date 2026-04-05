@@ -1,0 +1,2 @@
+# Keep shell packaging scripts LF-terminated for Ubuntu/EC2.
+packaging/*.sh text eol=lf

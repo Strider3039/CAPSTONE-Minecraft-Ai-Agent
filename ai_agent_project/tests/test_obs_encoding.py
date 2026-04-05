@@ -5,7 +5,7 @@ import os
 import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from ai.src.policy.obs_encoding import EncodeObservation, OBS_DIM
+from ai.policy.obs_encoding import EncodeObservation, OBS_DIM
 
 class TestObsEncoding(unittest.TestCase):
     def test_basic_encoding(self):

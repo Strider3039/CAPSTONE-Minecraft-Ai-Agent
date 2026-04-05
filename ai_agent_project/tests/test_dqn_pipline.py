@@ -6,9 +6,9 @@ import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ai.src.policy.mock_envs.dqn_mock import EthanMockEnv
-from ai.src.policy.rl.dqn.train import train_agent
-from ai.src.policy.rl.dqn.agent import DQNAgent
+from experiments.mock_envs.dqn_mock import EthanMockEnv
+from ai.rl.dqn.train import train_agent
+from ai.rl.dqn.agent import DQNAgent
 
 
 class TestDQNPipeline(unittest.TestCase):

@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT))
 
 pytest.importorskip("torch")
 
-from ai.src.policy.rl.dqn.agent import DQNAgent, OnlineDQNPolicy
+from ai.rl.dqn.agent import DQNAgent, OnlineDQNPolicy
 
 
 def _obs(seq: int, x: float = 0.0) -> dict:

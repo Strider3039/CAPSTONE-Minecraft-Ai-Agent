@@ -116,6 +116,10 @@ ai_agent_project/shared/Data/*
 !ai_agent_project/shared/Data/.gitignore
 
 # =====================================================
+# PyInstaller checkpoint staging (build_bridge.ps1)
+ai_agent_project/.bridge_packaging_staging/
+
+# =====================================================
 # Generated Resources
 # =====================================================
 ai_agent_project/packaging/dist/

@@ -1,6 +1,6 @@
 # 2.1 Parameters exposed and tested
 
-All parameters below live under `shared/config/default.yaml` (and overrides in `dev.yaml`, `evaluation.yaml`, or hot-reload overlay in `shared/Data/runtime_overrides.yaml`). The bridge merges `runtime` with the overlay and passes it to the policy worker and policy (e.g. DQN).
+All parameters below live under `configs/default.yaml` (and overrides in `dev.yaml`, `evaluation.yaml`, or hot-reload overlay in `shared/Data/runtime_overrides.yaml`). The bridge merges `runtime` with the overlay and passes it to the policy worker and policy (e.g. DQN).
 
 ---
 
@@ -118,7 +118,7 @@ See README “Bridge metrics and logs” and [HOT_RELOAD_AND_PATHS.md](HOT_RELOA
 
 ## Episode-level metrics (3.2)
 
-Per-episode data supports "N episodes under config A vs B" and aligns with `shared/config/evaluation.yaml` (success rate, episode duration, task completion steps).
+Per-episode data supports "N episodes under config A vs B" and aligns with `configs/evaluation.yaml` (success rate, episode duration, task completion steps).
 
 **Locations (under `shared/Data/`):**
 

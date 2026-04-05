@@ -22,7 +22,7 @@ pytest.importorskip("torch")
 
 from websockets.exceptions import ConnectionClosedOK
 
-import ai.src.app.server as server
+import bridge.server as server
 
 
 # ------------------------------------------------------------

@@ -85,6 +85,13 @@ minecraft {
         client {
             // Comma-separated list of namespaces to load gametests from. Empty = all namespaces.
             property 'forge.enabledGameTestNamespaces', mod_id
+            // Optional: align dev client with a non-default bridge port / overlay path (see scripts/run_distributed_smoke.ps1)
+            if (project.hasProperty('aiAgentBridgeUri')) {
+                jvmArg project.property('aiAgentBridgeUri')
+            }
+            if (project.hasProperty('aiAgentRuntimeOverlay')) {
+                jvmArg project.property('aiAgentRuntimeOverlay')
+            }
         }
 
         server {

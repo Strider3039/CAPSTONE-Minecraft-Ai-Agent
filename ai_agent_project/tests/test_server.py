@@ -15,7 +15,7 @@ import asyncio
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 
-import ai.src.app.server as server
+import bridge.server as server
 
 
 # ------------------------------------------------------------

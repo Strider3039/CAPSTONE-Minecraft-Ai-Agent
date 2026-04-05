@@ -220,7 +220,7 @@ def ensure_bridge_ready(host: str, port: int, overlay_path: Path, start_bridge: 
     _DATA_DIR.mkdir(parents=True, exist_ok=True)
     save_yaml(overlay_path, {"control_mode": "PLAYER"})
     proc = subprocess.Popen(
-        [sys.executable, "-m", "ai.src.app.server"],
+        [sys.executable, "-m", "bridge.server"],
         cwd=str(_PROJECT_ROOT),
         env={**os.environ, "PYTHONPATH": str(_PROJECT_ROOT), "APP_ENV": "prod"},
         stdout=subprocess.DEVNULL,

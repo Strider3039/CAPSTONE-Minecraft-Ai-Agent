@@ -3,12 +3,12 @@ import pathlib
 import time
 from typing import Dict
 
-from ai.src.utils.runtime_paths import shared_dir
+from ai.utils.runtime_paths import schemas_dir
 
 # ---------------------------------------------------------
 # Load schema
 # ---------------------------------------------------------
-SchemaPath = shared_dir() / "schemas" / "action.schema.json"
+SchemaPath = schemas_dir() / "action.schema.json"
 with open(SchemaPath, "r") as f:
     ActionSchema = json.load(f)
 

@@ -5,8 +5,8 @@ import os
 import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from ai.src.policy.obs_encoding import EncodeObservation, OBS_DIM
-from ai.src.policy.rl.dqn.replay import ReplayBuffer
+from ai.policy.obs_encoding import EncodeObservation, OBS_DIM
+from ai.rl.dqn.replay import ReplayBuffer
 
 
 class TestReplayBuffer(unittest.TestCase):

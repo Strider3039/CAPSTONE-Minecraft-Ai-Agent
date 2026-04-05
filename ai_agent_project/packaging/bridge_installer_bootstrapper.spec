@@ -4,14 +4,13 @@ from pathlib import Path
 block_cipher = None
 
 # Compute payload path from the spec file location (PyInstaller may change CWD).
-SPEC_DIR = Path(SPECPATH).resolve().parent  # .../ai_agent_project/packaging/installer
-AI_ROOT = SPEC_DIR.parent.parent  # .../ai_agent_project
-payload_zip = AI_ROOT / "dist" / "bridge_payload.zip"
-HERE = SPEC_DIR
+SPEC_DIR = Path(SPECPATH).resolve().parent  # .../ai_agent_project/packaging
+payload_zip = SPEC_DIR / "dist" / "bridge_payload.zip"
+BOOTSTRAPPER = (SPEC_DIR / "installer" / "bootstrapper.py").resolve()
 
 a = Analysis(
-    [str((HERE / "bootstrapper.py").resolve())],
-    pathex=[str(HERE.resolve())],
+    [str(BOOTSTRAPPER)],
+    pathex=[str((SPEC_DIR / "installer").resolve())],
     binaries=[],
     datas=[(str(payload_zip), ".")],
     hiddenimports=[],

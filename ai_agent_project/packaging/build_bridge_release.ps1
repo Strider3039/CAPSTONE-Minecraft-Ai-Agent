@@ -1,16 +1,16 @@
 # Build a distributable folder: README + bridge-only installer (no mod deployment).
-# Prerequisites: run packaging\build_bridge.ps1 first so dist\minecraft_ai_bridge exists.
+# Prerequisites: run packaging\build_bridge.ps1 first so packaging\dist\minecraft_ai_bridge exists.
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $ProjectRoot
 
-# File locks on dist\minecraft_ai_bridge (e.g. base_library.zip) break Compress-Archive if the bridge is still running.
+# File locks on packaging\dist\minecraft_ai_bridge (e.g. base_library.zip) break Compress-Archive if the bridge is still running.
 foreach ($procName in @("minecraft_ai_bridge", "Install_AI_Bridge")) {
   Get-Process -Name $procName -ErrorAction SilentlyContinue | Stop-Process -Force
 }
 Start-Sleep -Milliseconds 600
 
-$dist = Join-Path $ProjectRoot "dist"
+$dist = Join-Path $ProjectRoot "packaging\dist"
 $work = Join-Path $dist "pyinstaller_installer_work"
 $bridgeOnedir = Join-Path $dist "minecraft_ai_bridge"
 $bridgeExe = Join-Path $bridgeOnedir "minecraft_ai_bridge.exe"

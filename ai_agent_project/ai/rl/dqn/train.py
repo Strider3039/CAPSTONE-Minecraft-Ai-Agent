@@ -1,4 +1,4 @@
-# ai/src/policy/rl/dqn/train.py
+# ai/policy/rl/dqn/train.py
 
 from typing import Any, Dict, Optional
 import os
@@ -8,7 +8,7 @@ import random
 import numpy as np
 import torch
 
-from ai.src.policy.rl.dqn.agent import DQNAgent
+from ai.rl.dqn.agent import DQNAgent
 
 def _set_seed(seed: int) -> None:
     random.seed(seed)

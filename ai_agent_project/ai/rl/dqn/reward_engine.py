@@ -1,4 +1,4 @@
-# ai/src/policy/rl/dqn/reward_engine.py
+# ai/policy/rl/dqn/reward_engine.py
 
 from __future__ import annotations
 from dataclasses import dataclass, field

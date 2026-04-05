@@ -37,7 +37,7 @@ Implementation: `ClientBridgeHooks` registers `TOGGLE_AI_KEY` (Ctrl+P) and `TOGG
 
 ## Recommended demo flow
 
-1. Start the **Python bridge** (e.g. from repo root: `.venv38\Scripts\python -m ai.src.app.server` or your run script).
+1. Start the **Python bridge** (e.g. from repo root: `.venv38\Scripts\python -m bridge.server` or your run script).
 2. Launch **Minecraft** with the Forge mod, open a **singleplayer** world.
 3. Wait for connection (e.g. “Reconnected” or no errors); default mode is **PLAYER**.
 4. Press **Ctrl+P** to enable AI. The local character should move/look (and optionally jump/use) according to the policy.

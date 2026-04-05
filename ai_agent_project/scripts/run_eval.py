@@ -252,7 +252,7 @@ async def run_eval(
             [
                 sys.executable,
                 "-m",
-                "ai.src.app.server",
+                "bridge.server",
             ],
             cwd=str(_PROJECT_ROOT),
             env={**os.environ, "PYTHONPATH": str(_PROJECT_ROOT), "APP_ENV": "prod"},

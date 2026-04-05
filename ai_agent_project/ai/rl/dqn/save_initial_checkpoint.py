@@ -3,17 +3,18 @@ from pathlib import Path
 import sys
 
 # -------------------------------
-# Add ai/src to PYTHONPATH
+# Add project root to PYTHONPATH
 # -------------------------------
-SRC_ROOT = Path(__file__).resolve().parents[3]  # ai/src
-sys.path.append(str(SRC_ROOT))
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+sys.path.append(str(PROJECT_ROOT))
 
 # -------------------------------
-# Imports (use ai.src.* like the rest of the codebase)
+# Imports
 # -------------------------------
-from ai.src.policy.obs_encoding import OBS_DIM
-from ai.src.policy.action_space import ActionSpace
-from ai.src.policy.rl.dqn.model import QNetwork
+from ai.policy.obs_encoding import OBS_DIM
+from ai.policy.action_space import ActionSpace
+from ai.rl.dqn.model import QNetwork
+from ai.utils.runtime_paths import data_dir
 
 # Create action space so we know output size
 action_space = ActionSpace()
@@ -23,13 +24,9 @@ num_actions = action_space.num_actions()
 model = QNetwork(OBS_DIM, num_actions)
 
 # -------------------------------
-# Save to shared/Data/checkpoints (easy to find, matches OnlineDQN)
+# Save to Data/checkpoints (easy to find, matches OnlineDQN)
 # -------------------------------
-here = Path(__file__).resolve()
-project_root = here.parents[5]  # ai_agent_project
-shared_dir = project_root / "shared"
-data_dir = shared_dir / "Data"
-checkpoint_dir = data_dir / "checkpoints"
+checkpoint_dir = data_dir() / "checkpoints"
 checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
 save_path = checkpoint_dir / "dqn_initial.pt"

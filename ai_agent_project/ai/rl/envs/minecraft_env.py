@@ -1,8 +1,8 @@
 import asyncio
 from typing import Tuple, Any, Dict
 
-from ai.src.policy.obs_encoding import encode_observation
-from ai.src.policy.action_space import MinecraftActionSpace
+from ai.policy.obs_encoding import encode_observation
+from ai.policy.action_space import MinecraftActionSpace
 
 
 class MinecraftEnv:

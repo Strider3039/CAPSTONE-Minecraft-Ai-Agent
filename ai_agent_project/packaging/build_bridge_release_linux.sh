@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Build install_ai_bridge + _internal and assemble Minecraft_AI_Bridge_Release_Linux/.
+# Prerequisites: run packaging/build_bridge_linux.sh first.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT"
+
+PY="${PYTHON:-python3}"
+DIST="$PROJECT_ROOT/packaging/dist"
+WORK="$DIST/pyinstaller_installer_work_linux"
+BRIDGE_ONEDIR="$DIST/minecraft_ai_bridge"
+BRIDGE_BIN="$BRIDGE_ONEDIR/minecraft_ai_bridge"
+
+if [[ ! -f "$BRIDGE_BIN" ]]; then
+  echo "Missing $BRIDGE_BIN — run packaging/build_bridge_linux.sh first."
+  exit 1
+fi
+
+pkill -f "minecraft_ai_bridge" 2>/dev/null || true
+pkill -f "install_ai_bridge" 2>/dev/null || true
+sleep 0.6
+
+PAYLOAD_ZIP="$DIST/bridge_payload.zip"
+STAGE_ROOT="$DIST/_bridge_payload_stage"
+STAGE_BRIDGE="$STAGE_ROOT/bridge"
+rm -rf "$STAGE_ROOT"
+mkdir -p "$STAGE_BRIDGE"
+
+shopt -s nullglob
+for item in "$BRIDGE_ONEDIR"/*; do
+  base="$(basename "$item")"
+  [[ "$base" == "Data" || "$base" == "logs" ]] && continue
+  cp -a "$item" "$STAGE_BRIDGE/"
+done
+shopt -u nullglob
+
+rm -f "$PAYLOAD_ZIP"
+(
+  cd "$STAGE_ROOT"
+  zip -r -q "$PAYLOAD_ZIP" bridge
+)
+rm -rf "$STAGE_ROOT"
+
+BOOTSTRAPPER="$PROJECT_ROOT/packaging/installer/bootstrapper.py"
+INSTALLER_DIST="$DIST/installer_out_linux"
+rm -rf "$INSTALLER_DIST" "$WORK"
+
+# Unix add-data separator is ':' (see PyInstaller docs).
+PAYLOAD_ABS="$(cd "$(dirname "$PAYLOAD_ZIP")" && pwd)/$(basename "$PAYLOAD_ZIP")"
+"$PY" -m PyInstaller "$BOOTSTRAPPER" \
+  --noconfirm \
+  --add-data "${PAYLOAD_ABS}:." \
+  --name install_ai_bridge \
+  --workpath "$WORK" \
+  --specpath "$WORK" \
+  --distpath "$INSTALLER_DIST" \
+  --collect-all tkinter
+
+INSTALLER_DIR="$INSTALLER_DIST/install_ai_bridge"
+if [[ ! -f "$INSTALLER_DIR/install_ai_bridge" ]]; then
+  echo "PyInstaller did not produce: $INSTALLER_DIR/install_ai_bridge"
+  exit 1
+fi
+chmod +x "$INSTALLER_DIR/install_ai_bridge"
+
+RELEASE_DIR="$DIST/Minecraft_AI_Bridge_Release_Linux"
+rm -rf "$RELEASE_DIR"
+mkdir -p "$RELEASE_DIR"
+cp -a "$INSTALLER_DIR"/* "$RELEASE_DIR/"
+cp -f "$PROJECT_ROOT/packaging/release_bundle/README_LINUX.md" "$RELEASE_DIR/README.md"
+
+echo ""
+echo "Release folder ready:"
+echo "  $RELEASE_DIR"
+echo "  - README.md"
+echo "  - install_ai_bridge"
+echo "  - _internal/   (required; ship the whole folder)"
+echo "Zip Minecraft_AI_Bridge_Release_Linux for upload to EC2."

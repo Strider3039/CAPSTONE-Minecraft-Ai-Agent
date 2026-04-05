@@ -19,12 +19,12 @@ This document records **important fixes** that affect bridge behavior, control m
 
 | Area | Change | Files |
 |------|--------|--------|
-| Action backlog | **`act_max`**: 64 → **256** | `shared/config/default.yaml` |
-| Drain actions faster | **`max_actions_per_tick`**: 3 → **12** | `shared/config/default.yaml` |
-| Cheaper training loop | **`train_every_n: 2`** — gradient + target update on every Nth transition (still **stores** every transition) | `default.yaml`, `registry.py`, `ai/src/policy/rl/dqn/agent.py` |
+| Action backlog | **`act_max`**: 64 → **256** | `configs/default.yaml` |
+| Drain actions faster | **`max_actions_per_tick`**: 3 → **12** | `configs/default.yaml` |
+| Cheaper training loop | **`train_every_n: 2`** — gradient + target update on every Nth transition (still **stores** every transition) | `default.yaml`, `registry.py`, `ai/rl/dqn/agent.py` |
 | Less disk I/O | **`log_disk_every_n: 5`** — throttle `online_dqn_episode_state.json` + `step_history.jsonl` (always log on **`done`**) | same |
 | Hot-reload | **`apply_runtime_config`** reads **`train_every_n`** / **`log_disk_every_n`** | `agent.py` |
-| Multi-session warning | Log **WARNING** if more than one bridge session starts a full policy on the process | `ai/src/app/server.py` (`_active_policy_bridge_sessions`) |
+| Multi-session warning | Log **WARNING** if more than one bridge session starts a full policy on the process | `bridge/server.py` (`_active_policy_bridge_sessions`) |
 
 ### Outcome (expected)
 
@@ -111,7 +111,7 @@ The following behaviors were aligned so mode is predictable (details live in cod
 - **`latency_stats`** now uses only the **last N** samples (default **48**, config **`bridge.queues.latency_stats_recent_samples`**). Detail string includes **`window=N`**.
 - **Throttled warning** **`stale_observation`** (≥**5s** age, at most every **10s**) with **`obs_q` / `act_q` sizes** so logs/metrics point at backlog.
 
-**Files:** `ai/src/app/policy_worker.py`, `shared/config/default.yaml`
+**Files:** `bridge/policy_worker.py`, `configs/default.yaml`
 
 ---
 

@@ -4,7 +4,7 @@ import pytest
 
 # Make project root importable (…/ai_agent_project)
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from ai.src.utils import config as cfg_mod  # noqa: E402
+from ai.utils import config as cfg_mod  # noqa: E402
 
 
 def write_yaml(p: Path, content: str):
@@ -26,7 +26,7 @@ def test_loadyaml_missing_file(tmp_path: Path):
 
 def test_loadconfig_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """LoadConfig loads single default.yaml (schema_version 2) then merges env overlay (dev.yaml)."""
-    conf_dir = tmp_path / "shared" / "config"
+    conf_dir = tmp_path / "configs"
 
     write_yaml(conf_dir / "default.yaml", """
       schema_version: 2
@@ -57,7 +57,7 @@ def test_loadconfig_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 def test_loadconfig_schema_version_mismatch_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """LoadConfig raises when default.yaml has schema_version other than 2."""
-    conf_dir = tmp_path / "shared" / "config"
+    conf_dir = tmp_path / "configs"
     write_yaml(conf_dir / "default.yaml", """
       schema_version: "1.1"
       bridge: {}
@@ -73,7 +73,7 @@ def test_loadconfig_schema_version_mismatch_raises(tmp_path: Path, monkeypatch: 
 
 def test_config_attribute_access(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Attribute-style access (cfg.bridge, cfg.bridge['server']) works after LoadConfig."""
-    conf_dir = tmp_path / "shared" / "config"
+    conf_dir = tmp_path / "configs"
     write_yaml(conf_dir / "default.yaml", """
       schema_version: 2
       bridge:
@@ -89,8 +89,8 @@ def test_config_attribute_access(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert cfg.bridge.get("does_not_exist") is None
 
 
-# Project config dir (ai_agent_project/shared/config) for 2.1 parameter tests
-_CONFIG_DIR = Path(__file__).resolve().parent.parent / "shared" / "config"
+# Project config dir (ai_agent_project/configs) for 2.1 parameter tests
+_CONFIG_DIR = Path(__file__).resolve().parent.parent / "configs"
 
 
 def test_runtime_parameters_exposed(monkeypatch: pytest.MonkeyPatch):
@@ -99,7 +99,7 @@ def test_runtime_parameters_exposed(monkeypatch: pytest.MonkeyPatch):
     are present in the project default config and have expected keys.
     """
     if not (_CONFIG_DIR / "default.yaml").exists():
-        pytest.skip("default.yaml not found (run from repo with ai_agent_project/shared/config)")
+        pytest.skip("default.yaml not found (run from repo with ai_agent_project/configs)")
     monkeypatch.setattr(cfg_mod, "CONF_DIR", _CONFIG_DIR)
     monkeypatch.delenv("APP_ENV", raising=False)
     cfg = cfg_mod.LoadConfig()
