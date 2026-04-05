@@ -97,18 +97,27 @@ Install **`python3-tk`** or use **zenity** / **kdialog** on Linux if Tk is missi
 
 ## Build these artifacts (developers)
 
-On **Ubuntu x86_64**, from the **`ai_agent_project`** directory (Python 3.10+, JDK 17 for the mod build):
+On **Ubuntu x86_64**, from the **`ai_agent_project`** directory, use **Python 3.9 or newer** for the bridge (PyInstaller + wheels). Dependency **`rfc3987-syntax`** has **no** builds for **Python 3.8**, so 3.8 will fail `pip install` on `requirements/bridge-packaging-linux-cpu.txt`. You also need **JDK 17** for the mod build.
+
+**Ubuntu 24.04** (default Python 3.12): install venv support, then use the system interpreter:
 
 ```bash
-sudo apt install -y python3-pip python3-venv build-essential openjdk-17-jdk zip
-# optional venv:
-# python3 -m venv .venv && source .venv/bin/activate
+sudo apt update
+sudo apt install -y python3.12-venv build-essential openjdk-17-jdk zip
 
+cd /path/to/ai_agent_project
+rm -rf .venv
+python3 -m venv .venv
 chmod +x packaging/build_bridge_linux.sh packaging/build_bridge_release_linux.sh packaging/build_all_linux.sh
-./packaging/build_all_linux.sh
+PYTHON="$(pwd)/.venv/bin/python" ./packaging/build_all_linux.sh
 ```
 
-- **`SKIP_MOD_BUILD=1 ./packaging/build_bridge_linux.sh`** — bridge only (skip Gradle).
+(`build_bridge_linux.sh` runs `pip install` into that interpreter; the venv avoids Ubuntu’s PEP 668 system-Python restriction.)
+
+**Older Ubuntu** where the default Python is below 3.9: install **3.9+** (e.g. [deadsnakes](https://launchpad.net/~deadsnakes/+archive/ubuntu/ppa) `python3.10` + `python3.10-venv`) and use that binary for `python3.10 -m venv .venv`.
+
+- **`SKIP_MOD_BUILD=1`** — skip Gradle if the mod JAR is already built:  
+  `SKIP_MOD_BUILD=1 PYTHON="$(pwd)/.venv/bin/python" ./packaging/build_all_linux.sh`
 
 Outputs:
 
@@ -117,6 +126,8 @@ Outputs:
 
 ## Troubleshooting
 
+- **`No matching distribution found for rfc3987-syntax`** — your venv Python is too old; use **3.9+** (see build section above).
+- **`externally-managed-environment` when you thought a venv was active** — use `source path/to/venv/bin/activate` (must `export` `VIRTUAL_ENV`), or put the venv at **`ai_agent_project/.venv`** or repo root **`.venv38`** / **`.venv`** so the build scripts can find it, or set **`PYTHON=/full/path/to/venv/bin/python3`**.
 - **`install_ai_bridge` permission denied** — `chmod +x install_ai_bridge`
 - **Nothing listens on 8765** — run `bridge/minecraft_ai_bridge`; check firewall / security group
 - **Out of disk** — PyTorch + bundle is large; use an EBS volume with several GB free for build and install

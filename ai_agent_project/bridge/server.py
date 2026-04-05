@@ -255,14 +255,15 @@ def build_default_runtime_overlay(runtime_cfg: Dict[str, Any]) -> Dict[str, Any]
 
 
 def ensure_runtime_overlay_exists(runtime_cfg: Dict[str, Any]) -> Dict[str, Any]:
-    if RUNTIME_OVERLAY_PATH.exists():
+    path = runtime_overlay_path()
+    if path.exists():
         return load_runtime_overlay()
 
     overlay = build_default_runtime_overlay(runtime_cfg)
     save_runtime_overlay(overlay)
     stdlog.getLogger("bridge.server").info(
         "created default runtime overlay",
-        extra={"path": str(RUNTIME_OVERLAY_PATH)},
+        extra={"path": str(path)},
     )
     return overlay
 

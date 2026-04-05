@@ -7,7 +7,37 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
-PY="${PYTHON:-python3}"
+_pick_venv_interpreter() {
+  local root="$1"
+  [[ -z "$root" ]] && return 1
+  for c in "${root}/bin/python" "${root}/bin/python3"; do
+    [[ -x "$c" ]] && echo "$c" && return 0
+  done
+  return 1
+}
+
+if [[ -n "${PYTHON:-}" ]]; then
+  PY="$PYTHON"
+elif [[ -n "${VIRTUAL_ENV:-}" ]]; then
+  PY="$(_pick_venv_interpreter "$VIRTUAL_ENV")" || {
+    echo "VIRTUAL_ENV=$VIRTUAL_ENV has no bin/python or bin/python3."
+    exit 1
+  }
+elif [[ -n "${CONDA_PREFIX:-}" ]]; then
+  PY="$(_pick_venv_interpreter "$CONDA_PREFIX")" || {
+    echo "CONDA_PREFIX=$CONDA_PREFIX has no bin/python or bin/python3."
+    exit 1
+  }
+else
+  PY=""
+  for candidate_root in "$PROJECT_ROOT/.venv" "$PROJECT_ROOT/../.venv38" "$PROJECT_ROOT/../.venv"; do
+    if PY="$(_pick_venv_interpreter "$candidate_root")"; then
+      break
+    fi
+    PY=""
+  done
+  [[ -n "$PY" ]] || PY="python3"
+fi
 DIST="$PROJECT_ROOT/packaging/dist"
 WORK="$DIST/pyinstaller_installer_work_linux"
 BRIDGE_ONEDIR="$DIST/minecraft_ai_bridge"
