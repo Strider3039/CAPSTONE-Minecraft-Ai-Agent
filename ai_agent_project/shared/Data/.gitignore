@@ -1,0 +1,3 @@
+# Writable dev data (checkpoints, logs, overlay). Track this file only.
+*
+!.gitignore

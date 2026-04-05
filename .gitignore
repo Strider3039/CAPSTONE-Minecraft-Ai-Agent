@@ -2,6 +2,7 @@
 # PYTHON
 # =====================================================
 __pycache__/
+.pytest_cache/
 *.pyc
 *.pyo
 *.pyd
@@ -117,4 +118,12 @@ ai_agent_project/shared/Data/*
 # =====================================================
 # Generated Resources
 # =====================================================
+ai_agent_project/packaging/dist/
+# Legacy PyInstaller output (see packaging/dist/)
 ai_agent_project/dist/
+
+# Client prediction test dumps (written under bot/forge by Gradle tests)
+ai_agent_project/bot/forge/ghost_test_reports/
+
+# Forge server installer log (generated)
+ai_agent_project/forge-server-1.20.1/installer.log
