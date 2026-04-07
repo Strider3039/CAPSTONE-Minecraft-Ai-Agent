@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the Forge mod JAR and a PyInstaller onedir for the Python bridge (Linux).
 # Run from repo:   bash packaging/build_bridge_linux.sh
-# Prerequisites:  Python 3.9+ (jsonschema stack needs rfc3987-syntax), JDK 17 (Gradle), build-essential, venv (see README_LINUX.md).
+# Prerequisites:  Python 3.9+ (jsonschema stack needs rfc3987-syntax), JDK 17 (Gradle), build-essential, venv (see packaging/dist/README_Linux.md).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,7 +22,7 @@ if [[ -n "${PYTHON:-}" ]]; then
   PY="$PYTHON"
 elif [[ -n "${VIRTUAL_ENV:-}" ]]; then
   if ! PY="$(_pick_venv_interpreter "$VIRTUAL_ENV")"; then
-    echo "VIRTUAL_ENV=$VIRTUAL_ENV but that tree has no executable bin/python or bin/python3. Recreate the venv (see packaging/release_bundle/README_LINUX.md)."
+    echo "VIRTUAL_ENV=$VIRTUAL_ENV but that tree has no executable bin/python or bin/python3. Recreate the venv (see packaging/dist/README_Linux.md)."
     exit 1
   fi
 elif [[ -n "${CONDA_PREFIX:-}" ]]; then

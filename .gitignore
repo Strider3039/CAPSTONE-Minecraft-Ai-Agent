@@ -122,7 +122,9 @@ ai_agent_project/.bridge_packaging_staging/
 # =====================================================
 # Generated Resources
 # =====================================================
-ai_agent_project/packaging/dist/
+ai_agent_project/packaging/dist/*
+!ai_agent_project/packaging/dist/README_Windows.md
+!ai_agent_project/packaging/dist/README_Linux.md
 # Legacy PyInstaller output (see packaging/dist/)
 ai_agent_project/dist/
 

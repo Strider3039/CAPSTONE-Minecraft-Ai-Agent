@@ -134,7 +134,8 @@ When the bridge runs with metrics enabled (`bridge.metrics.enabled: true` in con
 
 ## Additional Documentation
 
-- **Packaged bridge (Linux / EC2)**: [packaging/release_bundle/README_LINUX.md](packaging/release_bundle/README_LINUX.md) — `packaging/build_all_linux.sh`, headless install, systemd.
+- **Packaged bridge (Linux / EC2)**: [packaging/dist/README_Linux.md](packaging/dist/README_Linux.md) — `packaging/build_all_linux.sh`, headless install, systemd.
+- **VPS + Apex + home client test**: [docs/VPS_APEX_HOME_CLIENT_TEST.md](docs/VPS_APEX_HOME_CLIENT_TEST.md) — bridge on a VPS, dedicated server on Apex, client on your PC.
 - **Keybinds and demo**: [docs/DEMO_AND_CONTROLS.md](docs/DEMO_AND_CONTROLS.md) — exact keybinds (Ctrl+P, Ctrl+M), mode clarity, and recommended demo flow.
 - **Hot-reload and paths**: [docs/HOT_RELOAD_AND_PATHS.md](docs/HOT_RELOAD_AND_PATHS.md) — GUI → config_update flow, overlay path (`shared/Data/runtime_overrides.yaml`), and how to run the bridge so it finds config and Data.
 - **Experiment ideas**: [docs/EXPERIMENT_IDEAS.md](docs/EXPERIMENT_IDEAS.md) — short experiments (step penalty, epsilon, obs rate, rewards) for students.
