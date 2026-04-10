@@ -1,0 +1,72 @@
+@startuml bridge_communication
+left to right direction
+skinparam linetype ortho
+skinparam shadowing false
+skinparam roundcorner 12
+skinparam packageStyle rectangle
+
+skinparam nodesep 75
+skinparam ranksep 95
+skinparam padding 8
+skinparam componentPadding 14
+skinparam packagePadding 10
+skinparam ArrowMessageAlignment center
+
+skinparam backgroundColor #F7F9FC
+skinparam defaultFontColor #334155
+skinparam ArrowColor #64748B
+skinparam component {
+  BackgroundColor #E8EDF5
+  BorderColor #A8B8D0
+  FontColor #334155
+}
+skinparam package {
+  BorderColor #8B9CB8
+  FontColor #1E293B
+}
+skinparam note {
+  BackgroundColor #FDF8EE
+  BorderColor #D4C4A8
+  FontColor #57534E
+}
+
+title Bridge & communication — observation / action loop
+
+legend
+|= Arrow |= Meaning |
+| --> | runtime interaction |
+| ..> | dependency / config |
+endlegend
+
+package "Minecraft" as MC #E8F6EC {
+  together {
+    [Client bridge\n(local player telemetry)] as CWS
+    [Server bridge\n(fake bot telemetry)] as SWS
+    CWS -[hidden]down- SWS
+  }
+}
+
+package "Python bridge" as PY #E3F0FC {
+  [WebSocket server] as WSS
+  [Policy worker] as PW
+  [AI policy runtime] as POL
+  WSS -[hidden]right- PW
+  PW -[hidden]right- POL
+}
+
+' One label per Minecraft link (was 4× "JSON")
+CWS <--> WSS : JSON
+SWS <--> WSS : JSON
+
+' Shorter edge text; ortho layout has more room with higher ranksep
+WSS --> PW : validated
+PW --> POL : obs tensor
+POL --> PW : action
+PW --> WSS : envelope
+
+note bottom of PY
+  **Wire format:** JSON messages.
+  **Kinds:** observation, action, event, telemetry.
+end note
+
+@enduml

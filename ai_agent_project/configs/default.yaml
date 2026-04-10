@@ -4,7 +4,7 @@ bridge:
   # Paths are resolved in code (runtime_paths); values below are documentation hints only.
   paths:
       data_dir: "shared/Data"
-      schemas_dir: "shared/schemas"
+      schemas_dir: "schemas"
       episode_state_path: "shared/Data/episode_state.json"
 
   server:
