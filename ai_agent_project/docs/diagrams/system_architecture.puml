@@ -1,0 +1,59 @@
+@startuml system_architecture
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam packageStyle rectangle
+skinparam componentStyle rectangle
+skinparam wrapWidth 220
+skinparam shadowing false
+top to bottom direction
+
+
+title System architecture — grouped subsystems (fewer boxes; no runtime data flow)
+
+
+package "Configuration" as PKG_CFG #E3F2FD {
+  rectangle "**Config files & merge**\n----\n• YAML: default.yaml, dev.yaml, evaluation.yaml\n• LoadConfig / DeepMerge (ai/src/utils/config.py)\n• **Runtime overlay:** shared/Data/runtime_overrides.yaml\n• Hot-reload + GUI Apply; merged into live runtime" as C_FILES
+
+  rectangle "**Contracts**\n----\n• JSON schemas: observation, action, event\n• bridge_constants.json (roles, control_mode strings)" as C_CONTRACTS
+}
+
+
+package "Python bridge" as PKG_BRIDGE #FFF8E1 {
+  rectangle "**Ingress & session**\n----\n• **ai/src/app/server.py** — WebSocket server\n• Hello, roles, control_mode; parse **kind** (observation, action,\n  config_update, episode_*, bridge_health, …)\n• jsonschema validation on ingress\n• Deep merge: base YAML + overlay; config_update path" as B_INGRESS
+
+  rectangle "**Pipeline**\n----\n• **obs_q / act_q** — EnqueueObservation, drop policy, backpressure\n• **PolicyWorker** (policy_worker.py) — policy.act → validate → act queue\n• **ActionSenderLoop** — serialize actions to WebSocket peer\n• Latency stats, coalesce controls (when enabled)" as B_PIPE
+
+  rectangle "**Auxiliary**\n----\n• HeartBeatLoop · MetricsLoop (NDJSON sink)\n• Overlay / file watch hooks as configured" as B_AUX
+}
+
+
+package "Python backend (AI)" as PKG_AI #F3E5F5 {
+  rectangle "**Policy & optimization**\n----\n• **registry.py** — build_policy_from_config\n• DQN / OnlineDQN: agent, model, replay, train (offline / tests)\n• policy.act / step — bridge calls this each tick" as AI_POLICY
+
+  rectangle "**Observations, actions, rewards**\n----\n• **obs_encoding.py** — observation JSON → fixed vector\n• **action_space** / actions codec — discrete index ↔ JSON\n• **reward_engine** + **reward_components** (generic, blocks, mobs)\n• **minecraft_env.py** (optional Gym-style experiments)" as AI_SIGNALS
+}
+
+
+package "Forge mod (Java)" as PKG_FORGE #E8F5E9 {
+  rectangle "**Bridges to Python**\n----\n• **Client:** ForgeWebSocketClient, ClientBridgeHooks\n  (PLAYER / integrated SP — obs out, actions in, reconnect)\n• **Server:** ServerBridgeWebSocketClient, ServerBotHooks\n  (SERVER_BOT / dedicated — server-side socket)\n• **AgentModeSharedLogic** — shared observation JSON shape" as F_BRIDGE
+
+  rectangle "**World & bot integration**\n----\n• **FakeBotManager**, FakePlayer — authoritative bot I/O\n• **Networking:** BotNet, C2S/S2C packets (state, actions, runtime config)\n• **ClientGhostBots** — smooth client view of server bot" as F_WORLD
+
+  rectangle "**Config UI**\n----\n• AiBotConfigScreen — control_mode, rewards, epsilon\n• Persist / hydrate runtime_overrides.yaml; C2SRuntimeConfigPacket on MP" as F_UI
+}
+
+
+package "Minecraft (platform)" as PKG_MC #FCE4EC {
+  rectangle "**Game stack**\n----\n• **Client** — LocalPlayer, input; integrated or remote MP\n• **Logical server** — integrated server or dedicated JAR; ticks, authority\n• **World** — blocks, physics, mobs, inventory, time / biome" as MC_STACK
+}
+
+
+note bottom of PKG_BRIDGE
+  **Typical:** one **Python** process runs **bridge** and loads **backend** policy.\nStartup: config + schemas; runtime: overlay merged / updated via **config_update** and file watch (if enabled).
+end note
+
+note bottom of PKG_FORGE
+  **Same mod JAR** on client and server; Forge loads only the relevant side.\n**One** active WebSocket training session per bridge port avoids double policy load.
+end note
+
+@enduml

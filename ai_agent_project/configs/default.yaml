@@ -64,6 +64,14 @@ bridge:
     file:
       enabled: true
       path: "logs/bridge.log.ndjson"
+    # Demo / conference: concise [BRIDGE_RX] / [BRIDGE_TX] lines at INFO (no global DEBUG).
+    # Set ws_tx_rx: true (here or in runtime_overrides.yaml under bridge.logging).
+    ws_tx_rx: true
+    ws_tx_rx_max_json_chars: 220
+    # Incoming kinds to log (JSON truncated). Default observation only — add e.g. action_result if needed.
+    ws_rx_kinds: ["observation"]
+    # Log policy actions sent to the game (SendAction).
+    ws_tx_log: true
 
 runtime:
   # ---- Control-plane (handshake/actions) ----
