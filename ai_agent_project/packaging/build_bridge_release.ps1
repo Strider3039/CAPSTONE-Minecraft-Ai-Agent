@@ -82,7 +82,11 @@ New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
 
 # PyInstaller onedir: exe + _internal must stay together; copying only the exe breaks LoadLibrary(python312.dll).
 Copy-Item -Path (Join-Path $installerBundleDir "*") -Destination $releaseDir -Recurse -Force
-Copy-Item -Path (Join-Path $ProjectRoot "packaging\release_bundle\README.md") -Destination (Join-Path $releaseDir "README.md") -Force
+$readmeWindows = Join-Path $ProjectRoot "packaging\dist\README_Windows.md"
+if (-not (Test-Path $readmeWindows)) {
+  throw "Missing $readmeWindows — add packaging/dist/README_Windows.md (tracked in git) before building the release."
+}
+Copy-Item -Path $readmeWindows -Destination (Join-Path $releaseDir "README.md") -Force
 
 Write-Host ""
 Write-Host "Release folder ready:"

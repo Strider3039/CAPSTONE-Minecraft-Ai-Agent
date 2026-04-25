@@ -80,4 +80,4 @@ Write-Host "When frozen, writable data (checkpoints, logs, overlay) goes in Data
 Write-Host "CurseForge + packaged bridge: add config/ai_agent_bridge_data_path.txt (see Data/ai_agent_bridge_data_path.example.txt) or set -Dai_agent.bridge_data= to that Data folder so the mod UI reads/writes the same runtime_overrides.yaml as Python."
 Write-Host "Do not use collect_all('torch') in bridge.spec; it duplicates DLLs and can break PyTorch on Windows."
 Write-Host "Portable bridge-only release (README + Install_AI_Bridge.exe): packaging\build_bridge_release.ps1"
-Write-Host "Linux / EC2: packaging\build_all_linux.sh (see packaging\release_bundle\README_LINUX.md)"
+Write-Host "Linux / EC2: packaging\build_all_linux.sh (user doc: packaging\dist\README_Linux.md)"

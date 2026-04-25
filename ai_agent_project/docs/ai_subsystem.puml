@@ -1,0 +1,88 @@
+@startuml ai_subsystem
+left to right direction
+skinparam linetype ortho
+skinparam shadowing false
+skinparam roundcorner 12
+skinparam packageStyle rectangle
+
+skinparam nodesep 48
+skinparam ranksep 60
+skinparam padding 6
+skinparam componentPadding 10
+skinparam packagePadding 8
+
+skinparam backgroundColor #F7F9FC
+skinparam defaultFontColor #334155
+skinparam ArrowColor #64748B
+skinparam component {
+  BackgroundColor #E8EDF5
+  BorderColor #A8B8D0
+  FontColor #334155
+}
+skinparam package {
+  BorderColor #8B9CB8
+  FontColor #1E293B
+}
+skinparam rectangle {
+  RoundCorner 12
+  BorderColor #A896B8
+  FontColor #334155
+}
+
+title AI subsystem — policies, representation, RL core
+
+legend
+|= Arrow |= Meaning |
+| --> | runtime interaction |
+| ..> | dependency / config |
+endlegend
+
+rectangle "Minecraft environment\n(async env)" as ENV #F0E7F7
+
+package "Representation" as REPR #F3EDFA {
+  [Observation encoding] as ENC
+  [Action space] as ASP
+  [Action codec] as COD
+}
+
+package "Policies" as POL #E3F0FC {
+  [Policy registry] as REG
+  [DQN policy] as DQN
+  [Online DQN policy] as ODQN
+  [Reward engine] as RWD
+}
+
+package "RL core" as RLC #E5F4F1 {
+  [Q-network] as NET
+  [DQN agent] as AGT
+  [Replay buffer] as REP
+}
+
+package "Utilities" as U #ECEFF4 {
+  [Config & paths\nlogging helpers] as UT
+}
+
+REG ..> DQN : constructs
+REG ..> ODQN : constructs
+UT ..> REG
+
+ENV --> ENC : raw observation
+
+ENC --> DQN
+ENC --> ODQN
+
+RWD ..> DQN : reward terms
+RWD ..> ODQN : reward terms
+
+DQN --> NET
+DQN --> AGT
+DQN --> REP
+
+ODQN --> NET
+ODQN --> AGT
+
+DQN --> ASP
+ODQN --> ASP
+ASP --> COD
+
+@enduml

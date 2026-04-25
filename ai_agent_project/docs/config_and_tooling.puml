@@ -1,0 +1,66 @@
+@startuml config_and_tooling
+left to right direction
+skinparam linetype ortho
+skinparam shadowing false
+skinparam roundcorner 12
+skinparam packageStyle rectangle
+
+skinparam nodesep 50
+skinparam ranksep 62
+skinparam padding 6
+skinparam componentPadding 10
+skinparam packagePadding 8
+
+skinparam backgroundColor #F7F9FC
+skinparam defaultFontColor #334155
+skinparam ArrowColor #64748B
+skinparam component {
+  BackgroundColor #E8EDF5
+  BorderColor #A8B8D0
+  FontColor #334155
+}
+skinparam package {
+  BorderColor #8B9CB8
+  FontColor #1E293B
+}
+
+title Config, artifacts & tooling
+
+legend
+|= Arrow |= Meaning |
+| --> | runtime interaction |
+| ..> | dependency / config |
+endlegend
+
+package "Configuration" as CFG #FFF8E6 {
+  together {
+    [YAML application config] as YML
+    [Runtime overrides file] as RT
+  }
+}
+
+package "Artifacts" as ART #FCE8F0 {
+  together {
+    [JSON schemas\n(observation, action, event)] as SCH
+    [Bridge constants\n(roles, modes)] as BC
+    [Model checkpoints] as CK
+  }
+}
+
+package "Tooling" as TOL #E8ECFC {
+  together {
+    [Eval runner] as EV
+    [Automated tests] as TS
+    [Mock RL environments] as MOCK
+  }
+}
+
+YML ..> RT : merge overlay
+
+SCH ..> YML : validate / document
+
+EV ..> CK
+TS ..> CK
+MOCK ..> YML
+
+@enduml

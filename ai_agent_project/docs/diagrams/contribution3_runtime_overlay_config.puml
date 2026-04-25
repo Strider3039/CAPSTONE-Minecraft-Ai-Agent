@@ -1,0 +1,50 @@
+@startuml contribution3_runtime_overlay_config
+!theme plain
+skinparam backgroundColor #FEFEFE
+left to right direction
+
+file "configs/default.yaml\n(base **runtime** + bridge)" as DEF
+file "**runtime_overrides.yaml**\n(overlay on disk)" as OVL
+
+component "Bridge **startup**\n(`server.py`)" as BOOT
+component "**DeepMerge**\n`runtime_cfg` + `runtime_overlay`" as MERGE
+map "current_runtime" as CUR {
+  policy.dqn => *
+  policy.reward => *
+  control_mode => *
+}
+component "**Policy**\n`build_policy_from_config`\n`apply_runtime_config`" as POL
+
+DEF --> BOOT : load config
+OVL --> BOOT : `load_runtime_overlay()`\n(if file exists)
+BOOT --> MERGE
+MERGE --> CUR
+CUR --> POL : initial apply
+
+component "**AiBotConfigScreen**\n(Minecraft UI)" as UI
+component "**RuntimeOverlayFileWatchLoop**\n(poll mtime)" as WATCH
+component "WebSocket handler\n`kind: config_update`" as WSMSG
+
+UI --> OVL : **persistRuntimeOverlayFromUi()**\n(rewards, ε, maps,\n`control_mode`, …)
+OVL ..> WATCH : file changed
+WATCH --> MERGE : reload overlay\n`refresh_current_runtime()`
+WATCH --> POL : `apply_runtime_config`\n(no WS required)
+
+UI ..> WSMSG : **Apply** paths:\n• `ForgeWebSocketClient.sendConfigUpdate`\n  (client has WS)\n• **or** `C2SRuntimeConfigPacket`\n  → `ServerBridgeWebSocketClient.sendConfigUpdate`
+WSMSG --> MERGE : merge payload\ninto `runtime_overlay`
+WSMSG --> OVL : **`save_runtime_overlay()`**
+WSMSG --> POL : **`apply_runtime_config`**
+
+note bottom of OVL
+  Path resolution: JVM props, env vars,
+  `ai_agent_bridge_data_path.txt`,
+  repo `shared/Data`, etc.
+end note
+
+note bottom of WATCH
+  Interval from
+  `runtime_overlay_poll_interval_s`
+  (default YAML / env override).
+end note
+
+@enduml

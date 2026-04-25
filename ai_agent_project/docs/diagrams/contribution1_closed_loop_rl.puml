@@ -1,0 +1,39 @@
+@startuml contribution1_closed_loop_rl
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam defaultTextAlignment center
+left to right direction
+
+rectangle "Minecraft world\n(blocks, entities, physics)" as WORLD
+
+package "Forge mod (Java)" as FORGE {
+  component "Observation build\n(ClientBridgeHooks /\nserver bot telemetry)" as OBS
+  component "Action execution\n(key / look / interact /\nserver bot commands)" as ACT
+}
+
+package "Python bridge services\n(WebSocket server + JSON protocol)" as BRIDGE {
+  component "Obs queue\n(schema validate)" as OQ
+  component "Act queue\n+ sender loop" as AQ
+}
+
+component "Policy worker\n(DQN / RL step)" as POL
+
+WORLD -down-> OBS : sample state\n(pose, rays, inventory, …)
+OBS -right-> OQ : **observation**\n`kind: observation`
+
+OQ -right-> POL : encode obs\n→ action index / cmd
+POL -left-> AQ : structured **action**
+AQ -left-> ACT : **action**\n`kind: action`
+ACT -up-> WORLD : **effect**\n(movement, look, use, …)
+
+note bottom of BRIDGE
+  Single logical service: one process exposes
+  the bridge (I/O, queues, validation, tick loops).
+end note
+
+note bottom of POL
+  Closed loop each tick:
+  world state → obs → policy → action → world
+end note
+
+@enduml

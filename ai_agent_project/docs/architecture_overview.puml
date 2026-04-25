@@ -1,0 +1,78 @@
+@startuml architecture_overview
+left to right direction
+skinparam linetype ortho
+skinparam shadowing false
+skinparam roundcorner 12
+skinparam packageStyle rectangle
+
+' --- breathing room (higher = less label/box overlap) ---
+skinparam nodesep 72
+skinparam ranksep 88
+skinparam padding 8
+skinparam componentPadding 12
+skinparam packagePadding 10
+skinparam ArrowMessageAlignment center
+
+' --- soft palette ---
+skinparam backgroundColor #F7F9FC
+skinparam defaultFontColor #334155
+skinparam ArrowColor #64748B
+skinparam component {
+  BackgroundColor #E8EDF5
+  BorderColor #A8B8D0
+  FontColor #334155
+}
+skinparam package {
+  BorderColor #8B9CB8
+  FontColor #1E293B
+}
+skinparam note {
+  BackgroundColor #FDF8EE
+  BorderColor #D4C4A8
+  FontColor #57534E
+}
+
+title System architecture — overview
+
+legend
+|= Arrow |= Meaning |
+| --> | runtime interaction |
+| ..> | dependency / config |
+endlegend
+
+together {
+  package "Python process" as PY #E3F0FC {
+    [Python AI system] as AI
+    [WebSocket bridge] as BR
+    ' Split loop: avoids one long label sitting on the bidirectional line
+    BR --> AI : observations
+    AI --> BR : actions
+  }
+}
+
+package "Minecraft" as MC #E8F6EC {
+  together {
+    [Game client\n(Forge mod)] as CL
+    [Game server\n(dedicated / integrated)] as SV
+    CL -[hidden]down- SV
+  }
+}
+
+package "BotNet" as BN #FFF4E5 {
+  [Gameplay packets\n(actions, bot state, config)] as PK
+}
+
+' Short link text; full names in note (reduces crossing with sibling arrows)
+BR --> CL : PLAYER
+BR --> SV : SERVER_BOT
+
+CL <--> PK
+SV <--> PK
+
+note bottom of PY
+  **WebSocket** to Minecraft (one socket per mode).
+  **PLAYER** — client role, local player.
+  **SERVER_BOT** — server role, fake bot.
+end note
+
+@enduml

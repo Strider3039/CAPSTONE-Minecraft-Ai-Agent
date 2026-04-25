@@ -151,6 +151,48 @@ def _atexit_flush_policies() -> None:
 atexit.register(_atexit_flush_policies)
 
 
+def _ws_tx_rx_settings(
+    current_runtime: Dict[str, Any],
+    cfg_bridge: Any,
+) -> tuple[bool, int, frozenset, bool]:
+    """
+    Merge cfg.bridge (default.yaml top-level `bridge:`) with any `bridge:` inside runtime overlay, then read logging.
+    """
+    cb = cfg_bridge if isinstance(cfg_bridge, dict) else {}
+    rt_b = current_runtime.get("bridge")
+    if not isinstance(rt_b, dict):
+        rt_b = {}
+    br = DeepMerge(dict(cb), dict(rt_b))
+    lg = br.get("logging")
+    if not isinstance(lg, dict):
+        lg = {}
+    enabled = bool(lg.get("ws_tx_rx", False))
+    if os.getenv("AI_AGENT_WS_TX_RX", "").strip().lower() in ("1", "true", "yes", "on"):
+        enabled = True
+    max_ch = int(lg.get("ws_tx_rx_max_json_chars", 200) or 200)
+    max_ch = max(40, min(max_ch, 8000))
+    rk = lg.get("ws_rx_kinds")
+    if rk is None:
+        rx_kinds = frozenset({"observation"})
+    elif isinstance(rk, list):
+        rx_kinds = frozenset(str(x).strip() for x in rk if str(x).strip())
+    else:
+        rx_kinds = frozenset({"observation"})
+    tx_log = lg.get("ws_tx_log", True)
+    tx_log = True if tx_log is None else bool(tx_log)
+    return enabled, max_ch, rx_kinds, tx_log
+
+
+def _ws_trunc_json(msg: dict, max_chars: int) -> str:
+    try:
+        s = _dumps(msg)
+    except Exception:
+        s = str(msg)
+    if len(s) <= max_chars:
+        return s
+    return s[: max_chars - 3] + "..."
+
+
 def resolve_metrics_sink_path(cfg: Any, base_dir: pathlib.Path) -> pathlib.Path:
     """Resolve metrics.sink.path relative to base_dir (e.g. shared/Data) so the file is always in a known place."""
     try:
@@ -749,6 +791,10 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
                 },
             )
 
+        _en, _mx, _, _txon = _ws_tx_rx_settings(current_runtime, getattr(cfg, "bridge", None))
+        if _en and _txon:
+            log.info("[BRIDGE_TX] %s", _ws_trunc_json(actionMsg, _mx))
+
         if not wait_for_result:
             await ws.send(_dumps(actionMsg))
             actState["total_acts_sent"] = actState.get("total_acts_sent", 0) + 1
@@ -917,6 +963,10 @@ async def Handle(ws: WebSocketServerProtocol, cfg) -> None:
             kind = msg.get("kind")
             seq_in = msg.get("seq")
             log.debug("rx msg", extra={"ws_id": id(ws), "kind": kind, "seq": seq_in})
+
+            _en, _mx, _rxk, _ = _ws_tx_rx_settings(current_runtime, getattr(cfg, "bridge", None))
+            if _en and kind in _rxk:
+                log.info("[BRIDGE_RX] %s", _ws_trunc_json(msg, _mx))
 
             if kind == "hello":
                 ws_role = msg.get("role")

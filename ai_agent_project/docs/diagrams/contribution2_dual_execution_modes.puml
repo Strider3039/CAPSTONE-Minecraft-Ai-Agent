@@ -1,0 +1,84 @@
+@startuml contribution2_dual_execution_modes
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam linetype ortho
+skinparam packageStyle rectangle
+skinparam componentStyle rectangle
+skinparam wrapWidth 220
+skinparam ranksep 28
+skinparam nodesep 18
+top to bottom direction
+
+title Dual execution modes — **WebSocket peer** and **embodied entity**
+
+legend top left
+  How to read
+  - Obs: game to Python (kind: observation)
+  - Act: Python to game (kind: action)
+  - hello: role client or role server
+  - Read each scenario **top to bottom** (return arrows show Act coming back).
+endlegend
+
+
+' ─── Scenario A (stacked vertically) ─────────────────────────
+rectangle "**A. PLAYER** — AI drives the **local player**" as RA #E3F2FD {
+
+  component "Minecraft\n**Client**" as A_MC
+  component "ClientBridgeHooks\n(build & send obs)" as A_CBH
+  component "ForgeWebSocketClient\n**hello → role=client**" as A_FWS
+  component "**Python bridge**" as A_PY
+  component "**LocalPlayer**\n(client-side input)" as A_LP
+
+  A_MC -down-> A_CBH : sample **Obs**\n(player, level, rays, …)
+  A_CBH -down-> A_FWS : **Obs** JSON
+  A_FWS -down-> A_PY : WebSocket **Obs**
+  A_PY -up-> A_FWS : WebSocket **Act**
+  A_FWS -down-> A_LP : **Act**\n(execute on client)
+  A_LP -up-> A_MC : affects **world**\n(vanilla replication in MP)
+}
+
+note bottom of RA
+  **ControlMode.PLAYER** — typical for single-player / integrated server
+  and client-driven control in multiplayer.
+end note
+
+
+' ─── Scenario B (A-style boxes + Forge play networking vs WebSocket) ──
+rectangle "**B. SERVER_BOT** — AI drives **server fake player**" as RB #E8F5E9 {
+
+  component "Minecraft\n**Dedicated server**" as B_MC
+  component "FakeBotManager\n(build & send obs)" as B_FBM
+  component "ServerBridgeWebSocketClient\n**hello → role=server**" as B_SWS
+  component "**Python bridge**" as B_PY
+  component "**FakePlayer**\n(authoritative server bot)" as B_BOT
+  component "Forge **BotNet**\n(play channel, custom packets)" as B_NET
+
+  B_MC -down-> B_FBM : sample **Obs**\n(world, ticks, …)
+  B_BOT -up-> B_FBM : sample **Obs**\n(bot pose, inv, …)
+  B_FBM -down-> B_SWS : **Obs** JSON
+  B_SWS -down-> B_PY : WebSocket **Obs**
+  B_PY -up-> B_SWS : WebSocket **Act**
+  B_SWS -up-> B_FBM : **Act**
+  B_FBM -down-> B_BOT : **Act**\n(server applies)
+  B_BOT -up-> B_MC : **world state**\n(authoritative)
+
+  B_FBM ..> B_NET : **S2C** bot state\n(S2CBotStatePacket)
+  B_NET -up-> B_MC : **PLAY_TO_CLIENT**\n(remote game clients)
+  B_NET ..> B_SWS : **C2S** from clients\n→ sendConfigUpdate\n(runtime / control_mode)
+}
+
+note bottom of RB
+  **ControlMode.SERVER_BOT** — the **game client** does not own the WebSocket;
+  **ServerBotHooks** (Forge lifecycle) runs in this JVM and wires the mod.
+  **BotNet** is the normal **Minecraft play** channel (S2C / C2S), separate from the **WebSocket** to Python.
+end note
+
+RA -[hidden]down- RB
+
+note bottom of B_PY
+  **One bridge port → one active game peer.**
+  Use **A** (client WebSocket) **xor** **B** (server WebSocket),
+  not two connections to the same policy loop.
+end note
+
+@enduml

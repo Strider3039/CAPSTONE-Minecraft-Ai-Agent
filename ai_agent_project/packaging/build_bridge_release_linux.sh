@@ -99,7 +99,12 @@ RELEASE_DIR="$DIST/Minecraft_AI_Bridge_Release_Linux"
 rm -rf "$RELEASE_DIR"
 mkdir -p "$RELEASE_DIR"
 cp -a "$INSTALLER_DIR"/* "$RELEASE_DIR/"
-cp -f "$PROJECT_ROOT/packaging/release_bundle/README_LINUX.md" "$RELEASE_DIR/README.md"
+README_LINUX_SRC="$PROJECT_ROOT/packaging/dist/README_Linux.md"
+if [[ ! -f "$README_LINUX_SRC" ]]; then
+  echo "Missing $README_LINUX_SRC — add packaging/dist/README_Linux.md (tracked in git) before building the release."
+  exit 1
+fi
+cp -f "$README_LINUX_SRC" "$RELEASE_DIR/README.md"
 
 echo ""
 echo "Release folder ready:"

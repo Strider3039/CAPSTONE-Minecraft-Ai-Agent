@@ -1,0 +1,79 @@
+@startuml system_architecture
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam packageStyle rectangle
+skinparam componentStyle rectangle
+skinparam wrapWidth 200
+skinparam shadowing false
+top to bottom direction
+
+title System architecture — grouped subsystems (no runtime data flow)
+
+
+package "Configuration" as PKG_CFG #E3F2FD {
+  together {
+    rectangle "**YAML configs**\n----\nconfigs/default.yaml\nevaluation.yaml, dev.yaml\nai/utils/config.py (load / merge)" as C_YAML
+    rectangle "**Runtime overlay**\n----\nshared/Data/runtime_overrides.yaml\n(hot-reload, UI sync)" as C_OVR
+    rectangle "**JSON Schemas**\n----\nobservation.schema.json\naction.schema.json\nevent.schema.json" as C_SCH
+    rectangle "**Protocol constants**\n----\nbridge_constants.json\n(roles, control_mode strings)" as C_BC
+  }
+}
+
+
+package "Python bridge" as PKG_BRIDGE #FFF8E1 {
+  together {
+    rectangle "**WebSocket server**\n----\nbridge/server.py\naccept sessions, hello\nroles / control_mode" as B_WS
+    rectangle "**Message routing**\n----\nparse kind:\nobservation, action\nconfig_update, episodes" as B_MSG
+    rectangle "**Queues & backpressure**\n----\nobs / act queues\nrate limits, drop policy\nEnqueueObservation" as B_Q
+    rectangle "**PolicyWorker loop**\n----\nbridge/policy_worker.py\nvalidated actions → queue\nlatency stats" as B_PW
+    rectangle "**ActionSenderLoop**\n----\nserialise & send actions\nover WebSocket to peer" as B_AS
+    rectangle "**Auxiliary loops**\n----\nHeartBeatLoop (ping)\nMetricsLoop (NDJSON)\nRuntimeOverlayFileWatchLoop" as B_AUX
+    rectangle "**Schema validation**\n----\njsonschema on ingress\nobs / events / actions" as B_VAL
+    rectangle "**Deep merge runtime**\n----\ndefault YAML + overlay\napply_runtime_config hook" as B_MERGE
+  }
+}
+
+
+package "Python backend (AI)" as PKG_AI #F3E5F5 {
+  together {
+    rectangle "**Policy layer**\n----\nai/policy/registry.py\nbuild_policy_from_config\npolicy.act / step" as AI_POL
+    rectangle "**DQN stack**\n----\nai/rl/dqn/agent.py\nmodel.py, replay.py\ntrain.py (offline / tests)" as AI_DQN
+    rectangle "**Rewards**\n----\nreward_engine.py\nreward_components.py\n(step, blocks, mobs, …)" as AI_RWD
+    rectangle "**Observation → tensor**\n----\nobs_encoding.py\nfixed vector for policy" as AI_OBS
+    rectangle "**Action space**\n----\naction_space.py\nai/actions/codec.py\ndiscrete index to JSON" as AI_ACT
+    rectangle "**Env adapter (optional)**\n----\nminecraft_env.py\nGym-style experiments" as AI_ENV
+  }
+}
+
+
+package "Forge mod (Java)" as PKG_FORGE #E8F5E9 {
+  together {
+    rectangle "**Client bridge**\n----\nForgeWebSocketClient\nClientBridgeHooks\nobs sampling, reconnect" as F_CL
+    rectangle "**Server bridge**\n----\nServerBridgeWebSocketClient\nServerBotHooks\ndedicated / integrated server" as F_SV
+    rectangle "**Server bot**\n----\nFakeBotManager\nDamageableFakePlayer / FakePlayer\nauthoritative bot I/O" as F_BOT
+    rectangle "**Networking**\n----\nC2SBotActionPacket\nS2CBotStatePacket\nC2SRuntimeConfigPacket\nBotNet channel" as F_NET
+    rectangle "**Config UI**\n----\nAiBotConfigScreen\npersist overlay YAML\ncontrol_mode, rewards, epsilon" as F_UI
+    rectangle "**Shared logic**\n----\nAgentModeSharedLogic\nobservation JSON shape\n(rays, hotbar, …)" as F_SH
+    rectangle "**Client ghost render**\n----\nClientGhostBots\nS2C state → smooth view" as F_GH
+  }
+}
+
+
+package "Minecraft (platform)" as PKG_MC #FCE4EC {
+  together {
+    rectangle "**Game client**\n----\nLocalPlayer, input\nintegrated / remote MP" as M_CL
+    rectangle "**Logical server**\n----\nintegrated server or\ndedicated JAR\nworld ticks, authority" as M_SV
+    rectangle "**World & entities**\n----\nblocks, physics, mobs\ninventory, time / biome" as M_WD
+  }
+}
+
+
+note bottom of PKG_BRIDGE
+  **Typical process:** one **Python** process runs **bridge** + loads **backend** policy\n(config + schemas loaded at startup; overlay merged / watched at runtime).
+end note
+
+note bottom of PKG_FORGE
+  **Same mod JAR** on **client** and **server**; Forge loads the relevant side only.
+end note
+
+@enduml
