@@ -32,7 +32,7 @@ public class AiBotConfigScreen extends Screen {
 
     /**
      * Paths where the Python bridge may persist {@code control_mode} (same file as {@code RUNTIME_OVERLAY_PATH}
-     * on the AI side). First match wins.
+     * on the AI side). First match wins; {@code config/ai_agent_bridge_data_path.txt} is tried before JVM/env/dev paths.
      * <p>
      * Packaged bridge (PyInstaller): overlay is {@code Data/runtime_overrides.yaml} next to the .exe.
      * Point the game at that file using either:
@@ -47,7 +47,8 @@ public class AiBotConfigScreen extends Screen {
      */
     private static Path bridgeDataRootFromInstanceConfigTxt(Path cfgFile) throws IOException {
         for (String raw : Files.readString(cfgFile, StandardCharsets.UTF_8).split("\\R")) {
-            String line = raw.trim();
+            // Strip UTF-8 BOM if the file was saved as "UTF-8 with BOM" (first line would start with U+FEFF).
+            String line = raw.replace('\uFEFF', ' ').trim();
             if (line.isEmpty() || line.startsWith("#")) {
                 continue;
             }
@@ -56,8 +57,28 @@ public class AiBotConfigScreen extends Screen {
         return null;
     }
 
+    /**
+     * Candidate paths for {@code runtime_overrides.yaml}, **search order**.
+     * <p>
+     * {@code config/ai_agent_bridge_data_path.txt} is listed **first** when present so packaged installs
+     * (CurseForge / Prism) reliably read/write the same {@code Data} folder as the bridge exe, instead of
+     * losing to a stale {@code AI_AGENT_BRIDGE_DATA} env var or an accidental hit on {@code shared/Data} from
+     * a dev clone on disk.
+     */
     private static List<Path> runtimeOverlayCandidatePaths() {
         List<Path> out = new ArrayList<>();
+        // 1) Instance config/ai_agent_bridge_data_path.txt (player-facing; should win over env / dev paths)
+        try {
+            Path cfgLine = FMLPaths.CONFIGDIR.get().resolve("ai_agent_bridge_data_path.txt");
+            if (Files.isRegularFile(cfgLine)) {
+                Path root = bridgeDataRootFromInstanceConfigTxt(cfgLine);
+                if (root != null) {
+                    out.add(root.resolve(RUNTIME_OVERLAY_NAME));
+                    out.add(root.resolve("Data").resolve(RUNTIME_OVERLAY_NAME));
+                }
+            }
+        } catch (Exception ignored) {
+        }
         String prop = System.getProperty("ai_agent.runtime_overlay");
         if (prop != null && !prop.isBlank()) {
             out.add(Path.of(prop.trim()));
@@ -78,18 +99,6 @@ public class AiBotConfigScreen extends Screen {
             Path root = Path.of(bridgeDataProp.trim());
             out.add(root.resolve(RUNTIME_OVERLAY_NAME));
             out.add(root.resolve("Data").resolve(RUNTIME_OVERLAY_NAME));
-        }
-        // Instance config/ai_agent_bridge_data_path.txt — launcher often does not pass env vars to Java
-        try {
-            Path cfgLine = FMLPaths.CONFIGDIR.get().resolve("ai_agent_bridge_data_path.txt");
-            if (Files.isRegularFile(cfgLine)) {
-                Path root = bridgeDataRootFromInstanceConfigTxt(cfgLine);
-                if (root != null) {
-                    out.add(root.resolve(RUNTIME_OVERLAY_NAME));
-                    out.add(root.resolve("Data").resolve(RUNTIME_OVERLAY_NAME));
-                }
-            }
-        } catch (Exception ignored) {
         }
         try {
             Path gameDir = FMLPaths.GAMEDIR.get();

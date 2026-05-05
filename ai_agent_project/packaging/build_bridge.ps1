@@ -65,6 +65,11 @@ if ((Test-Path $exampleSrc) -and (Test-Path $distBridge)) {
   Copy-Item -Force $exampleSrc (Join-Path $distData "ai_agent_bridge_data_path.example.txt")
 }
 
+$artifactScript = Join-Path $ProjectRoot "packaging\installer\bridge_install_artifacts.py"
+if ((Test-Path $artifactScript) -and (Test-Path $distBridge)) {
+  & python $artifactScript $distBridge
+}
+
 $bridgeInternal = Join-Path $PackagingDir "dist\minecraft_ai_bridge\_internal"
 $bundledMsvcp = Join-Path $bridgeInternal "msvcp140.dll"
 if ($env:OS -like "*Windows*" -and (Test-Path $bundledMsvcp)) {

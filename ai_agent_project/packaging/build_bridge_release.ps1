@@ -58,10 +58,13 @@ Remove-Item -Recurse -Force $stageRoot
 
 Write-Host "Building Install_AI_Bridge.exe (PyInstaller)..."
 $bootstrapper = Join-Path $ProjectRoot "packaging\installer\bootstrapper.py"
+$installerSrc = Join-Path $ProjectRoot "packaging\installer"
 $installerDist = Join-Path $dist "installer_out"
 pyinstaller $bootstrapper `
   --noconfirm `
   --add-data "$payloadZip;." `
+  --paths "$installerSrc" `
+  --hidden-import bridge_install_artifacts `
   --name "Install_AI_Bridge" `
   --workpath $work `
   --specpath $work `
@@ -84,7 +87,7 @@ New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
 Copy-Item -Path (Join-Path $installerBundleDir "*") -Destination $releaseDir -Recurse -Force
 $readmeWindows = Join-Path $ProjectRoot "packaging\dist\README_Windows.md"
 if (-not (Test-Path $readmeWindows)) {
-  throw "Missing $readmeWindows — add packaging/dist/README_Windows.md (tracked in git) before building the release."
+  throw "Missing $readmeWindows - add packaging/dist/README_Windows.md (tracked in git) before building the release."
 }
 Copy-Item -Path $readmeWindows -Destination (Join-Path $releaseDir "README.md") -Force
 
@@ -93,5 +96,5 @@ Write-Host "Release folder ready:"
 Write-Host "  $releaseDir"
 Write-Host "  - README.md"
 Write-Host "  - Install_AI_Bridge.exe"
-Write-Host "  - _internal\   (required; ship the whole folder when zipping)"
-Write-Host "Zip the entire Minecraft_AI_Bridge_Release folder to share. The installer does not install the Forge mod."
+Write-Host '  - _internal/ (required; ship the whole folder when zipping)'
+Write-Host 'Zip the entire Minecraft_AI_Bridge_Release folder to share. The installer does not install the Forge mod.'

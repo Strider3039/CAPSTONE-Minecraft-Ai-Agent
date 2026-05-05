@@ -92,6 +92,11 @@ if [[ -f "$EXAMPLE_SRC" ]] && [[ -d "$DIST_BRIDGE" ]]; then
   cp -f "$EXAMPLE_SRC" "$DIST_BRIDGE/Data/ai_agent_bridge_data_path.example.txt"
 fi
 
+ARTIFACT_SCRIPT="$PROJECT_ROOT/packaging/installer/bridge_install_artifacts.py"
+if [[ -f "$ARTIFACT_SCRIPT" ]] && [[ -d "$DIST_BRIDGE" ]]; then
+  "$PY" "$ARTIFACT_SCRIPT" "$DIST_BRIDGE"
+fi
+
 echo "Bridge folder: $DIST_BRIDGE"
 echo "Writable data lives in Data/ next to the minecraft_ai_bridge binary."
 echo "Linux release (installer): packaging/build_bridge_release_linux.sh"

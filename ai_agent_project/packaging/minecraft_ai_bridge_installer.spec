@@ -3,16 +3,17 @@
 import pathlib
 
 ROOT = pathlib.Path(SPECPATH).resolve().parent.parent
+_inst = ROOT / "packaging" / "installer"
 _payload = ROOT / "packaging" / "dist" / "bridge_payload.zip"
 if not _payload.is_file():
     raise FileNotFoundError(f"Run packaging/build_bridge_release.ps1 (or stage {_payload}) first.")
 
 a = Analysis(
-    [str(ROOT / "packaging" / "installer" / "bootstrapper.py")],
-    pathex=[str(ROOT)],
+    [str(_inst / "bootstrapper.py")],
+    pathex=[str(ROOT), str(_inst)],
     binaries=[],
     datas=[(str(_payload), ".")],
-    hiddenimports=[],
+    hiddenimports=["bridge_install_artifacts"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

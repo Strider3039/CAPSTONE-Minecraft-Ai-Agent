@@ -5,15 +5,16 @@ block_cipher = None
 
 # Compute payload path from the spec file location (PyInstaller may change CWD).
 SPEC_DIR = Path(SPECPATH).resolve().parent  # .../ai_agent_project/packaging
+INSTALLER_DIR = (SPEC_DIR / "installer").resolve()
 payload_zip = SPEC_DIR / "dist" / "bridge_payload.zip"
-BOOTSTRAPPER = (SPEC_DIR / "installer" / "bootstrapper.py").resolve()
+BOOTSTRAPPER = (INSTALLER_DIR / "bootstrapper.py").resolve()
 
 a = Analysis(
     [str(BOOTSTRAPPER)],
-    pathex=[str((SPEC_DIR / "installer").resolve())],
+    pathex=[str(SPEC_DIR.parent), str(INSTALLER_DIR)],
     binaries=[],
     datas=[(str(payload_zip), ".")],
-    hiddenimports=[],
+    hiddenimports=["bridge_install_artifacts"],
     hookspath=[],
     runtime_hooks=[],
     excludes=[],

@@ -74,6 +74,7 @@ rm -f "$PAYLOAD_ZIP"
 rm -rf "$STAGE_ROOT"
 
 BOOTSTRAPPER="$PROJECT_ROOT/packaging/installer/bootstrapper.py"
+INSTALLER_SRC="$PROJECT_ROOT/packaging/installer"
 INSTALLER_DIST="$DIST/installer_out_linux"
 rm -rf "$INSTALLER_DIST" "$WORK"
 
@@ -82,6 +83,8 @@ PAYLOAD_ABS="$(cd "$(dirname "$PAYLOAD_ZIP")" && pwd)/$(basename "$PAYLOAD_ZIP")
 "$PY" -m PyInstaller "$BOOTSTRAPPER" \
   --noconfirm \
   --add-data "${PAYLOAD_ABS}:." \
+  --paths "$INSTALLER_SRC" \
+  --hidden-import bridge_install_artifacts \
   --name install_ai_bridge \
   --workpath "$WORK" \
   --specpath "$WORK" \
