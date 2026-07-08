@@ -117,6 +117,8 @@ async def test_episode_end_triggers_new_episode(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "EPISODE_SAVE_PATH", fake_shared / "episode_state.json")
     monkeypatch.setattr(server, "episode", 0)
     monkeypatch.setattr(server, "episode_start_time", None)
+    monkeypatch.setattr(server, "load_runtime_overlay", lambda: {})
+    monkeypatch.setattr(server, "save_runtime_overlay", lambda overlay: None)
 
     # Fake config for Handle()
     fake_cfg = MagicMock()

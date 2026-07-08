@@ -11,7 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 def test_build_default_runtime_overlay_matches_bridge_ui_shape():
-    server = importlib.import_module("ai.src.app.server")
+    server = importlib.import_module("bridge.server")
 
     runtime_cfg = {
         "control_mode": "server-bot",
