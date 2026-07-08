@@ -1,3 +1,13 @@
+# -----------------------------------------------------------------------------
+# Logging and metrics tests
+#
+# These verify the bridge logging setup: JSON vs plain stdout, log level filtering,
+# and writing metrics as NDJSON lines to disk. Small surface area, but easy to
+# break when refactoring logging config.
+#
+# Prevents silent failures where logs stop appearing, wrong format breaks your
+# log parser, or metrics files never get written during a run.
+# -----------------------------------------------------------------------------
 import os, sys, json
 from pathlib import Path
 import logging as py_logging  # stdlib

@@ -1,3 +1,10 @@
+# -----------------------------------------------------------------------------
+# QNetwork tests (placeholder)
+#
+# Intended for forward-pass / shape checks on the Q-network. No tests are defined
+# yet — this file only imports the model and encoding helpers. Add tests here if
+# you change QNetwork architecture and want fast feedback before running training.
+# -----------------------------------------------------------------------------
 import math
 import unittest
 import numpy as np

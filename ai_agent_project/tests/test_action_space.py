@@ -1,3 +1,14 @@
+# -----------------------------------------------------------------------------
+# Action space tests
+#
+# These check that every discrete action the DQN can pick maps to a valid bridge
+# message the Minecraft mod understands. We verify name/index round-trips, schema
+# compliance, and that each action sets the right move/look controls.
+#
+# Without these, a small change to the ACTIONS list could silently send the wrong
+# command (e.g. index 3 triggers jump instead of strafe_left), or produce JSON
+# the mod rejects at runtime.
+# -----------------------------------------------------------------------------
 import unittest
 import sys
 import os

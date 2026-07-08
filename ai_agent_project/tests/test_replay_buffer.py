@@ -1,3 +1,13 @@
+# -----------------------------------------------------------------------------
+# Replay buffer tests
+#
+# The DQN stores (state, action, reward, next_state, done) tuples and samples
+# random batches for training. This checks that add/sample works and tensor
+# shapes line up with OBS_DIM.
+#
+# A broken buffer means training silently does nothing or crashes on the first
+# batch — easy to miss until you're hours into a run.
+# -----------------------------------------------------------------------------
 import math
 import unittest
 import numpy as np

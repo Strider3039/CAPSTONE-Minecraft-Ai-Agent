@@ -1,10 +1,16 @@
-# ------------------------------------------------------------
-# Connection lifecycle (1.1): hello ordering, timeout, graceful shutdown
+# -----------------------------------------------------------------------------
+# Bridge connection lifecycle tests
 #
-# Run from repo root with your venv (e.g. .venv38):
-#   .venv38\Scripts\python -m pytest ai_agent_project/tests/test_connection_lifecycle.py -v
-# Requires: pytest, pytest-asyncio, websockets, torch (for server import).
-# ------------------------------------------------------------
+# These simulate a fake WebSocket client (DummyWS) talking to bridge.server.Handle()
+# without starting a real server or launching Minecraft. We script hello, observations,
+# disconnects, and config updates to make sure the bridge behaves in the right order.
+#
+# Prevents regressions like: actions firing before hello, hung connections when hello
+# never arrives, policy not starting after handshake, crashes on bad observations,
+# checkpoints not saved on disconnect, and hot-reload ignoring config_update messages.
+#
+# Requires: pytest, pytest-asyncio, torch (server import pulls in the policy stack).
+# -----------------------------------------------------------------------------
 import sys
 import pathlib
 

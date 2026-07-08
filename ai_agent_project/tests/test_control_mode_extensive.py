@@ -1,10 +1,15 @@
-"""
-Extensive control_mode / role enforcement tests for the Python bridge.
-Run:
-  .venv38\\Scripts\\python -m pytest ai_agent_project/tests/test_control_mode_extensive.py -v
-Requires:
-  pytest, pytest-asyncio, websockets, torch (server import pulls policy registry).
-"""
+# -----------------------------------------------------------------------------
+# Control mode and role enforcement tests
+#
+# The bridge has PLAYER vs SERVER_BOT modes, and each mode only accepts certain
+# WebSocket roles (client vs server). These tests make sure the wrong peer can't
+# take over, and that switching modes via config_update closes incompatible connections.
+#
+# Stops bugs where a dedicated server bot connects in player mode, a client stays
+# active after you flip to server-bot, or role checks get bypassed after hot-reload.
+#
+# Requires: pytest, pytest-asyncio, torch.
+# -----------------------------------------------------------------------------
 
 import sys
 import pathlib

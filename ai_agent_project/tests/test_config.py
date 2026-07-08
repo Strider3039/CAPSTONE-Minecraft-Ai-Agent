@@ -1,3 +1,14 @@
+# -----------------------------------------------------------------------------
+# Config loading tests
+#
+# These test how YAML configs get loaded, merged, and validated, using the same
+# path the bridge uses at startup. We fake config files in a temp dir so tests
+# don't depend on your machine's APP_ENV or what's on disk.
+#
+# Catches broken merges (dev overlay wiping out sibling keys), missing files,
+# wrong schema_version, and drift in default.yaml where expected runtime keys
+# quietly disappear after someone edits the config.
+# -----------------------------------------------------------------------------
 import os, sys, textwrap
 from pathlib import Path
 import pytest

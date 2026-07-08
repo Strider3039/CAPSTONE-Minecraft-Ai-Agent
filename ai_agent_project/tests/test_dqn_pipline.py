@@ -1,3 +1,13 @@
+# -----------------------------------------------------------------------------
+# DQN training pipeline smoke test
+#
+# One end-to-end sanity check: build a DQN agent, run a short training loop on
+# the mock environment, and confirm select_action returns a valid index. This is
+# not a correctness proof — it just makes sure the training stack still wires up.
+#
+# Catches import errors, shape mismatches, or broken train loops that would only
+# show up after you kick off a long experiment.
+# -----------------------------------------------------------------------------
 import unittest
 import numpy as np
 import torch
