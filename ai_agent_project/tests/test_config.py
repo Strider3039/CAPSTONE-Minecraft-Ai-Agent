@@ -24,6 +24,7 @@ def write_yaml(p: Path, content: str):
 
 
 def test_deepmerge_nested_dicts():
+    """DeepMerge should override nested keys without wiping sibling keys in the same dict."""
     a = {"a": 1, "b": {"x": 1, "y": 2}}
     b = {"b": {"y": 99, "z": 3}, "c": 7}
     out = cfg_mod.DeepMerge(a, b)
@@ -31,12 +32,13 @@ def test_deepmerge_nested_dicts():
 
 
 def test_loadyaml_missing_file(tmp_path: Path):
+    """A missing YAML file should return {} instead of raising."""
     out = cfg_mod.LoadYaml(tmp_path / "nope.yaml")
-    assert out == {}  # safely returns empty dict
+    assert out == {}  # missing file should just give you an empty dict
 
 
 def test_loadconfig_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """LoadConfig loads single default.yaml (schema_version 2) then merges env overlay (dev.yaml)."""
+    """Make sure default.yaml loads, dev.yaml merges on top, and nothing important gets wiped."""
     conf_dir = tmp_path / "configs"
 
     write_yaml(conf_dir / "default.yaml", """
@@ -67,7 +69,7 @@ def test_loadconfig_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 def test_loadconfig_schema_version_mismatch_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """LoadConfig raises when default.yaml has schema_version other than 2."""
+    """An old schema_version in default.yaml should fail fast instead of loading half-broken config."""
     conf_dir = tmp_path / "configs"
     write_yaml(conf_dir / "default.yaml", """
       schema_version: "1.1"
@@ -83,7 +85,7 @@ def test_loadconfig_schema_version_mismatch_raises(tmp_path: Path, monkeypatch: 
 
 
 def test_config_attribute_access(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """Attribute-style access (cfg.bridge, cfg.bridge['server']) works after LoadConfig."""
+    """You should be able to read config as cfg.bridge or cfg.bridge['server'] after loading."""
     conf_dir = tmp_path / "configs"
     write_yaml(conf_dir / "default.yaml", """
       schema_version: 2
@@ -105,10 +107,7 @@ _CONFIG_DIR = Path(__file__).resolve().parent.parent / "configs"
 
 
 def test_runtime_parameters_exposed(monkeypatch: pytest.MonkeyPatch):
-    """
-    2.1: Assert runtime.obs, policy (incl. heading, action_rates), reward, dqn, raycasts
-    are present in the project default config and have expected keys.
-    """
+    """Sanity-check that the real default.yaml still has all the runtime keys the bridge expects."""
     if not (_CONFIG_DIR / "default.yaml").exists():
         pytest.skip("default.yaml not found (run from repo with ai_agent_project/configs)")
     monkeypatch.setattr(cfg_mod, "CONF_DIR", _CONFIG_DIR)
@@ -117,7 +116,7 @@ def test_runtime_parameters_exposed(monkeypatch: pytest.MonkeyPatch):
     runtime = cfg.get("runtime") or {}
     assert isinstance(runtime, dict), "runtime must be a dict"
 
-    # runtime.obs
+    # observation settings
     obs = runtime.get("obs") or {}
     assert "rate_hz" in obs
     assert "entity_cap" in obs
@@ -129,7 +128,7 @@ def test_runtime_parameters_exposed(monkeypatch: pytest.MonkeyPatch):
     quant = obs.get("quantization") or {}
     assert "pos_decimals" in quant
 
-    # runtime.policy
+    # policy loop and DQN knobs
     policy = runtime.get("policy") or {}
     assert "tick_hz" in policy
     assert "budget_ms" in policy
@@ -151,7 +150,7 @@ def test_runtime_parameters_exposed(monkeypatch: pytest.MonkeyPatch):
     assert "jump_min_ms" in action_rates
     assert "interact_cooldown_ms" in action_rates
 
-    # runtime.policy.reward
+    # reward shaping
     reward = policy.get("reward") or {}
     assert "survival_reward" in reward
     assert "step_penalty" in reward
@@ -160,7 +159,7 @@ def test_runtime_parameters_exposed(monkeypatch: pytest.MonkeyPatch):
     assert "blocks" in reward
     assert "mobs" in reward
 
-    # runtime.policy.dqn
+    # DQN hyperparameters
     dqn = policy.get("dqn") or {}
     assert "epsilon_start" in dqn
     assert "epsilon_end" in dqn
@@ -168,7 +167,7 @@ def test_runtime_parameters_exposed(monkeypatch: pytest.MonkeyPatch):
     assert "lr" in dqn
     assert "batch_size" in dqn
 
-    # runtime.raycasts
+    # raycast config
     raycasts = runtime.get("raycasts") or {}
     assert "max_dist" in raycasts
     assert "count" in raycasts

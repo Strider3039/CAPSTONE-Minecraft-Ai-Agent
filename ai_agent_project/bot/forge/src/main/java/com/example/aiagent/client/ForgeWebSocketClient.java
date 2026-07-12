@@ -639,6 +639,19 @@ public class ForgeWebSocketClient extends WebSocketClient {
     }
 
     /**
+     * Forward a JSON message produced server-side by {@code FakeBotManager} (on an integrated
+     * singleplayer world, via {@code S2CBotResultPacket}) straight to the Python bridge over this
+     * client's own websocket. The message is already fully-formed (kind=observation/action_result/
+     * episode_end, proto=1), so it is sent as-is with no re-wrapping.
+     */
+    public static void relayServerResultToBridge(String json) {
+        ForgeWebSocketClient c = currentInstance;
+        if (c == null || !c.isOpen() || json == null) return;
+        if (!c.canClientSendToBridge()) return;
+        c.send(json);
+    }
+
+    /**
      * Send config_update to the bridge for hot-reload (e.g. from GUI).
      * No-op if not connected. Payload is the runtime overlay (control_mode, policy.reward, policy.dqn).
      */

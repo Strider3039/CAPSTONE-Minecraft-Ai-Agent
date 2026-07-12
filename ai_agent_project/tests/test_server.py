@@ -2,7 +2,7 @@
 # Bridge episode lifecycle tests
 #
 # Focused tests for start_new_episode and what happens when the client sends
-# episode_end. Uses a minimal DummyWS mock — no full connection lifecycle suite.
+# episode_end. Uses a minimal DummyWS mock, not the full connection lifecycle suite.
 #
 # Catches episodes not incrementing, episode_state.json not being written,
 # episode_start not sent to the client, or death not triggering a new episode
@@ -32,9 +32,7 @@ import bridge.server as server
 # Fully async mock WebSocket
 # ------------------------------------------------------------
 class DummyWS:
-    """
-    Async-iterable WebSocket mock used for testing server.Handle().
-    """
+    """Minimal fake WebSocket for driving Handle() in episode tests."""
 
     def __init__(self, incoming_messages):
         self.sent_messages = []
@@ -62,18 +60,12 @@ class DummyWS:
 
 
 # ------------------------------------------------------------
-# TEST 1 — start_new_episode behavior
+# TEST 1: start_new_episode behavior
 # ------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_start_new_episode(tmp_path, monkeypatch):
-    """
-    Verifies:
-     - episode increments
-     - episode_state.json is written
-     - episode_start event sent
-    """
-
-    # Redirect server storage
+    """Starting a new episode should bump the counter, write episode_state.json, and send episode_start."""
+    # point episode storage at a temp folder
     fake_shared = tmp_path / "shared"
     fake_shared.mkdir()
 
@@ -84,41 +76,34 @@ async def test_start_new_episode(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "episode", 0)
     monkeypatch.setattr(server, "episode_start_time", None)
 
-    # Reset global episode counter
+    # start from a clean episode counter
     monkeypatch.setattr(server, "episode", 0)
 
     ws = DummyWS([])
 
-    # obs_q/obs_state=None so synthetic episode_start is not enqueued; obs_drop_policy unused
+    # obs queues are None here. We're only testing the episode_start side effects.
     await server.start_new_episode(ws, None, None, "oldest")
 
     assert server.episode == 1
 
-    # Check outgoing message
+    # should have sent one episode_start to the client
     assert len(ws.sent_messages) == 1
     msg = ws.sent_messages[0]
     assert msg["proto"] == "1"
     assert msg["kind"] == "episode_start"
     assert msg["payload"]["episode_start"]["reason"] == "episode_1_start"
 
-    # Check file written
+    # episode counter should be persisted to disk
     saved = json.loads((fake_shared / "episode_state.json").read_text())
     assert saved["episode"] == 1
 
 
 # ------------------------------------------------------------
-# TEST 2 — episode_end triggers SECOND start_new_episode
+# TEST 2: episode_end triggers SECOND start_new_episode
 # ------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_episode_end_triggers_new_episode(tmp_path, monkeypatch):
-    """
-    Simulate:
-        - server.Handle() starts initial episode
-        - then WS sends {"kind": "episode_end"}
-    Expect:
-        start_new_episode called *twice* total.
-    """
-
+    """Handle() should call start_new_episode on hello, then again when the client reports episode_end."""
     # Fake shared folder
     fake_shared = tmp_path / "shared"
     fake_shared.mkdir()
@@ -130,7 +115,7 @@ async def test_episode_end_triggers_new_episode(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "load_runtime_overlay", lambda: {})
     monkeypatch.setattr(server, "save_runtime_overlay", lambda overlay: None)
 
-    # Fake config for Handle()
+    # stub config so Handle() doesn't touch real files
     fake_cfg = MagicMock()
     fake_cfg.bridge = {
         "queues": {"obs_max": 8, "act_max": 8},
@@ -144,18 +129,18 @@ async def test_episode_end_triggers_new_episode(tmp_path, monkeypatch):
         "policy": {"tick_hz": 20},
     }
 
-    # Patch LoadConfig so Handle() loads our fake config
+    # make Handle() use our stub config instead of loading from disk
     monkeypatch.setattr(server, "LoadConfig", lambda env=None: fake_cfg)
 
-    # Prevent full RL stack creation
+    # don't spin up a real DQN policy
     monkeypatch.setattr(server, "build_policy_from_config", lambda cfg: MagicMock())
 
-    # Patch background loops so they do nothing
+    # background loops would just add noise
     monkeypatch.setattr(server, "MetricsLoop", lambda *args, **kwargs: asyncio.sleep(999999))
     monkeypatch.setattr(server, "HeartBeatLoop", lambda *args, **kwargs: asyncio.sleep(999999))
     monkeypatch.setattr(server, "PolicyWorker", lambda *args, **kwargs: asyncio.sleep(999999))
 
-    # Mock start_new_episode so we count calls
+    # swap in a mock so we can count how many times episodes start
     mock_start = AsyncMock()
     monkeypatch.setattr(server, "start_new_episode", mock_start)
 
@@ -165,7 +150,7 @@ async def test_episode_end_triggers_new_episode(tmp_path, monkeypatch):
         "role": "client",
         "control_mode": "PLAYER",
     })
-    # Message: client says episode ended
+    # client says they died
     episode_end_json = json.dumps({
         "proto": "1",
         "kind": "episode_end",
@@ -174,7 +159,7 @@ async def test_episode_end_triggers_new_episode(tmp_path, monkeypatch):
         "payload": {"episode_end": {"reason": "death"}}
     })
 
-    # WebSocket containing hello, then episode_end
+    # script: hello, then episode_end
     ws = DummyWS([hello_json, episode_end_json])
 
     with pytest.raises(asyncio.CancelledError):

@@ -1,6 +1,8 @@
 package com.example.aiagent.client.gui;
 
 import com.example.aiagent.BotMod;
+import com.example.aiagent.BridgeUriResolver;
+import com.example.aiagent.client.ClientBridgeHooks;
 import com.example.aiagent.client.ForgeWebSocketClient;
 import com.example.aiagent.net.BotNet;
 import com.example.aiagent.net.C2SRuntimeConfigPacket;
@@ -9,6 +11,7 @@ import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractSliderButton;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.CycleButton;
+import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.FormattedCharSequence;
@@ -467,6 +470,14 @@ public class AiBotConfigScreen extends Screen {
     /** Default matches client-bridge / PLAYER path; SERVER_BOT is for dedicated-server + overlay. */
     private Mode selectedMode = Mode.PLAYER;
 
+    /**
+     * Bridge address (host:port or full ws:// URI) shown/edited in the UI. Applied on the "Apply"
+     * button: updates {@link BridgeUriResolver} (and reconnects) for the integrated-SP/PLAYER path,
+     * and is sent to the server via {@link C2SRuntimeConfigPacket} for the dedicated-server path.
+     */
+    private String bridgeAddressValue = BridgeUriResolver.resolve();
+    private EditBox bridgeAddressBox;
+
     // DQN
     private double epsilonValue = 1.0;
 
@@ -539,6 +550,7 @@ public class AiBotConfigScreen extends Screen {
 
     private static final List<String> CAPTIONS = List.of(
         "Who controls the bot: SERVER_BOT = server-side fake player; PLAYER = this client.",
+        "Python bridge address (host:port or ws://host:port). Applied on Apply; works for integrated singleplayer and dedicated servers alike.",
         "Exploration rate (0=always exploit, 1=always explore). Higher = more random actions early in training.",
         "Small reward every step for staying alive. Keeps the agent from standing still forever.",
         "Tiny penalty per step. Encourages the agent to do something useful rather than idle.",
@@ -652,6 +664,7 @@ public class AiBotConfigScreen extends Screen {
     /** Copy state from another screen (used when re-opening to toggle descriptions so layout is fresh). */
     public void copyFrom(AiBotConfigScreen other) {
         this.selectedMode = other.selectedMode;
+        this.bridgeAddressValue = other.bridgeAddressBox != null ? other.bridgeAddressBox.getValue() : other.bridgeAddressValue;
         this.epsilonValue = other.epsilonValue;
         this.survivalRewardValue = other.survivalRewardValue;
         this.stepPenaltyValue = other.stepPenaltyValue;
@@ -702,6 +715,16 @@ public class AiBotConfigScreen extends Screen {
                         persistRuntimeOverlayFromUi();
                     })
         );
+        row++;
+
+        // Bridge address (host:port or ws://...); works for integrated SP (applied directly to this
+        // client's connection) and dedicated servers (pushed to the server via C2SRuntimeConfigPacket).
+        bridgeAddressBox = new EditBox(this.font, centerX - btnW / 2, startY + row * rowH, btnW, btnH,
+                Component.literal("Bridge address"));
+        bridgeAddressBox.setMaxLength(128);
+        bridgeAddressBox.setValue(bridgeAddressValue);
+        bridgeAddressBox.setResponder(v -> bridgeAddressValue = v);
+        this.addRenderableWidget(bridgeAddressBox);
         row++;
 
         // Epsilon
@@ -884,6 +907,22 @@ public class AiBotConfigScreen extends Screen {
 
                 persistRuntimeOverlayFromUi();
 
+                // Bridge address: this is a Java-mod-only setting (where the mod's websocket connects
+                // TO), not something Python needs told. Integrated SP / main menu / PLAYER-on-MP all
+                // route through this client's own connection, so apply + reconnect it directly here.
+                // Dedicated servers own their own connection, so the address instead rides along in
+                // the C2SRuntimeConfigPacket payload below and is applied server-side.
+                String bridgeAddr = bridgeAddressBox != null ? bridgeAddressBox.getValue().trim() : bridgeAddressValue.trim();
+                if (!bridgeAddr.isEmpty() && !dedicatedRemoteMp) {
+                    String beforeUri = BridgeUriResolver.resolve();
+                    BridgeUriResolver.setOverride(bridgeAddr);
+                    String afterUri = BridgeUriResolver.resolve();
+                    if (!afterUri.equals(beforeUri)) {
+                        ClientBridgeHooks.reconnectBridge();
+                        System.out.println("[AI-BOT][DEBUG][ConfigUI] bridge address applied locally -> " + afterUri);
+                    }
+                }
+
                 ForgeWebSocketClient.ControlMode ctrl = effectiveMode == Mode.SERVER_BOT
                         ? ForgeWebSocketClient.ControlMode.SERVER_BOT
                         : ForgeWebSocketClient.ControlMode.PLAYER;
@@ -895,8 +934,12 @@ public class AiBotConfigScreen extends Screen {
                 this.selectedMode = prev;
 
                 if (dedicatedRemoteMp) {
+                    if (!bridgeAddr.isEmpty()) {
+                        payload.addProperty("bridge_uri", bridgeAddr);
+                    }
                     System.out.println("[AI-BOT][DEBUG][ConfigUI] sending C2SRuntimeConfigPacket (server will forward to Python); control_mode in payload="
-                            + (payload.has("control_mode") ? payload.get("control_mode").getAsString() : "?"));
+                            + (payload.has("control_mode") ? payload.get("control_mode").getAsString() : "?")
+                            + " bridge_uri=" + (bridgeAddr.isEmpty() ? "(unchanged)" : bridgeAddr));
                     BotNet.CHANNEL.sendToServer(new C2SRuntimeConfigPacket(BotMod.GSON.toJson(payload)));
                 } else {
                     System.out.println("[AI-BOT][DEBUG][ConfigUI] sending ForgeWebSocketClient.sendConfigUpdate (direct to Python)");

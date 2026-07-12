@@ -49,6 +49,17 @@ public class C2SRuntimeConfigPacket {
                     mode = payload.get("control_mode").getAsString().trim().replace("-", "_").toUpperCase();
                 }
 
+                // Optional: player set a bridge address from the in-game config screen. This is a
+                // Java-mod-only setting (where the server's websocket connects TO), not something
+                // Python needs to see, so update the connection and strip it before forwarding.
+                if (payload.has("bridge_uri") && payload.get("bridge_uri").isJsonPrimitive()) {
+                    String bridgeUri = payload.get("bridge_uri").getAsString();
+                    payload.remove("bridge_uri");
+                    if (bridgeUri != null && !bridgeUri.isBlank()) {
+                        bridge.updateBridgeUri(bridgeUri);
+                    }
+                }
+
                 System.out.println("[AI-BOT][DEBUG][C2S] runtime config recv control_mode=" + mode
                         + " keys=" + payload.keySet()
                         + " bridgeAutoConnect(before)=" + bridge.isAutoConnectEnabled()

@@ -31,7 +31,7 @@ import bridge.server as server
 
 
 class DummyWS:
-    """Async-iterable WS mock with minimal attributes used by server.Handle()."""
+    """Lightweight fake WebSocket with just enough surface for Handle() in control-mode tests."""
 
     def __init__(self, incoming, disconnect_after=False):
         self.sent_messages = []
@@ -40,7 +40,7 @@ class DummyWS:
         self._disconnect_after = disconnect_after
         self._closed = False
 
-        # server logs these if present
+        # Handle() logs remote_address if it exists
         self.remote_address = ("127.0.0.1", 12345)
 
     async def send(self, data):
@@ -65,7 +65,7 @@ class DummyWS:
         if self._index < len(self._incoming):
             msg = self._incoming[self._index]
             self._index += 1
-            await asyncio.sleep(0)  # yield to background tasks
+            await asyncio.sleep(0)  # let background tasks breathe
             return msg
         if self._disconnect_after:
             raise ConnectionClosedOK(None, "test disconnect")
@@ -98,7 +98,7 @@ def _config_update(mode: str):
 
 @pytest.mark.asyncio
 async def test_player_mode_rejects_server_role_as_active(tmp_path, monkeypatch):
-    """When control_mode=PLAYER, role=server must NOT start workers (config-only)."""
+    """In PLAYER mode, a server-role peer shouldn't get a full policy loop. Config-only is fine."""
     monkeypatch.setattr(server, "EPISODE_SAVE_PATH", tmp_path / "episode_state.json")
     monkeypatch.setattr(server, "RUNTIME_OVERLAY_PATH", tmp_path / "runtime_overrides.yaml")
     monkeypatch.setattr(server, "load_runtime_overlay", lambda: {})
@@ -107,7 +107,7 @@ async def test_player_mode_rejects_server_role_as_active(tmp_path, monkeypatch):
 
     build_policy = MagicMock()
     monkeypatch.setattr(server, "build_policy_from_config", build_policy)
-    # keep background loops inert if somehow started
+    # if workers somehow start anyway, keep them from doing real work
     monkeypatch.setattr(server, "MetricsLoop", lambda *a, **k: asyncio.sleep(999999))
     monkeypatch.setattr(server, "HeartBeatLoop", lambda *a, **k: asyncio.sleep(999999))
     monkeypatch.setattr(server, "PolicyWorker", lambda *a, **k: asyncio.sleep(999999))
@@ -120,10 +120,7 @@ async def test_player_mode_rejects_server_role_as_active(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_server_role_can_flip_to_server_bot_via_config_update(tmp_path, monkeypatch):
-    """
-    Start in PLAYER, connect as role=server (config-only), then send config_update SERVER_BOT.
-    The bridge must upgrade and start workers.
-    """
+    """Connect as server in PLAYER mode, flip to SERVER_BOT via config_update, and workers should start."""
     monkeypatch.setattr(server, "EPISODE_SAVE_PATH", tmp_path / "episode_state.json")
     monkeypatch.setattr(server, "RUNTIME_OVERLAY_PATH", tmp_path / "runtime_overrides.yaml")
     monkeypatch.setattr(server, "load_runtime_overlay", lambda: {})
@@ -144,9 +141,7 @@ async def test_server_role_can_flip_to_server_bot_via_config_update(tmp_path, mo
 
 @pytest.mark.asyncio
 async def test_client_role_closed_when_switching_to_server_bot(tmp_path, monkeypatch):
-    """
-    In PLAYER, role=client is active. If config_update switches to SERVER_BOT, it must close the ws.
-    """
+    """A client in PLAYER mode should get kicked when you switch to SERVER_BOT."""
     monkeypatch.setattr(server, "EPISODE_SAVE_PATH", tmp_path / "episode_state.json")
     monkeypatch.setattr(server, "RUNTIME_OVERLAY_PATH", tmp_path / "runtime_overrides.yaml")
     monkeypatch.setattr(server, "load_runtime_overlay", lambda: {})
@@ -160,7 +155,7 @@ async def test_client_role_closed_when_switching_to_server_bot(tmp_path, monkeyp
 
     ws = DummyWS([_hello("client"), _config_update("SERVER_BOT")], disconnect_after=False)
 
-    # Handle should return after it closes the ws due to wrong_role
+    # Handle() should exit once it closes the wrong-role client
     try:
         await asyncio.wait_for(server.Handle(ws, cfg), timeout=1.0)
     except asyncio.TimeoutError:

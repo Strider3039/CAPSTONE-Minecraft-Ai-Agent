@@ -28,7 +28,8 @@ public final class NpcBotController {
     }
 
     public static void tick(ServerLevel level) {
-        // No-op for mechanics now; FakeBotManager.tick() is called from ServerBotHooks.
-        // Keep this for future visual proxy syncing if you want.
+        // No-op for mechanics now; FakeBotManager.tick() is called from ServerBotHooks (dedicated
+        // server) or IntegratedServerBotHooks (integrated singleplayer). Keep this for future
+        // visual proxy syncing if you want.
     }
 }

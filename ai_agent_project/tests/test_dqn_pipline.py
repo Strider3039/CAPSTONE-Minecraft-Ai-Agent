@@ -3,7 +3,7 @@
 #
 # One end-to-end sanity check: build a DQN agent, run a short training loop on
 # the mock environment, and confirm select_action returns a valid index. This is
-# not a correctness proof — it just makes sure the training stack still wires up.
+# not a correctness proof. It just makes sure the training stack still wires up.
 #
 # Catches import errors, shape mismatches, or broken train loops that would only
 # show up after you kick off a long experiment.
@@ -23,12 +23,7 @@ from ai.rl.dqn.agent import DQNAgent
 
 class TestDQNPipeline(unittest.TestCase):
     def test_full_pipeline_runs(self):
-        """
-        This test ensures:
-          - DQNAgent builds successfully
-          - train_agent runs with no crashes
-          - loss is computed at least once
-        """
+        """Smoke test: agent builds, training runs a few episodes, and select_action returns something valid."""
         env = EthanMockEnv()
 
         config = {
@@ -36,23 +31,22 @@ class TestDQNPipeline(unittest.TestCase):
             "max_steps_per_episode": 30,
             "gamma": 0.99,
             "lr": 1e-3,
-            "min_replay_size": 50,    # replay buffer warmup
+            "min_replay_size": 50,    # need a few transitions before training kicks in
             "buffer_capacity": 500,
             "batch_size": 32,
             "target_update_interval": 20,
             "epsilon_decay_steps": 200,
             "log_every_episodes": 2,
             "device": "cpu",
-            "checkpoint_dir": None,   # no saving
+            "checkpoint_dir": None,   # don't write checkpoints during the test
             "log_csv_path": None,
         }
 
-        # Train for a few episodes
+        # quick training run. We're checking it doesn't crash.
         train_agent(env, config)
 
-        # Build agent after training for sanity check
+        # fresh agent, make sure it can pick an action from an observation
         agent = DQNAgent()
-        # Just make sure select_action returns a valid integer
         obs = env.reset()
         action_idx = agent.SelectAction(obs)
 

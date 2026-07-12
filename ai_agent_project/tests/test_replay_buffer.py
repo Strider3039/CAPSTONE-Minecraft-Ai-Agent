@@ -6,7 +6,7 @@
 # shapes line up with OBS_DIM.
 #
 # A broken buffer means training silently does nothing or crashes on the first
-# batch — easy to miss until you're hours into a run.
+# batch. Easy to miss until you're hours into a run.
 # -----------------------------------------------------------------------------
 import math
 import unittest
@@ -21,6 +21,7 @@ from ai.rl.dqn.replay import ReplayBuffer
 
 class TestReplayBuffer(unittest.TestCase):
     def test_add_and_sample(self):
+        """Adding transitions and sampling a batch should return tensors with the right shapes."""
         buf = ReplayBuffer(capacity=10)
 
         s = np.zeros(OBS_DIM, dtype=np.float32)

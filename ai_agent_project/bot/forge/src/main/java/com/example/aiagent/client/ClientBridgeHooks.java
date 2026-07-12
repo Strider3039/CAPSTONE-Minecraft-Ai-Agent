@@ -148,6 +148,30 @@ public class ClientBridgeHooks {
         System.out.println("[AI-BOT] Bridge disconnected; will retry in " + delay + " ms (attempt " + reconnectAttemptIndex + ")");
     }
 
+    /**
+     * Force this client's bridge websocket to close and reconnect on the next tick, so a bridge
+     * address change from the in-game config screen (via {@link com.example.aiagent.BridgeUriResolver#setOverride})
+     * takes effect immediately instead of waiting for a relog.
+     */
+    public static void reconnectBridge() {
+        if (INSTANCE == null) return;
+        Runnable doReconnect = () -> {
+            ForgeWebSocketClient c = INSTANCE.wsClient;
+            INSTANCE.wsClient = null;
+            INSTANCE.connecting = false;
+            INSTANCE.nextReconnectMs = 0;
+            INSTANCE.reconnectAttemptIndex = 0;
+            INSTANCE.lastEnsureBridgeDebugSummary = "";
+            if (c != null) {
+                new Thread(() -> {
+                    try { c.closeBlocking(); } catch (Exception ignored) {}
+                }, "WS-Close-Reconnect").start();
+            }
+        };
+        Minecraft mc = Minecraft.getInstance();
+        if (mc != null) mc.execute(doReconnect); else doReconnect.run();
+    }
+
     private long getBackoffWithJitter() {
         long base = BACKOFF_MS[Math.min(reconnectAttemptIndex, BACKOFF_MS.length - 1)];
         long jitter = (long) ((Math.random() * 2 - 1) * JITTER_MS);

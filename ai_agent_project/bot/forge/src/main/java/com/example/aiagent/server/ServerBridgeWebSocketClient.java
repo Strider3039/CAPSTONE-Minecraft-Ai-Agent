@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public class ServerBridgeWebSocketClient {
 
-    private final String uri;
+    private volatile String uri;
     private volatile WebSocketClient client;
     private volatile long nextAttemptMs = 0;
     private final AtomicBoolean connecting = new AtomicBoolean(false);
@@ -248,6 +248,28 @@ public class ServerBridgeWebSocketClient {
 
     public boolean isConnected() {
         return client != null && client.isOpen();
+    }
+
+    public String getUri() {
+        return uri;
+    }
+
+    /**
+     * Repoint this server-side bridge connection at a new address (e.g. set from a client's
+     * in-game config screen via {@code C2SRuntimeConfigPacket}) and reconnect immediately.
+     * No-op if the address is blank or unchanged.
+     */
+    public void updateBridgeUri(String newUri) {
+        String normalized = (newUri == null) ? null : newUri.trim();
+        if (normalized == null || normalized.isEmpty() || normalized.equals(this.uri)) {
+            return;
+        }
+        System.out.println("[AI-BOT][SERVER-WS] Bridge URI changed " + this.uri + " -> " + normalized + "; reconnecting.");
+        this.uri = normalized;
+        closeBlockingSafe();
+        nextAttemptMs = 0;
+        lastEnsureDebugSummary = "";
+        ensureConnected();
     }
 
     /**

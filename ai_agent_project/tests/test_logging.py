@@ -19,6 +19,7 @@ from ai.utils import logging as app_logging  # noqa: E402
 
 
 def test_setup_logging_json_stdout(tmp_path: Path, capsys):
+    """JSON logging should emit parseable lines to stdout and to the configured file sink."""
     log_path = tmp_path / "logs" / "bridge.log.ndjson"
     cfg = {
         "level": "DEBUG",
@@ -39,7 +40,7 @@ def test_setup_logging_json_stdout(tmp_path: Path, capsys):
     assert rec["msg"] == "hello world"
     assert rec["foo"] == "bar"
 
-    # File sink exists and contains JSON log records
+    # file sink should also be writing valid JSON lines
     assert log_path.exists()
     with log_path.open("r", encoding="utf-8") as f:
         first = f.readline().strip()
@@ -48,6 +49,7 @@ def test_setup_logging_json_stdout(tmp_path: Path, capsys):
 
 
 def test_setup_logging_plain_stdout(capsys):
+    """Plain (non-JSON) logging should still print level, logger name, and message."""
     app_logging.SetupLogging({"level": "INFO", "json": False})
     logger = py_logging.getLogger("plain.logger")
     logger.warning("warn message")
@@ -57,6 +59,7 @@ def test_setup_logging_plain_stdout(capsys):
 
 
 def test_log_level_effect_error_only(capsys):
+    """With level=ERROR, INFO messages should be filtered out."""
     app_logging.SetupLogging({"level": "ERROR", "json": True})
     logger = py_logging.getLogger("lvl.test")
     logger.info("should not be emitted")
@@ -64,6 +67,7 @@ def test_log_level_effect_error_only(capsys):
 
 
 def test_write_metric_appends_ndjson(tmp_path: Path):
+    """WriteMetric should append one JSON object per call to the metrics file."""
     p = tmp_path / "metrics" / "bridge_metrics.ndjson"
     app_logging.WriteMetric(p, {"queue_obs_high_watermark": 7})
     app_logging.WriteMetric(p, {"queue_obs_high_watermark": 9, "obs_dropped": 1})

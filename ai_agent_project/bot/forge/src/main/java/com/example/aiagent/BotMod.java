@@ -5,6 +5,7 @@ import com.example.aiagent.server.ServerBotHooks;
 import com.example.aiagent.server.ServerBridgeWebSocketClient;
 import com.example.aiagent.server.FakeBotManager;
 import com.example.aiagent.server.BotSoakTestController;
+import com.example.aiagent.server.IntegratedServerBotHooks;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -75,7 +76,13 @@ public class BotMod {
                 System.out.println("[AI-BOT] CommonSetup: dedicated server detected; constructing ServerBotHooks.");
                 new ServerBotHooks(this.botManager);
             } else {
-                System.out.println("[AI-BOT] CommonSetup: client environment; skipping ServerBotHooks.");
+                // Integrated singleplayer ("localhost" world) runs its logical server in this same
+                // process, but dist is still CLIENT. ServerBotHooks (and its bridge websocket) must
+                // stay dedicated-server-only, but something still needs to spawn/tick FakeBotManager
+                // here, or SERVER_BOT actions forwarded via C2SBotActionPacket just pile up unapplied.
+                System.out.println("[AI-BOT] CommonSetup: client environment; constructing IntegratedServerBotHooks "
+                        + "(spawns/ticks the bot when this client hosts its own integrated server).");
+                new IntegratedServerBotHooks(this.botManager);
             }
         });
 

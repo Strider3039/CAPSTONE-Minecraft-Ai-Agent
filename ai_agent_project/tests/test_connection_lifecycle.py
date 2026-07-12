@@ -35,11 +35,7 @@ import bridge.server as server
 # WebSocket mocks
 # ------------------------------------------------------------
 class DummyWS:
-    """
-    Async-iterable WebSocket mock. Yields messages from incoming (JSON strings).
-    When at end of list, either blocks until close() then raises (for timeout test),
-    or raises immediately (disconnect_after=True) or CancelledError (default).
-    """
+    """Fake WebSocket that feeds scripted messages into Handle() and records what gets sent back."""
 
     def __init__(self, incoming, block_after=False, disconnect_after=False):
         self.sent_messages = []
@@ -73,11 +69,11 @@ class DummyWS:
         if self._index < len(self._incoming):
             msg = self._incoming[self._index]
             self._index += 1
-            await asyncio.sleep(0.06)  # yield so PolicyWorker (20 Hz) can run a tick
+            await asyncio.sleep(0.06)  # give the policy worker a moment to tick
             return msg
 
         if self._disconnect_after:
-            # Yield so PolicyWorker (and other tasks) can run on the last enqueued message
+            # pause briefly so background tasks can process the last message
             await asyncio.sleep(0.15)
             raise ConnectionClosedOK(None, "test disconnect")
 
@@ -142,10 +138,7 @@ def _fake_cfg(tmp_path, hello_timeout_s=2.0, control_mode="PLAYER"):
 # ------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_no_actions_until_hello(tmp_path, monkeypatch):
-    """
-    Client sends observations only (no hello). Server must not start policy/action loop.
-    So no message with kind "action" should be sent.
-    """
+    """If the client never says hello, the server shouldn't spin up the policy or send actions."""
     monkeypatch.setattr(server, "sharedDir", tmp_path / "shared")
     (tmp_path / "shared").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(server, "EPISODE_SAVE_PATH", tmp_path / "shared" / "episode_state.json")
@@ -155,15 +148,15 @@ async def test_no_actions_until_hello(tmp_path, monkeypatch):
 
     cfg = _fake_cfg(tmp_path, hello_timeout_s=0.3)
 
-    # Policy must not be built until hello; if we never send hello, never called
+    # no hello means build_policy_from_config should never run
     build_policy = MagicMock(return_value=MagicMock(act=MagicMock(return_value={"payload": {}})))
     monkeypatch.setattr(server, "build_policy_from_config", build_policy)
 
-    # Block after one obs so hello_guard can timeout and call close()
+    # after one obs, block so hello_guard can hit its timeout
     ws = DummyWS([_minimal_observation()], block_after=True)
 
     handle_task = asyncio.create_task(server.Handle(ws, cfg))
-    await asyncio.sleep(0.5)  # allow hello_guard to timeout and close
+    await asyncio.sleep(0.5)  # wait for hello_guard to fire
     ws.close()
     await asyncio.sleep(0.1)
 
@@ -182,10 +175,7 @@ async def test_no_actions_until_hello(tmp_path, monkeypatch):
 # ------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_hello_timeout_closes_connection(tmp_path, monkeypatch):
-    """
-    Client connects but never sends hello. After hello_timeout_s the server
-    should close the connection (hello_guard runs).
-    """
+    """Client connects but never sends hello, so the server should close the socket after the timeout."""
     monkeypatch.setattr(server, "sharedDir", tmp_path / "shared")
     (tmp_path / "shared").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(server, "EPISODE_SAVE_PATH", tmp_path / "shared" / "episode_state.json")
@@ -209,7 +199,7 @@ async def test_hello_timeout_closes_connection(tmp_path, monkeypatch):
     except (asyncio.CancelledError, ConnectionClosedOK):
         pass
 
-    # Server should have triggered close (hello_guard timeout)
+    # hello_guard should have closed the connection by now
     assert ws.closed
 
 
@@ -218,10 +208,7 @@ async def test_hello_timeout_closes_connection(tmp_path, monkeypatch):
 # ------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_hello_then_policy_and_actions_possible(tmp_path, monkeypatch):
-    """
-    Client sends hello (PLAYER mode) then observation. Server accepts hello,
-    starts policy worker, then processes observation; action sender can send.
-    """
+    """After a proper hello, the policy should run and the server should send at least one action."""
     monkeypatch.setattr(server, "sharedDir", tmp_path / "shared")
     (tmp_path / "shared").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(server, "EPISODE_SAVE_PATH", tmp_path / "shared" / "episode_state.json")
@@ -237,7 +224,7 @@ async def test_hello_then_policy_and_actions_possible(tmp_path, monkeypatch):
     })
     monkeypatch.setattr(server, "build_policy_from_config", lambda cfg: policy_instance)
 
-    # Hello, then several obs so policy worker has time to run, then disconnect
+    # hello first, then a few obs so the policy worker has time to act
     msgs = [_hello_client()] + [_minimal_observation() for _ in range(5)]
     ws = DummyWS(msgs, disconnect_after=True)
 
@@ -253,10 +240,7 @@ async def test_hello_then_policy_and_actions_possible(tmp_path, monkeypatch):
 # ------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_graceful_shutdown_on_client_disconnect(tmp_path, monkeypatch):
-    """
-    Client connects, sends hello, then disconnects. Server should clean up
-    (cancel tasks, clear pending) and return without crashing.
-    """
+    """Hello then disconnect. Handle() should clean up and return without blowing up."""
     monkeypatch.setattr(server, "sharedDir", tmp_path / "shared")
     (tmp_path / "shared").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(server, "EPISODE_SAVE_PATH", tmp_path / "shared" / "episode_state.json")
@@ -271,7 +255,7 @@ async def test_graceful_shutdown_on_client_disconnect(tmp_path, monkeypatch):
 
     ws = DummyWS([_hello_client()], disconnect_after=True)
 
-    # Should return normally (no exception)
+    # should finish normally
     await server.Handle(ws, cfg)
 
 
@@ -280,6 +264,7 @@ async def test_graceful_shutdown_on_client_disconnect(tmp_path, monkeypatch):
 # ------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_disconnect_flushes_policy_and_checkpoint(tmp_path, monkeypatch):
+    """When the client disconnects, the bridge should shut down the policy and save a checkpoint."""
     monkeypatch.setattr(server, "sharedDir", tmp_path / "shared")
     (tmp_path / "shared").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(server, "EPISODE_SAVE_PATH", tmp_path / "shared" / "episode_state.json")
@@ -308,6 +293,7 @@ async def test_disconnect_flushes_policy_and_checkpoint(tmp_path, monkeypatch):
 # ------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_policy_eval_control_passes_through_worker():
+    """If the policy returns eval_control (e.g. start_episode), PolicyWorker should put it on act_q unchanged."""
     obs_q = asyncio.Queue()
     act_q = asyncio.Queue()
     await obs_q.put(json.loads(_minimal_observation()))
@@ -353,10 +339,7 @@ async def test_policy_eval_control_passes_through_worker():
 # ------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_observations_before_hello_do_not_start_policy(tmp_path, monkeypatch):
-    """
-    Client sends observation then hello. Server enqueues the observation
-    but does not start policy/action loop until hello is received.
-    """
+    """Observations sent before hello get queued, but the policy shouldn't start until hello arrives."""
     monkeypatch.setattr(server, "sharedDir", tmp_path / "shared")
     (tmp_path / "shared").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(server, "EPISODE_SAVE_PATH", tmp_path / "shared" / "episode_state.json")
@@ -368,12 +351,12 @@ async def test_observations_before_hello_do_not_start_policy(tmp_path, monkeypat
     build_policy = MagicMock(return_value=MagicMock(act=MagicMock(return_value={"payload": {}})))
     monkeypatch.setattr(server, "build_policy_from_config", build_policy)
 
-    # Obs first, then hello, then disconnect
+    # obs lands first, hello second
     ws = DummyWS([_minimal_observation(), _hello_client()], disconnect_after=True)
 
     await server.Handle(ws, cfg)
 
-    # Policy is built only once (when hello is received)
+    # policy should only spin up once hello comes in
     assert build_policy.call_count == 1
 
 
@@ -382,11 +365,7 @@ async def test_observations_before_hello_do_not_start_policy(tmp_path, monkeypat
 # ------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_invalid_observation_skipped_no_crash(tmp_path, monkeypatch):
-    """
-    Client sends hello then an invalid observation (fails OBS schema) then a valid one.
-    Server must skip the invalid message (log, continue) and enqueue only the valid one.
-    No crash; policy can still run on the valid observation.
-    """
+    """Bad observation JSON gets skipped; a valid one right after should still reach the policy."""
     monkeypatch.setattr(server, "sharedDir", tmp_path / "shared")
     (tmp_path / "shared").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(server, "EPISODE_SAVE_PATH", tmp_path / "shared" / "episode_state.json")
@@ -404,14 +383,14 @@ async def test_invalid_observation_skipped_no_crash(tmp_path, monkeypatch):
         "kind": "observation",
         "seq": 1,
         "timestamp": 1.0,
-        "payload": {"wrong": "structure"},  # missing required pose, rays, world, etc.
+        "payload": {"wrong": "structure"},  # deliberately missing pose, rays, world, etc.
     })
     msgs = [_hello_client(), invalid_obs, _minimal_observation()]
     ws = DummyWS(msgs, disconnect_after=True)
 
     await server.Handle(ws, cfg)
 
-    # Server should not crash; policy should have been called (with the valid obs)
+    # shouldn't crash, and the good obs should still reach the policy
     assert policy_instance.act.called
 
 
@@ -420,12 +399,7 @@ async def test_invalid_observation_skipped_no_crash(tmp_path, monkeypatch):
 # ------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_config_update_hot_reload(tmp_path, monkeypatch):
-    """
-    Client sends hello then config_update (as from GUI Apply). Server must:
-    - Merge payload into runtime_overlay and refresh current_runtime
-    - Call policy.apply_runtime_config(current_runtime)
-    - Persist overlay to runtime_overrides.yaml
-    """
+    """A config_update from the GUI should merge into runtime, push to the policy, and save to disk."""
     import yaml
 
     monkeypatch.setattr(server, "sharedDir", tmp_path / "shared")
@@ -437,7 +411,7 @@ async def test_config_update_hot_reload(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "load_runtime_overlay", lambda: {})
 
     cfg = _fake_cfg(tmp_path)
-    # Base runtime has policy.reward; overlay will add/override
+    # start with some base reward settings; overlay will override them
     cfg.runtime["policy"] = cfg.runtime.get("policy") or {}
     cfg.runtime["policy"]["reward"] = {"step_penalty": -0.01, "survival_reward": 0.0}
 
@@ -465,9 +439,9 @@ async def test_config_update_hot_reload(tmp_path, monkeypatch):
 
     await server.Handle(ws, cfg)
 
-    # 1) apply_runtime_config was called (at least once at hello; and once for config_update)
+    # 1) policy should have seen the merged config
     assert policy_instance.apply_runtime_config.call_count >= 1
-    # Last call should have merged config including our overlay
+    # apply_runtime_config should have been called with our merged values
     last_call_args = policy_instance.apply_runtime_config.call_args[0][0]
     assert isinstance(last_call_args, dict)
     policy_cfg = last_call_args.get("policy") or {}
@@ -477,7 +451,7 @@ async def test_config_update_hot_reload(tmp_path, monkeypatch):
     dqn_cfg = policy_cfg.get("dqn") or {}
     assert dqn_cfg.get("epsilon_start") == 0.2
 
-    # 2) Overlay file was persisted
+    # overlay file should be on disk with our changes
     assert overlay_path.exists(), "runtime_overrides.yaml should be written after config_update"
     with open(overlay_path, "r", encoding="utf-8") as f:
         overlay = yaml.safe_load(f) or {}

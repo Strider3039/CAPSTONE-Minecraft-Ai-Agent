@@ -4,7 +4,7 @@
 # These go a step beyond unit tests: they check that editing runtime_overrides.yaml
 # on disk actually hot-reloads into the running bridge (same as the in-game UI).
 # Two optional tests spawn a real bridge subprocess or packaged .exe for a live
-# WebSocket handshake — skipped unless you opt in with env vars.
+# WebSocket handshake. Skipped unless you opt in with env vars.
 #
 # Catches the painful prod issue where you change the overlay file but nothing
 # updates until reconnect, invalid YAML taking down the bridge, or a packaged
@@ -44,10 +44,7 @@ from tests.test_connection_lifecycle import (  # noqa: E402
 
 @pytest.mark.asyncio
 async def test_runtime_overlay_file_triggers_hot_reload(tmp_path, monkeypatch):
-    """
-    Editing runtime_overrides.yaml on disk must reload overlay and call apply_runtime_config,
-    matching GUI config_update behavior (fixes disconnect when only the file changes).
-    """
+    """Editing runtime_overrides.yaml on disk should hot-reload just like clicking Apply in the UI."""
     data = tmp_path / "data"
     data.mkdir(parents=True, exist_ok=True)
     overlay_path = data / "runtime_overrides.yaml"
@@ -110,7 +107,7 @@ def _pick_free_port() -> int:
 @pytest.mark.integration
 @pytest.mark.skipif(not os.environ.get("BRIDGE_SUBPROCESS_TEST"), reason="Set BRIDGE_SUBPROCESS_TEST=1")
 def test_subprocess_bridge_websocket_hello():
-    """Real TCP stack: start bridge.server on ephemeral port, send client hello, expect JSON reply."""
+    """Spin up a real bridge process and make sure it answers a WebSocket hello."""
     pytest.importorskip("websockets")
     import websockets
 
@@ -174,7 +171,7 @@ def _default_packaged_exe() -> pathlib.Path:
     reason="Set RUN_PACKAGED_BRIDGE_E2E=1 (optional E2E_BRIDGE_EXE=path to exe)",
 )
 def test_packaged_bridge_exe_websocket_hello(tmp_path):
-    """Frozen bridge: same handshake as subprocess test using the packaged executable."""
+    """Same hello handshake, but against the packaged .exe instead of python -m bridge.server."""
     pytest.importorskip("websockets")
     import websockets
 
@@ -237,7 +234,7 @@ def test_packaged_bridge_exe_websocket_hello(tmp_path):
 
 @pytest.mark.asyncio
 async def test_runtime_overlay_file_reload_skips_invalid_yaml(tmp_path, monkeypatch):
-    """Corrupt YAML must not clear the in-memory overlay or crash the watch loop."""
+    """Garbage YAML on disk shouldn't wipe the overlay or take down the file watcher."""
     data = tmp_path / "data"
     data.mkdir(parents=True, exist_ok=True)
     overlay_path = data / "runtime_overrides.yaml"

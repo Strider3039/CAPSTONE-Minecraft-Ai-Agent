@@ -6,7 +6,7 @@
 # tables, etc. One test builds the default overlay from a sample config and
 # asserts the shape and values.
 #
-# Stops the UI and bridge from drifting apart — e.g. saving one field name while
+# Stops the UI and bridge from drifting apart, e.g. saving one field name while
 # the server reads another, or default reward params changing without anyone noticing.
 # -----------------------------------------------------------------------------
 import importlib
@@ -22,6 +22,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 def test_build_default_runtime_overlay_matches_bridge_ui_shape():
+    """Default overlay should normalize control_mode and carry through DQN/reward fields the UI expects."""
     server = importlib.import_module("bridge.server")
 
     runtime_cfg = {

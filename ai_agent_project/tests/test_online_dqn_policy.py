@@ -1,7 +1,7 @@
 # -----------------------------------------------------------------------------
 # Online DQN policy tests
 #
-# These test the live policy that runs inside the bridge during gameplay — not
+# These test the live policy that runs inside the bridge during gameplay, not
 # offline training. We feed fake observations and episode_end events through
 # policy.act() and check that transitions land in the replay buffer, episode
 # history gets written, and shutdown flushes pending state.
@@ -53,11 +53,13 @@ def _make_policy(tmp_path) -> OnlineDQNPolicy:
 
 
 def test_online_dqn_uses_separate_live_state_file(tmp_path):
+    """Online DQN should keep its live episode state in its own file, not the bridge's."""
     policy = _make_policy(tmp_path)
     assert policy._episode_state_path.name == "online_dqn_episode_state.json"
 
 
 def test_online_dqn_episode_end_flushes_terminal_transition(tmp_path):
+    """An episode_end from the client should flush a done transition into the replay buffer."""
     policy = _make_policy(tmp_path)
 
     first = policy.act(_obs(1, x=0.0))
@@ -82,6 +84,7 @@ def test_online_dqn_episode_end_flushes_terminal_transition(tmp_path):
 
 
 def test_online_dqn_reward_engine_done_requests_real_reset(tmp_path):
+    """Hitting max steps should request a real episode reset via eval_control start_episode."""
     policy = _make_policy(tmp_path)
     policy.reward_engine.max_steps_per_episode = 1
 
@@ -96,6 +99,7 @@ def test_online_dqn_reward_engine_done_requests_real_reset(tmp_path):
 
 
 def test_online_dqn_shutdown_flushes_pending_transition(tmp_path):
+    """shutdown() should flush any pending transition so we don't lose the last step."""
     policy = _make_policy(tmp_path)
     policy.act(_obs(1, x=0.0))
 
