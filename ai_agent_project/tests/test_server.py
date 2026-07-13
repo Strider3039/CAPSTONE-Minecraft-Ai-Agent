@@ -11,11 +11,10 @@
 # ------------------------------------------------------------
 # Make project root importable when running from tests/ folder
 # ------------------------------------------------------------
-import sys, pathlib
+import os
+import sys
 
-FILE = pathlib.Path(__file__).resolve()
-ROOT = FILE.parents[1]    # ai_agent_project/
-sys.path.insert(0, str(ROOT))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # ------------------------------------------------------------
 # Imports
@@ -26,37 +25,7 @@ import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 
 import bridge.server as server
-
-
-# ------------------------------------------------------------
-# Fully async mock WebSocket
-# ------------------------------------------------------------
-class DummyWS:
-    """Minimal fake WebSocket for driving Handle() in episode tests."""
-
-    def __init__(self, incoming_messages):
-        self.sent_messages = []
-        self._incoming = incoming_messages
-        self._index = 0
-
-    async def send(self, data):
-        if isinstance(data, (bytes, bytearray)):
-            data = data.decode("utf-8")
-
-        try:
-            self.sent_messages.append(json.loads(data))
-        except Exception:
-            self.sent_messages.append(data)
-
-    def __aiter__(self):
-        return self
-
-    async def __anext__(self):
-        if self._index >= len(self._incoming):
-            raise asyncio.CancelledError()
-        msg = self._incoming[self._index]
-        self._index += 1
-        return msg
+from tests.dummy_ws import DummyWS
 
 
 # ------------------------------------------------------------

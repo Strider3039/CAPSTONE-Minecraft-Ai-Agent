@@ -13,13 +13,10 @@
 import json
 import os
 import sys
-import pathlib
 
 import pytest
 
-FILE = pathlib.Path(__file__).resolve()
-ROOT = FILE.parents[1]
-sys.path.insert(0, str(ROOT))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 pytest.importorskip("torch")
 

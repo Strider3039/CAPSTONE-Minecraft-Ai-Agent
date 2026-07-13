@@ -26,16 +26,15 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 
-FILE = pathlib.Path(__file__).resolve()
-ROOT = FILE.parents[1]
-sys.path.insert(0, str(ROOT))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 pytest.importorskip("torch")
 
 import bridge.server as server
 
+from tests.dummy_ws import DummyWS  # noqa: E402
 from tests.test_connection_lifecycle import (  # noqa: E402
-    DummyWS,
     _fake_cfg,
     _hello_client,
     _minimal_observation,

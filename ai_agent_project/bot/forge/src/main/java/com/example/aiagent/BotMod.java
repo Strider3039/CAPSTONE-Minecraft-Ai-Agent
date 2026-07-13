@@ -70,7 +70,7 @@ public class BotMod {
             this.botManager = new FakeBotManager();
 
             // Only start the server-side websocket bridge on a dedicated server.
-            // In an integrated singleplayer server (runClient), the client bridge owns the connection (PLAYER mode),
+            // In an integrated singleplayer server, the client bridge owns the connection,
             // and starting ServerBotHooks causes a second "server" ws that gets rejected (wrong_role) and spams reconnects.
             if (FMLEnvironment.dist == Dist.DEDICATED_SERVER) {
                 System.out.println("[AI-BOT] CommonSetup: dedicated server detected; constructing ServerBotHooks.");
@@ -79,7 +79,7 @@ public class BotMod {
                 // Integrated singleplayer ("localhost" world) runs its logical server in this same
                 // process, but dist is still CLIENT. ServerBotHooks (and its bridge websocket) must
                 // stay dedicated-server-only, but something still needs to spawn/tick FakeBotManager
-                // here, or SERVER_BOT actions forwarded via C2SBotActionPacket just pile up unapplied.
+                // here, or SERVER_BOT actions forwarded through C2SBotActionPacket just pile up unapplied.
                 System.out.println("[AI-BOT] CommonSetup: client environment; constructing IntegratedServerBotHooks "
                         + "(spawns/ticks the bot when this client hosts its own integrated server).");
                 new IntegratedServerBotHooks(this.botManager);

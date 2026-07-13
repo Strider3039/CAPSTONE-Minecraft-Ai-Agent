@@ -11,25 +11,8 @@ import net.minecraftforge.event.level.LevelEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.network.PacketDistributor;
 
-/**
- * IntegratedServerBotHooks (INTEGRATED SINGLEPLAYER)
- *
- * On a real dedicated server, {@link ServerBotHooks} owns spawning/ticking {@link FakeBotManager}
- * and the server-role bridge websocket. On an integrated singleplayer world (launched via
- * runClient, i.e. a "localhost" world), {@code FMLEnvironment.dist == CLIENT}, so
- * {@code ServerBotHooks} is never constructed (see {@code BotMod.onCommonSetup}) -- the client
- * instead owns the only bridge websocket connection and forwards SERVER_BOT actions to the server
- * via {@code C2SBotActionPacket}.
- *
- * Without this class, those forwarded actions were enqueued into {@link FakeBotManager} but never
- * drained/applied, because {@link FakeBotManager#tick()} was only ever called from
- * {@code ServerBotHooks}. This class is the integrated-SP counterpart: it spawns the default bot
- * and ticks {@link FakeBotManager} every server tick so forwarded actions actually move the
- * FakePlayer, and relays completed step results/observations back to the client (which forwards
- * them to the Python bridge) via {@link S2CBotResultPacket}.
- *
- * It deliberately does NOT open its own bridge websocket -- that would fight the client's
- * connection (see the dedicated-server-only gate in {@code BotMod}).
+/*
+   IntegratedServerBotHooks (FOR INTEGRATED SINGLEPLAYER)
  */
 public class IntegratedServerBotHooks {
 

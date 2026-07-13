@@ -1111,6 +1111,13 @@ public class FakeBotManager {
                 } else if (msg == null)
                     continue;
 
+                // Control sentinel (sent when the client leaves SERVER_BOT mode, e.g. CTRL+M):
+                // { "cmd":"stop" } -- freeze all bots' controls/queued actions right away.
+                if (msg.has("cmd") && "stop".equals(msg.get("cmd").getAsString())) {
+                    stopAllBots();
+                    continue;
+                }
+
                 // Internal step format (created by ServerBridgeWebSocketClient):
                 // { "cmd":"step", "ticks":N, "seq":INT, "action_id":"...", "action":{...} }
                 if (msg.has("cmd") && "step".equals(msg.get("cmd").getAsString())
@@ -1172,6 +1179,31 @@ public class FakeBotManager {
             } catch (Exception ignored) {
             }
         }
+    }
+
+    /**
+     * Immediately clears control state, in-flight steps, and queued-but-undrained steps for every
+     * bot. Used when the controlling client leaves SERVER_BOT mode (CTRL+M / config screen "Apply"),
+     * so the FakePlayer stops moving/acting right away instead of coasting on stale control inputs
+     * or replaying a backlog of queued steps once control resumes.
+     */
+    public void stopAllBots() {
+        pendingDiscreteSteps.clear();
+        pendingSteps.clear();
+        for (FakeBot bot : bots.values()) {
+            if (bot == null) continue;
+            clearAllControls(bot);
+            bot.stepActive = false;
+            bot.stepTicksRemaining = 0;
+            bot.stepAction = null;
+            bot.stepSeq = -1;
+            bot.stepActionId = null;
+            if (bot.player != null) {
+                bot.player.setDeltaMovement(Vec3.ZERO);
+                bot.forceStateSync = true;
+            }
+        }
+        System.out.println("[AI-BOT] stopAllBots(): cleared controls + queued steps for " + bots.size() + " bot(s).");
     }
 
     private FakeBot getDefaultBot() {

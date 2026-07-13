@@ -11,12 +11,10 @@
 # Requires: pytest, pytest-asyncio, torch.
 # -----------------------------------------------------------------------------
 
+import os
 import sys
-import pathlib
 
-FILE = pathlib.Path(__file__).resolve()
-ROOT = FILE.parents[1]  # ai_agent_project/
-sys.path.insert(0, str(ROOT))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
 import asyncio
@@ -25,51 +23,8 @@ from unittest.mock import MagicMock
 
 pytest.importorskip("torch")
 
-from websockets.exceptions import ConnectionClosedOK
-
 import bridge.server as server
-
-
-class DummyWS:
-    """Lightweight fake WebSocket with just enough surface for Handle() in control-mode tests."""
-
-    def __init__(self, incoming, disconnect_after=False):
-        self.sent_messages = []
-        self._incoming = list(incoming)
-        self._index = 0
-        self._disconnect_after = disconnect_after
-        self._closed = False
-
-        # Handle() logs remote_address if it exists
-        self.remote_address = ("127.0.0.1", 12345)
-
-    async def send(self, data):
-        if isinstance(data, (bytes, bytearray)):
-            data = data.decode("utf-8")
-        try:
-            self.sent_messages.append(json.loads(data))
-        except Exception:
-            self.sent_messages.append(data)
-
-    async def close(self, code=None, reason=None):
-        self._closed = True
-
-    @property
-    def closed(self):
-        return self._closed
-
-    def __aiter__(self):
-        return self
-
-    async def __anext__(self):
-        if self._index < len(self._incoming):
-            msg = self._incoming[self._index]
-            self._index += 1
-            await asyncio.sleep(0)  # let background tasks breathe
-            return msg
-        if self._disconnect_after:
-            raise ConnectionClosedOK(None, "test disconnect")
-        raise asyncio.CancelledError()
+from tests.dummy_ws import DummyWS
 
 
 def _fake_cfg(control_mode: str, hello_timeout_s: float = 0.5):

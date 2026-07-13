@@ -11,12 +11,10 @@
 #
 # Requires: pytest, pytest-asyncio, torch (server import pulls in the policy stack).
 # -----------------------------------------------------------------------------
+import os
 import sys
-import pathlib
 
-FILE = pathlib.Path(__file__).resolve()
-ROOT = FILE.parents[1]  # ai_agent_project/
-sys.path.insert(0, str(ROOT))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
 import asyncio
@@ -29,62 +27,7 @@ pytest.importorskip("torch")
 from websockets.exceptions import ConnectionClosedOK
 
 import bridge.server as server
-
-
-# ------------------------------------------------------------
-# WebSocket mocks
-# ------------------------------------------------------------
-class DummyWS:
-    """Fake WebSocket that feeds scripted messages into Handle() and records what gets sent back."""
-
-    def __init__(self, incoming, block_after=False, disconnect_after=False):
-        self.sent_messages = []
-        self._incoming = list(incoming)
-        self._index = 0
-        self._block_after = block_after
-        self._disconnect_after = disconnect_after
-        self._closed = False
-        self._close_event = asyncio.Event()
-
-    async def send(self, data):
-        if isinstance(data, (bytes, bytearray)):
-            data = data.decode("utf-8")
-        try:
-            self.sent_messages.append(json.loads(data))
-        except Exception:
-            self.sent_messages.append(data)
-
-    def close(self, code=None, reason=None):
-        self._closed = True
-        self._close_event.set()
-
-    @property
-    def closed(self):
-        return self._closed
-
-    def __aiter__(self):
-        return self
-
-    async def __anext__(self):
-        if self._index < len(self._incoming):
-            msg = self._incoming[self._index]
-            self._index += 1
-            await asyncio.sleep(0.06)  # give the policy worker a moment to tick
-            return msg
-
-        if self._disconnect_after:
-            # pause briefly so background tasks can process the last message
-            await asyncio.sleep(0.15)
-            raise ConnectionClosedOK(None, "test disconnect")
-
-        if self._block_after:
-            self._close_event.clear()
-            await self._close_event.wait()
-            if self._closed:
-                raise ConnectionClosedOK(None, "hello_timeout")
-            raise asyncio.CancelledError()
-
-        raise asyncio.CancelledError()
+from tests.dummy_ws import DummyWS
 
 
 def _minimal_observation():
@@ -240,7 +183,7 @@ async def test_hello_then_policy_and_actions_possible(tmp_path, monkeypatch):
 # ------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_graceful_shutdown_on_client_disconnect(tmp_path, monkeypatch):
-    """Hello then disconnect. Handle() should clean up and return without blowing up."""
+    """Hello then disconnect. Handle() should clean up and return without erroring."""
     monkeypatch.setattr(server, "sharedDir", tmp_path / "shared")
     (tmp_path / "shared").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(server, "EPISODE_SAVE_PATH", tmp_path / "shared" / "episode_state.json")

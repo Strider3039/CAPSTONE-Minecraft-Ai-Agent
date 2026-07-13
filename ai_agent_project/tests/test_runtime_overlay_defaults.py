@@ -10,15 +10,12 @@
 # the server reads another, or default reward params changing without anyone noticing.
 # -----------------------------------------------------------------------------
 import importlib
+import os
 import sys
-from pathlib import Path
 
 import pytest
 
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.append(str(PROJECT_ROOT))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def test_build_default_runtime_overlay_matches_bridge_ui_shape():

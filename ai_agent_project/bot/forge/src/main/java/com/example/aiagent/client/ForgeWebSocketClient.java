@@ -60,6 +60,14 @@ public class ForgeWebSocketClient extends WebSocketClient {
         }
         controlMode = mode;
 
+        // Leaving SERVER_BOT: tell the server to freeze the FakePlayer's controls/queued actions
+        // right away, instead of letting stale movement/step state coast (or replay once control
+        // resumes). Covers both CTRL+M and the config screen's Apply button, since both go through
+        // this single entry point.
+        if (previous == ControlMode.SERVER_BOT && mode != ControlMode.SERVER_BOT) {
+            sendStopToServer();
+        }
+
         Minecraft mc = Minecraft.getInstance();
         if (mc != null) {
             ControlMode finalMode = mode;
@@ -83,6 +91,23 @@ public class ForgeWebSocketClient extends WebSocketClient {
 
     public static ControlMode getControlMode() {
         return controlMode;
+    }
+
+    /**
+     * Tell the server to immediately clear the FakePlayer's control state and any queued/in-flight
+     * actions. Reuses the existing C2SBotActionPacket channel with a tiny sentinel body recognized
+     * by {@code FakeBotManager.drainActions()} ({@code {"cmd":"stop"}}), so no new packet type is
+     * needed. Safe to call even when not connected to any world/server (no-op).
+     */
+    private static void sendStopToServer() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc == null || mc.getConnection() == null) return;
+        try {
+            BotNet.CHANNEL.sendToServer(new C2SBotActionPacket("{\"cmd\":\"stop\"}"));
+            System.out.println("[WS] Sent stop command to server (left SERVER_BOT mode).");
+        } catch (Exception e) {
+            System.err.println("[WS] sendStopToServer failed: " + e.getMessage());
+        }
     }
 
     // ───────────────────────────────────────────────
