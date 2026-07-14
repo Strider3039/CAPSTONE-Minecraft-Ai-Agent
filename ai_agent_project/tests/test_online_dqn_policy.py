@@ -1,14 +1,5 @@
 # -----------------------------------------------------------------------------
 # Online DQN policy tests
-#
-# These test the live policy that runs inside the bridge during gameplay, not
-# offline training. We feed fake observations and episode_end events through
-# policy.act() and check that transitions land in the replay buffer, episode
-# history gets written, and shutdown flushes pending state.
-#
-# Prevents losing training data on death/disconnect, mixing up episode state
-# files with the bridge's, or the reward engine failing to request a reset when
-# max steps is hit.
 # -----------------------------------------------------------------------------
 import json
 import os

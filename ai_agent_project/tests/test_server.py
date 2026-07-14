@@ -1,16 +1,6 @@
 # -----------------------------------------------------------------------------
 # Bridge episode lifecycle tests
-#
-# Focused tests for start_new_episode and what happens when the client sends
-# episode_end. Uses a minimal DummyWS mock, not the full connection lifecycle suite.
-#
-# Catches episodes not incrementing, episode_state.json not being written,
-# episode_start not sent to the client, or death not triggering a new episode
-# (the second start_new_episode call after episode_end).
 # -----------------------------------------------------------------------------
-# ------------------------------------------------------------
-# Make project root importable when running from tests/ folder
-# ------------------------------------------------------------
 import os
 import sys
 

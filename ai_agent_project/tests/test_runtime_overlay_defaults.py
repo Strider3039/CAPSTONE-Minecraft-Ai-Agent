@@ -1,13 +1,5 @@
 # -----------------------------------------------------------------------------
 # Runtime overlay defaults tests
-#
-# When the bridge creates a fresh runtime_overrides.yaml, it should match what
-# the UI expects: control_mode casing, DQN epsilon, reward weights, block/mob
-# tables, etc. One test builds the default overlay from a sample config and
-# asserts the shape and values.
-#
-# Stops the UI and bridge from drifting apart, e.g. saving one field name while
-# the server reads another, or default reward params changing without anyone noticing.
 # -----------------------------------------------------------------------------
 import importlib
 import os

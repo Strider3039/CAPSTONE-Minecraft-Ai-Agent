@@ -1,12 +1,5 @@
 # -----------------------------------------------------------------------------
 # Observation encoding tests
-#
-# The policy doesn't read raw JSON. It needs a fixed-size float vector. These
-# tests check that EncodeObservation turns a realistic observation message into
-# the right shape and sane values for the neural net.
-#
-# Catches regressions when someone adds a new observation field or changes ray
-# encoding and the network suddenly gets the wrong input dimension or garbage data.
 # -----------------------------------------------------------------------------
 import numpy as np
 import os
