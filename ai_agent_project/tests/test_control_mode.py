@@ -117,4 +117,3 @@ async def test_client_role_closed_when_switching_to_server_bot(tmp_path, monkeyp
         pytest.fail("server.Handle() did not terminate after closing wrong-role client on mode change")
 
     assert ws.closed, "ws must be closed when client becomes disallowed after mode switch"
-

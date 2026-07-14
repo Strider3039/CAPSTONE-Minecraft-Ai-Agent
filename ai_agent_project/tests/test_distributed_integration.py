@@ -1,16 +1,5 @@
 # -----------------------------------------------------------------------------
 # Distributed integration and runtime overlay tests
-#
-# These go a step beyond unit tests: they check that editing runtime_overrides.yaml
-# on disk actually hot-reloads into the running bridge (same as the in-game UI).
-# Two optional tests spawn a real bridge subprocess or packaged .exe for a live
-# WebSocket handshake. Skipped unless you opt in with env vars.
-#
-# Catches the painful prod issue where you change the overlay file but nothing
-# updates until reconnect, invalid YAML taking down the bridge, or a packaged
-# build failing to accept a hello on the wire.
-#
-# Optional: BRIDGE_SUBPROCESS_TEST=1, RUN_PACKAGED_BRIDGE=1 + built exe.
 # -----------------------------------------------------------------------------
 from __future__ import annotations
 
